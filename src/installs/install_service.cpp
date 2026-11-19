@@ -12,6 +12,7 @@
 #include <charconv>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string_view>
 
 namespace playden::installs {
@@ -216,6 +217,11 @@ bool ValidOptionValue(std::string_view value) {
 
 // Past this a job's excluded DLC would not fit a registry line (Scan), and the game would be lost with its line.
 constexpr std::size_t kMaxRegisteredDlc = 1000;
+// A Workshop job's items turned off: the cap the bottle's saved choice keeps (steam::kWorkshopMaxItems, which
+// WriteWorkshopOff refuses past). IDs of up to 20 digits with a comma fit the 32 KiB line Scan reads. A Workshop job
+// carries no DLC. A longer choice is refused (Update), never cut: the IDs cut would download.
+constexpr std::size_t kMaxRegisteredWorkshopOff = 1000;
+constexpr const char* kTooManyWorkshopOff = "Playden can keep at most 1,000 Workshop items turned off.";
 
 // A job's options as the registry keeps them. Excluded DLC are sorted and unique, and only valid IDs of the game's own
 // store other than the game itself stay: a DLC is always in its game's store.
@@ -229,6 +235,21 @@ InstallOptions Registrable(InstallOptions options, const GameId& game) {
   std::sort(excluded.begin(), excluded.end());
   excluded.erase(std::unique(excluded.begin(), excluded.end()), excluded.end());
   if (excluded.size() > kMaxRegisteredDlc) excluded.resize(kMaxRegisteredDlc);
+  // Workshop items: Steam games only, and nothing about DLC.
+  if (options.workshop && !game.steam_app()) options.workshop = false;
+  if (!options.workshop) options.workshop_all = false;
+  if (!options.workshop || options.workshop_all) options.workshop_off.reset();
+  if (options.workshop) {
+    options.excluded_dlc.clear();
+    options.dlc_choice = false;
+  }
+  if (auto& off = options.workshop_off) {
+    off->erase(std::remove(off->begin(), off->end(), 0u), off->end());
+    std::sort(off->begin(), off->end());
+    off->erase(std::unique(off->begin(), off->end()), off->end());
+    // Only a damaged registry line gets here (Update refuses one): the choice saved in the bottle holds instead.
+    if (off->size() > kMaxRegisteredWorkshopOff) options.workshop_off.reset();
+  }
   return options;
 }
 
@@ -244,7 +265,7 @@ struct RegistryEntry {
   // <from> to <to>; once <volume> is <to>, only the old folder is left to delete.
   std::string move_to;
   std::string move_from;
-  InstallOptions options;  // a job's "lang=<code>", "branch=<name>", "nodlc=<app>,<app>" and "dlcset" fields
+  InstallOptions options;  // a job's "lang=<code>", "branch=<name>", "nodlc=<app>,<app>", "dlcset", "workshop", "wsoff=" and "wsall" fields
   std::optional<std::uint64_t> estimated_bytes;  // a job's "est=<bytes>": what it reserves on its drive
   std::int64_t finished_at = 0;  // "finished=<unix seconds>": a moved game's install time, older than its record
   std::string also_on;  // not stored: another USB drive holding the same folder (FollowUsbDrives)
@@ -255,7 +276,10 @@ struct RegistryEntry {
 // an uninstall whose folder is not deleted yet, or "\tupdate" for an installed game with an update job
 // (then "\tpaused" is the update's), or "\tmove=<volume>\tfrom=<volume>" for one with a move job, then a job's install options as "\tlang=<code>",
 // "\tbranch=<name>" and "\tnodlc=<key>,<key>" (none: the defaults; each DLC's ToKey: a Steam app ID, "gog-<id>"), "\tdlcset" for an update that changes the game's DLC
-// (InstallOptions::dlc_choice; an older Playden skips it and updates with the record's DLC), its estimate as "\test=<bytes>", and "\tfinished=<unix seconds>" for a moved game's install time. Fields
+// (InstallOptions::dlc_choice; an older Playden skips it and updates with the record's DLC), "\tworkshop" for an update of the game's
+// Workshop items only, with "\twsoff=<id>,<id>" (possibly empty) when it carries the player's choice (InstallOptions::workshop,
+// workshop_off; an older Playden skips both and updates the game), or "\twsall" for one with every item on (InstallOptions::
+// workshop_all; an older Playden keeps the saved choice), its estimate as "\test=<bytes>", and "\tfinished=<unix seconds>" for a moved game's install time. Fields
 // after the install bytes may come in any order, and
 // unknown ones are skipped. The key is ToKey: a Steam game's app ID, "gog-<id>" for a GOG game, "local-<uuid>" for an
 // imported game.
@@ -283,7 +307,7 @@ std::optional<RegistryEntry> ParseRegistryLine(std::string_view line) {
       const auto field = fields.substr(0, tab);
       fields = tab == std::string_view::npos ? std::string_view{} : fields.substr(tab + 1);
       constexpr std::string_view kLanguage = "lang=", kBranch = "branch=", kMove = "move=", kFrom = "from=",
-                                 kFinished = "finished=", kNoDlc = "nodlc=", kEstimate = "est=";
+                                 kFinished = "finished=", kNoDlc = "nodlc=", kEstimate = "est=", kWorkshopOff = "wsoff=";
       if (field == "paused") entry.paused = true;
       else if (field.substr(0, kMove.size()) == kMove && ValidVolumeId(field.substr(kMove.size())))
         entry.move_to = std::string(field.substr(kMove.size()));
@@ -292,6 +316,21 @@ std::optional<RegistryEntry> ParseRegistryLine(std::string_view line) {
       else if (field == "removing") entry.removing = true;
       else if (field == "update") entry.update = true;
       else if (field == "dlcset") entry.options.dlc_choice = true;
+      else if (field == "workshop") entry.options.workshop = true;
+      else if (field == "wsall") entry.options.workshop_all = true;
+      else if (field.substr(0, kWorkshopOff.size()) == kWorkshopOff) {
+        auto& off = entry.options.workshop_off.emplace();
+        for (auto list = field.substr(kWorkshopOff.size()); !list.empty();) {
+          const auto comma = list.find(',');
+          const auto text = list.substr(0, comma);
+          list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
+          // An entry that isn't a canonical item ID is skipped, and the rest of the line stays.
+          std::uint64_t item = 0;
+          const auto parsed = std::from_chars(text.data(), text.data() + text.size(), item);
+          if (parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() && item != 0 && text[0] != '0')
+            off.push_back(item);
+        }
+      }
       else if (field.substr(0, kLanguage.size()) == kLanguage) entry.options.language = std::string(field.substr(kLanguage.size()));
       else if (field.substr(0, kBranch.size()) == kBranch) entry.options.branch = std::string(field.substr(kBranch.size()));
       else if (field.substr(0, kEstimate.size()) == kEstimate) {
@@ -617,6 +656,7 @@ void InstallService::Scan() {
         }
         job.options = Registrable(job.options, job.view.id);
         job.view.dlc_change = job.options.dlc_choice;
+        job.view.workshop_change = job.options.workshop;
         job.view.locked = update && update->phase != UpdatePhase::kStaging;
         if (job.view.locked || (entry.update && !entry.paused)) {
           // One putting its files in place finishes by itself: the game can't run until it does.
@@ -692,6 +732,14 @@ bool InstallService::SaveRegistry() {
       fields += (index ? "," : "\tnodlc=") + ToKey(job.options.excluded_dlc[index]);
     // Also with nothing left out: turning every DLC on is a choice too.
     if (job.view.kind == InstallJobKind::kUpdate && job.options.dlc_choice) fields += "\tdlcset";
+    if (job.view.kind == InstallJobKind::kUpdate && job.options.workshop) {
+      fields += "\tworkshop";
+      if (job.options.workshop_all) fields += "\twsall";
+      if (const auto& off = job.options.workshop_off) {
+        fields += "\twsoff=";
+        for (std::size_t index = 0; index < off->size(); ++index) fields += (index ? "," : "") + std::to_string((*off)[index]);
+      }
+    }
     if (job.view.kind != InstallJobKind::kMove && job.estimated_bytes) fields += "\test=" + std::to_string(*job.estimated_bytes);
     return fields;
   };
@@ -823,6 +871,12 @@ std::string InstallService::Update(GameId id, const InstallOptions& options, std
   if (game == installed_.end()) return "The game is not installed.";
   if (!game->available) return kVolumeUnavailable;
   if (jobs_.size() >= kMaxJobs) return kQueueFull;
+  if (options.workshop && !id.steam_app()) return "Only Steam games have Workshop items.";
+  if (options.workshop && options.workshop_off) {
+    std::set<std::uint64_t> off(options.workshop_off->begin(), options.workshop_off->end());
+    off.erase(0);
+    if (off.size() > kMaxRegisteredWorkshopOff) return kTooManyWorkshopOff;
+  }
   Job job;
   job.view.id = id;
   job.view.kind = InstallJobKind::kUpdate;
@@ -834,11 +888,21 @@ std::string InstallService::Update(GameId id, const InstallOptions& options, std
   }
   job.options = Registrable(job.options, id);
   job.view.dlc_change = job.options.dlc_choice;
-  Admit(job, game->volume_id, estimated_bytes);
+  job.view.workshop_change = job.options.workshop;
+  // Workshop items go to the game's bottle, not its drive: nothing is reserved there.
+  Admit(job, game->volume_id, job.options.workshop ? std::nullopt : estimated_bytes);
   jobs_.push_back(job);
   Publish();
   wake_.notify_all();
   return {};
+}
+
+std::string InstallService::SyncWorkshop(GameId id, std::optional<std::vector<std::uint64_t>> off, bool all) {
+  InstallOptions options;
+  options.workshop = true;
+  options.workshop_all = all;
+  if (!all) options.workshop_off = std::move(off);
+  return Update(id, options);
 }
 
 // Held for its game: only the gate is asked next time, at Steam nothing. While the game runs it is asked again soon,
@@ -1094,12 +1158,14 @@ void InstallService::Cancel(GameId id) {
     active_cancel_.store(true);
   } else {
     const bool update = job->view.kind == InstallJobKind::kUpdate;
+    // A Workshop job keeps nothing in the game's folder; what it downloaded the next one clears.
+    const bool workshop = update && job->options.workshop;
     const auto* volume = FindVolume(job->view.volume_id);
     const auto root = volume && volume->available ? RootOn(job->view.volume_id, id) : std::string();
     jobs_.erase(std::remove_if(jobs_.begin(), jobs_.end(), [id](const Job& entry) { return entry.view.id == id; }),
                 jobs_.end());
     // A canceled update deletes only its downloads.
-    if (!root.empty()) QueueRemoval({id.store, root, std::nullopt, std::nullopt, update});
+    if (!root.empty() && !workshop) QueueRemoval({id.store, root, std::nullopt, std::nullopt, update});
   }
   Publish();
   wake_.notify_all();
@@ -1494,6 +1560,13 @@ void InstallService::Run() {
         job->view.locked = true;
         ++revision_;
       }
+      // A Workshop job holds the game only while an item folder changes (MayApply locked it for that): the step
+      // it reports after the change lets the game run again.
+      if (auto* job = Find(id); job && step != InstallStep::kApplying && job->view.kind == InstallJobKind::kUpdate &&
+                                job->options.workshop && job->view.locked) {
+        job->view.locked = false;
+        ++revision_;
+      }
     };
     bool held_for_game = false, game_unknown = false;
     const std::function<bool()> may_apply = [this, id = *next, &held_for_game, &game_unknown] {
@@ -1517,8 +1590,13 @@ void InstallService::Run() {
       };
       // Whether the update on disk is putting its files in place, read while the job is not running.
       const bool locked_on_disk = next_update && UpdateLocked(next_root);
+      const bool workshop = next_update && next_options.workshop;
       if (job && job->dropped) {
         // Uninstalled meanwhile: the uninstall deletes the files.
+        erase_job();
+      } else if (job && workshop && (result.ok || job->cancel_requested)) {
+        // Workshop items only: the game's install, its record and its install time stay as they were, and it isn't
+        // listed as updated. A cancel keeps the items already in place; the next job clears what this one left.
         erase_job();
       } else if (job && result.ok && next_update) {
         const auto downloaded = job->view.done_bytes;

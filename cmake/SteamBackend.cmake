@@ -164,6 +164,9 @@ add_library(playden_steam_cm STATIC
     "${CMAKE_SOURCE_DIR}/src/steam/backend/cm_client.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/cm_friends_source.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/collections_client.cpp"
+    "${CMAKE_SOURCE_DIR}/src/steam/backend/workshop_client.cpp"
+    "${CMAKE_SOURCE_DIR}/src/steam/backend/workshop_items.cpp"
+    "${CMAKE_SOURCE_DIR}/src/steam/backend/workshop_listing_service.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/app_info_http.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/app_names.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/entitled_library.cpp"
@@ -260,6 +263,11 @@ function(playden_register_steam_backend_tests)
     target_link_libraries(steam_collections_test PRIVATE playden_steam_cm)
     add_test(NAME steam_collections COMMAND steam_collections_test)
 
+    # Steam Workshop items (#856): the subscription list's request and parser, with canned answers.
+    add_executable(workshop_client_test "${CMAKE_SOURCE_DIR}/tests/workshop_client_test.cpp")
+    target_link_libraries(workshop_client_test PRIVATE playden_steam_cm)
+    add_test(NAME workshop_client COMMAND workshop_client_test)
+
     # The Steam host's core (tools/steam-host/core), the same C file steam.exe is built from.
     add_executable(steam_host_core_test "${CMAKE_SOURCE_DIR}/tests/steam_host_core_test.cpp"
         "${CMAKE_SOURCE_DIR}/tools/steam-host/core/shc.c")
@@ -346,6 +354,28 @@ function(playden_register_steam_backend_tests)
         add_executable(depot_installer_test "${CMAKE_SOURCE_DIR}/tests/depot_installer_test.cpp")
         target_link_libraries(depot_installer_test PRIVATE playden_steam_cm)
         add_test(NAME depot_installer COMMAND depot_installer_test "${CMAKE_SOURCE_DIR}/fixtures/steam/appinfo")
+        # Steam Workshop items (#856) in the bottle: state file, sync plan, download, swap and resume.
+        add_executable(workshop_items_test "${CMAKE_SOURCE_DIR}/tests/workshop_items_test.cpp")
+        target_link_libraries(workshop_items_test PRIVATE playden_steam_cm)
+        add_test(NAME workshop_items COMMAND workshop_items_test)
+        # The console's ManagedDirectory absolute-path backend, run on the host.
+        add_executable(workshop_items_native_policy_test "${CMAKE_SOURCE_DIR}/tests/workshop_items_test.cpp"
+            "${CMAKE_SOURCE_DIR}/src/steam/backend/workshop_items.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/managed_directory.cpp")
+        target_compile_definitions(workshop_items_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1)
+        target_link_libraries(workshop_items_native_policy_test PRIVATE playden_steam_cm)
+        add_test(NAME workshop_items_native_policy COMMAND workshop_items_native_policy_test)
+        # The Workshop items sheet's listing (#856): subscriptions beside the bottle's items, and its worker.
+        add_executable(workshop_listing_service_test "${CMAKE_SOURCE_DIR}/tests/workshop_listing_service_test.cpp")
+        target_link_libraries(workshop_listing_service_test PRIVATE playden_steam_cm)
+        add_test(NAME workshop_listing_service COMMAND workshop_listing_service_test)
+        add_executable(workshop_listing_service_native_policy_test "${CMAKE_SOURCE_DIR}/tests/workshop_listing_service_test.cpp"
+            "${CMAKE_SOURCE_DIR}/src/steam/backend/workshop_listing_service.cpp"
+            "${CMAKE_SOURCE_DIR}/src/steam/backend/workshop_items.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/managed_directory.cpp")
+        target_compile_definitions(workshop_listing_service_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1)
+        target_link_libraries(workshop_listing_service_native_policy_test PRIVATE playden_steam_cm)
+        add_test(NAME workshop_listing_service_native_policy COMMAND workshop_listing_service_native_policy_test)
         add_executable(depot_installer_memory_test "${CMAKE_SOURCE_DIR}/tests/depot_installer_memory_test.cpp")
         target_link_libraries(depot_installer_memory_test PRIVATE playden_steam_cm)
         add_test(NAME depot_installer_memory COMMAND depot_installer_memory_test)

@@ -895,7 +895,7 @@ std::string action_label(const std::string& key) {
         {"cloud-use-local", "Use console saves"}, {"cloud-confirm-account", "Use this account"},
         {"cloud-confirm-account-all", "Upload all"},
         {"saves-delete-confirm", "Delete saves"}, {"manage-saves", "Manage saves"}, {"saves-leftover-confirm", "Remove"}, {"saves-quit-anyway", "Play without syncing"},
-        {"install-confirm", "Install"}, {"install-version", "Version"}, {"install-language", "Language"}, {"install-dlc", "DLC"}, {"install-dlc-all", "All DLC"}, {"install-dlc-done", "Done"}, {"manage-dlc", "Manage DLC…"}, {"manage-dlc-apply", "Apply changes"}, {"heading-manage-dlc-installed", "Installed"}, {"heading-manage-dlc-other", "Not installed"}, {"heading-dlc-included", "Included"}, {"heading-dlc-optional", "Optional"}, {"update-confirm", "Download and install"}, {"storage-picker", "Change storage…"},
+        {"install-confirm", "Install"}, {"install-version", "Version"}, {"install-language", "Language"}, {"install-dlc", "DLC"}, {"install-dlc-all", "All DLC"}, {"install-dlc-done", "Done"}, {"manage-dlc", "Manage DLC…"}, {"manage-dlc-apply", "Apply changes"}, {"workshop-items", "Workshop items…"}, {"workshop-apply", "Apply changes"}, {"workshop-retry", "Try again"}, {"heading-manage-dlc-installed", "Installed"}, {"heading-manage-dlc-other", "Not installed"}, {"heading-dlc-included", "Included"}, {"heading-dlc-optional", "Optional"}, {"update-confirm", "Download and install"}, {"storage-picker", "Change storage…"},
         {"value-edit", "Edit…"}, {"value-reset", "Reset to recipe"}, {"override-add", "Add an override…"},
         {"unlock-setting", "Change anyway"}, {"export-recipe", "Export as file"}, {"share-recipe", "Share recipe"},
         {"share-send", "Send"}, {"share-send-confirm", "Send"}, {"share-vote", "👍 Vote for it instead"}, {"vote-up", "👍 Good"},
@@ -986,6 +986,12 @@ ModalEntry cancel_job_confirmation(const State& state, const Job* job, std::stri
             ? "The copy on " + label(job->volume_id) + " is deleted. The game stays on " + label(job->from_volume_id) + "."
             : (to == state.volumes.end() ? std::string("The other drive") : to->label) +
                   " isn't connected, so the part copied there stays. The game stays on " + label(job->from_volume_id) + ".";
+        return confirmation;
+    }
+    if (job && job->workshop_change) {
+        // A Workshop items job keeps the items it already put in place (InstallService::Cancel).
+        ModalEntry confirmation{"confirmation", "Cancel the Workshop items?", std::move(opener), {"cancel", "confirm-destructive"}, 0, true};
+        confirmation.body = "Items already in place stay. Apply again in Workshop items to finish.";
         return confirmation;
     }
     ModalEntry confirmation{"confirmation", "Cancel download?", std::move(opener), {"cancel", "confirm-destructive"}, 0, true};
@@ -3009,9 +3015,9 @@ void Simulation::NotifyMoveRefused(GameId id, const std::string& reason) {
     rebuild_view();
 }
 
-void Simulation::NotifyUpdateRefused(GameId id, const std::string& reason) {
+void Simulation::NotifyUpdateRefused(GameId id, const std::string& reason, const std::string& title) {
     const auto* game = find_game(state_, id);
-    push_notice({"update-" + ToKey(id), "Can't update", "", false, kLiveNoticeSeconds * 2, true,
+    push_notice({"update-" + ToKey(id), title, "", false, kLiveNoticeSeconds * 2, true,
                  (game ? game->title : std::string("A game")) + " · " + reason, false});
     rebuild_view();
 }
@@ -3883,12 +3889,21 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
                 continue;
             }
             const bool update = live_update_jobs_.contains(id);
+            // A Workshop items job leaves the game's own update as it was. Its listing is read again, so Game actions
+            // counts the items as they are now.
+            const bool workshop = live_workshop_jobs_.contains(id);
+            if (workshop) {
+                workshop_items_.erase(id);
+                if (std::find(workshop_requests_.begin(), workshop_requests_.end(), id) == workshop_requests_.end())
+                    workshop_requests_.push_back(id);
+            }
             if (update && canceled_updates_.erase(id)) continue;
             push_notice({"install-" + ToKey(id),
-                         live_dlc_jobs_.contains(id) ? "DLC changed" : update ? "Update complete" : "Download complete", "", false,
+                         workshop ? "Workshop items changed" : live_dlc_jobs_.contains(id) ? "DLC changed"
+                                  : update ? "Update complete" : "Download complete", "", false,
                          kLiveNoticeSeconds, false, title(id)});
             // What Steam said about the update is answered: the details page asks again.
-            if (update) {
+            if (update && !workshop) {
                 if (auto* game = const_cast<Game*>(find_game(state_, id))) game->update = {};
                 set_saved_update(id, {});
             }
@@ -3899,7 +3914,8 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
             // The queue carries on with the next game and Downloads keeps the failure with Resume, so the
             // player is told in a corner instead of a dialog that stops what they are doing.
             push_notice({"install-" + ToKey(job.game_id),
-                         job.move ? "Move failed" : job.dlc_change ? "DLC change failed" : job.update ? "Update failed" : "Download failed", "", false,
+                         job.move ? "Move failed" : job.workshop_change ? "Workshop items failed"
+                         : job.dlc_change ? "DLC change failed" : job.update ? "Update failed" : "Download failed", "", false,
                          kLiveNoticeSeconds * 2, true,
                          title(job.game_id) + (job.failure.empty() ? std::string() : " · " + job.failure), false});
         }
@@ -3920,10 +3936,12 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
     live_job_states_ = std::move(job_states);
     live_update_jobs_.clear();
     live_dlc_jobs_.clear();
+    live_workshop_jobs_.clear();
     live_move_jobs_.clear();
     for (const auto& job : jobs) {
         if (job.update) live_update_jobs_.insert(job.game_id);
         if (job.update && job.dlc_change) live_dlc_jobs_.insert(job.game_id);
+        if (job.update && job.workshop_change) live_workshop_jobs_.insert(job.game_id);
         if (job.move) live_move_jobs_.insert(job.game_id);
     }
     std::erase_if(canceled_updates_, [this](GameId id) { return !live_update_jobs_.contains(id); });
@@ -3952,9 +3970,10 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
         // "Changing DLC".
         job.update = live_job.update;
         job.dlc_change = live_job.dlc_change;
+        job.workshop_change = live_job.workshop_change;
         job.locked = live_job.locked;
         if (live_job.update) {
-            job.stage_text = live_job.dlc_change ? "Changing DLC" : "Updating";
+            job.stage_text = live_job.workshop_change ? "Workshop items" : live_job.dlc_change ? "Changing DLC" : "Updating";
             if (live_job.state == JobState::Downloading && live_job.checking_files) job.state_text = "Checking files";
             else if (live_job.state == JobState::Downloading && live_job.applying) job.state_text = "Applying";
         }
@@ -4676,6 +4695,193 @@ void Simulation::open_manage_dlc(GameId id) {
     open_modal({"manage-dlc", "Manage DLC", state_.navigation.focus_key, std::move(actions), sections ? 1 : 0, false});
 }
 
+const LiveWorkshopItems* Simulation::workshop_listing(GameId id) const {
+    const auto found = workshop_items_.find(id);
+    // A listing read under another account is that account's subscriptions.
+    if (found == workshop_items_.end() || found->second.first != state_.account_generation) return nullptr;
+    return &found->second.second;
+}
+
+namespace {
+// Legacy items don't download and hand-placed ones are never touched; an unsubscribed item isn't the player's choice
+// (the job removes it, or keeps it while Steam's list was cut short).
+bool WorkshopItemChoosable(const LiveWorkshopItem& item) {
+    return item.subscribed && item.on_action != item.off_action && item.on_action != WorkshopItemAction::SkipLegacy &&
+           item.on_action != WorkshopItemAction::SkipHandPlaced;
+}
+}  // namespace
+
+bool Simulation::workshop_item_toggles(const LiveWorkshopItem& item, bool online) {
+    // Online: Steam installs every item the account subscribes to.
+    return !online && WorkshopItemChoosable(item);
+}
+
+bool Simulation::workshop_item_on(const LiveWorkshopItem& item, bool online) const {
+    // Online: every item takes the action the job takes with nothing off, whatever was chosen in Offline emulation (an
+    // unsubscribed item a cut-short list doesn't name is kept, not deleted).
+    if (online) return true;
+    if (!WorkshopItemChoosable(item)) return item.on;
+    const auto chosen = workshop_choice_.find(item.id);
+    return chosen != workshop_choice_.end() ? chosen->second : item.on;
+}
+
+WorkshopItemAction Simulation::workshop_item_action(const LiveWorkshopItem& item, bool on) {
+    return on ? item.on_action : item.off_action;
+}
+
+Simulation::WorkshopPlan Simulation::workshop_plan(GameId id) const {
+    WorkshopPlan plan;
+    const auto* listing = workshop_listing(id);
+    if (!listing || !listing->error.empty()) return plan;
+    // Online has no choice: Apply downloads every subscription, and the saved choice it sends lists nothing.
+    const bool online = workshop_mode(id) == "online";
+    // The saved choice of items the sheet doesn't list stays only while the list is cut short (an item past it
+    // keeps its choice). A whole list names every subscription and every item Playden holds: a choice for any
+    // other item (unsubscribed, never downloaded) goes, so the saved choice doesn't grow past its cap.
+    std::set<std::uint64_t> off;
+    if (!online) off.insert(listing->saved_off.begin(), listing->saved_off.end());
+    if (!listing->truncated)
+        std::erase_if(off, [listing](std::uint64_t id) {
+            return std::none_of(listing->items.begin(), listing->items.end(),
+                                [id](const LiveWorkshopItem& item) { return item.id == id; });
+        });
+    for (const auto& item : listing->items) {
+        const bool on = workshop_item_on(item, online);
+        if (item.subscribed && !online) {
+            if (on) off.erase(item.id);
+            else off.insert(item.id);
+        }
+        const auto bytes = on ? item.on_bytes : item.off_bytes;
+        switch (workshop_item_action(item, on)) {
+            case WorkshopItemAction::Download: ++plan.downloads; plan.download_bytes += bytes; break;
+            case WorkshopItemAction::Update: ++plan.updates; plan.download_bytes += bytes; break;
+            case WorkshopItemAction::Remove: ++plan.removals; plan.freed_bytes += bytes; break;
+            default: break;
+        }
+    }
+    plan.off.assign(off.begin(), off.end());
+    plan.choice_changed = !online && plan.off != listing->saved_off;
+    return plan;
+}
+
+std::string Simulation::workshop_blocker(GameId id) const {
+    if (!find_installation(state_, id)) return "Not installed";
+    // Its job, an uninstall, a preparation or the game running.
+    return installed_blocker(id);
+}
+
+bool Simulation::workshop_offered(GameId id) const {
+    // Installed Steam games; an imported game's folder is not Steam's.
+    return id.store == Store::kSteam && find_installation(state_, id) != nullptr && external_game(id) == nullptr;
+}
+
+std::string Simulation::workshop_mode(GameId id) const {
+    rt::EffectiveSettings values;
+    if (!EffectiveSettingsFor(id, &values)) return {};
+    const auto& features = values.values["steam_features"].value;
+    if (rt::OnlineSteamEnabled() && features == "online") {
+        // Valve's client keeps the items only for a game in the bottle's Steam library (RuntimeHost, appworkshop file).
+        const auto library = values.values.find("steam_library_path");
+        return library != values.values.end() && library->second.available && library->second.value == "steam"
+                   ? "online" : "online-library";
+    }
+    return features == "game" ? "game" : std::string();
+}
+
+std::string Simulation::workshop_library_hint() const {
+    const auto* library = rt::FindSetting("steam_library_path");
+    return "In Online, Workshop items need Game settings › " + (library ? library->label : std::string("Steam library folder")) +
+           " set to " + (library ? choice_label(*library, "steam") : std::string("Steam's folder")) + ".";
+}
+
+std::vector<std::string> Simulation::workshop_sheet_actions(GameId id) const {
+    std::vector<std::string> actions;
+    const auto* listing = workshop_listing(id);
+    if (!listing || workshop_loading_.contains(id)) {
+        actions.push_back("workshop-loading");
+    } else if (!listing->error.empty()) {
+        actions.push_back("workshop-error");
+        actions.push_back("workshop-retry");
+    } else if (listing->items.empty()) {
+        actions.push_back("workshop-empty");
+    } else {
+        for (const auto& item : listing->items) actions.push_back("workshop-item-" + std::to_string(item.id));
+        actions.push_back("divider");
+        actions.push_back("workshop-apply");
+    }
+    actions.push_back("cancel");
+    return actions;
+}
+
+void Simulation::open_workshop_items(GameId id) {
+    workshop_choice_.clear();
+    if (live()) {
+        // Read again each time: subscriptions change on the Steam website or app.
+        workshop_loading_.insert(id);
+        workshop_requests_.push_back(id);
+    } else if (!workshop_listing(id)) {
+        workshop_items_[id] = {state_.account_generation, fixture_workshop_items(id)};
+    }
+    open_modal({"workshop-items", "Workshop items", state_.navigation.focus_key, workshop_sheet_actions(id), 0, false});
+}
+
+void Simulation::refresh_workshop_sheet() {
+    if (state_.navigation.modals.empty() || state_.navigation.modals.back().id != "workshop-items") return;
+    auto& modal = state_.navigation.modals.back();
+    const auto prior = modal.action_keys.empty() ? std::string{} : modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
+    modal.action_keys = workshop_sheet_actions(state_.navigation.selected_game_id);
+    const auto found = std::find(modal.action_keys.begin(), modal.action_keys.end(), prior);
+    int focused = found == modal.action_keys.end() ? 0 : static_cast<int>(found - modal.action_keys.begin());
+    const int last = static_cast<int>(modal.action_keys.size()) - 1;
+    while (found == modal.action_keys.end() && focused < last && SheetDecoration(modal.action_keys[static_cast<std::size_t>(focused)]))
+        ++focused;
+    modal.focused_action = focused;
+    state_.navigation.focus_key = modal.action_keys[static_cast<std::size_t>(focused)];
+}
+
+std::vector<GameId> Simulation::TakeWorkshopRequests() {
+    std::vector<GameId> requests;
+    requests.swap(workshop_requests_);
+    return requests;
+}
+
+void Simulation::UpdateWorkshopItems(LiveWorkshopItems listing) {
+    const auto id = listing.game_id;
+    if (!id.valid()) return;
+    workshop_loading_.erase(id);
+    workshop_items_[id] = {state_.account_generation, std::move(listing)};
+    // Choices for items the new listing doesn't toggle any more are dropped: the open sheet's own, only. A listing
+    // for another game (one a finished job asked for) leaves the choice alone.
+    const bool open = !state_.navigation.modals.empty() && state_.navigation.modals.back().id == "workshop-items" &&
+                      state_.navigation.selected_game_id == id;
+    const bool online = open && workshop_mode(id) == "online";
+    if (open) std::erase_if(workshop_choice_, [this, id, online](const auto& choice) {
+        const auto* known = workshop_listing(id);
+        return !known || std::none_of(known->items.begin(), known->items.end(), [&choice, online](const LiveWorkshopItem& item) {
+                   return item.id == choice.first && workshop_item_toggles(item, online);
+               });
+    });
+    if (state_.navigation.selected_game_id == id) refresh_workshop_sheet();
+    rebuild_view();
+}
+
+LiveWorkshopItems Simulation::fixture_workshop_items(GameId id) const {
+    using A = WorkshopItemAction;
+    LiveWorkshopItems listing;
+    listing.game_id = id;
+    listing.items = {
+        {3'100'000'001, "Extra Characters Pack", 48'000'000, true, true, A::Keep, A::Remove, 0, 47'500'000},
+        {3'100'000'002, "Better Shops", 3'200'000, true, true, A::Update, A::Remove, 3'200'000, 3'100'000},
+        {3'100'000'003, "Endless Mode Tweaks", 1'100'000, true, true, A::Download, A::SkipOff, 1'100'000, 0},
+        {3'100'000'004, "Retro Palette", 12'400'000, true, false, A::Download, A::SkipOff, 12'400'000, 0},
+        {3'100'000'005, "Old Map Pack", 9'000'000, true, true, A::SkipLegacy, A::SkipOff, 0, 0},
+        {3'100'000'006, "Hand-Placed Mod", 700'000, true, true, A::SkipHandPlaced, A::SkipOff, 0, 0},
+        {3'100'000'007, "Removed From Steam", 2'000'000, false, true, A::Remove, A::Remove, 2'000'000, 2'000'000},
+    };
+    listing.saved_off = {3'100'000'004};
+    return listing;
+}
+
 void Simulation::ResetSizeChecks() {
     size_checks_.clear();
     size_checks_running_.clear();
@@ -4772,7 +4978,10 @@ namespace {
 // What Play says while the game's update or move holds it.
 std::string held_play_text(const State& state, GameId id) {
     const bool move = std::any_of(state.jobs.begin(), state.jobs.end(), [id](const Job& job) { return job.game_id == id && job.move; });
-    return move ? "Moving…" : "Finishing the update…";
+    const bool workshop = std::any_of(state.jobs.begin(), state.jobs.end(), [id](const Job& job) {
+        return job.game_id == id && job.workshop_change;
+    });
+    return move ? "Moving…" : workshop ? "Changing Workshop items…" : "Finishing the update…";
 }
 }  // namespace
 
@@ -7037,6 +7246,23 @@ bool Simulation::scenario(const std::string& name) {
         state_.navigation.focus_key = "details-more";
         open_game_actions();
         state_.navigation.focus_key = "manage-dlc";
+    } else if (name == "workshop-items") {
+        // An installed Steam game's Game actions with Workshop items; the fixture's listing has an item in each state.
+        // Its Steam features stay the game's own files, so the sheet says what to set. Replay "action cross" for it.
+        const auto id = GameId::Steam(900001);
+        state_.account().authentication = AuthState::SignedIn;
+        state_.navigation.modals.clear();
+        std::erase_if(state_.jobs, [id](const Job& job) { return job.game_id == id; });
+        if (auto* game = const_cast<Game*>(find_game(state_, id))) game->update = {};
+        if (auto* installation = find_installation(state_, id)) installation->runtime_ready = true;
+        workshop_items_[id] = {state_.account_generation, fixture_workshop_items(id)};
+        state_.navigation.route = Route::Details;
+        state_.navigation.detail_origin = Route::Library;
+        state_.navigation.detail_id = id;
+        state_.navigation.selected_game_id = id;
+        state_.navigation.focus_key = "details-more";
+        open_game_actions();
+        state_.navigation.focus_key = "workshop-items";
     } else if (name == "install-options") {
         // The install sheet of a game in several languages and versions, with owned DLC: its Version,
         // Language and Includes rows.
@@ -7793,6 +8019,40 @@ void Simulation::rebuild_view() {
                                        manage_dlc_short_of_room(id)});
             if (plan.turned_off) view_.facts.push_back({"Frees", "About " + format_bytes(plan.freed_bytes)});
         }
+        if (modal.id == "workshop-items") {
+            // What Apply does, and what the game's Steam features make of the items.
+            const auto id = state_.navigation.selected_game_id;
+            const auto* listing = workshop_listing(id);
+            const auto plan = workshop_plan(id);
+            const auto mode = workshop_mode(id);
+            const auto* online = rt::FindSetting("steam_features");
+            std::string warning;
+            if (listing && listing->error.empty() && !listing->items.empty() && !workshop_loading_.contains(id)) {
+                if (mode == "game")
+                    warning = "Games that ask Steam for their items need Steam features set to " +
+                              (online ? choice_label(*online, "emulate") : std::string("Offline emulation")) + ".";
+                else if (mode == "online")
+                    warning = "In Online, Steam installs every item you subscribe to. Unsubscribe on Steam to remove one.";
+                else if (mode == "online-library") warning = workshop_library_hint();
+            }
+            // The head has room for two figures, or for one and a sentence: a warning keeps one figure.
+            if (warning.empty()) {
+                if (plan.download_bytes) view_.facts.push_back({"Download", "About " + format_bytes(plan.download_bytes)});
+                if (plan.freed_bytes) view_.facts.push_back({"Frees", "About " + format_bytes(plan.freed_bytes)});
+            } else if (plan.download_bytes) {
+                view_.facts.push_back({"Download", "About " + format_bytes(plan.download_bytes) +
+                                                       (plan.freed_bytes ? " · frees " + format_bytes(plan.freed_bytes) : std::string())});
+            } else if (plan.freed_bytes) {
+                view_.facts.push_back({"Frees", "About " + format_bytes(plan.freed_bytes)});
+            }
+            if (workshop_loading_.contains(id) || !listing) view_.subtitle = "Asking Steam for the items you subscribed to.";
+            else if (!listing->error.empty()) view_.subtitle = listing->error;
+            else if (listing->items.empty())
+                view_.subtitle = "Subscribe to items on the Steam website or in the Steam app, then open this again.";
+            else if (!warning.empty()) view_.subtitle = warning;
+            else if (view_.facts.empty())
+                view_.subtitle = "Items you turn on download into the game; the files of items you turn off are deleted.";
+        }
         if (modal.id == "install-language")
             view_.subtitle = "For this game only. New downloads of other games stay in " +
                              playden::steam::LanguageName(state_.content_language) + ".";
@@ -7926,6 +8186,12 @@ void Simulation::rebuild_view() {
         const auto summary = [&]() -> const std::vector<SettingsSummaryLine>& {
             if (!summary_lines) summary_lines = settings_summary(settings_game);
             return *summary_lines;
+        };
+        // Whether the Workshop items sheet's game is set to Online, worked out once for its rows.
+        std::optional<bool> workshop_online_value;
+        const auto workshop_online = [&] {
+            if (!workshop_online_value) workshop_online_value = workshop_mode(state_.navigation.selected_game_id) == "online";
+            return *workshop_online_value;
         };
         for (const auto& action_key : modal.action_keys) {
             auto& item = row(action_key, RowKind::Action, action_label(action_key), action_key);
@@ -8150,6 +8416,63 @@ void Simulation::rebuild_view() {
                         if (item.selected && !installed) item.subtitle = dlc.free ? "Downloads, and Steam adds it to your account" : "Downloads";
                         else if (!item.selected && installed) item.subtitle = "Its files are deleted";
                     }
+            }
+            // Workshop items: one check box per item, as the bottle holds it until the player turns it; Apply says what
+            // changes. Items that don't download or that the player placed by hand can't be turned.
+            if (modal.id == "workshop-items") {
+                const auto id = state_.navigation.selected_game_id;
+                const auto* listing = workshop_listing(id);
+                if (action_key == "workshop-loading" || action_key == "workshop-error" || action_key == "workshop-empty") {
+                    item.kind = RowKind::Status;
+                    item.enabled = false;
+                    item.title = action_key == "workshop-loading" ? "Getting Workshop items…"
+                                 : action_key == "workshop-error" ? "Could not get Workshop items"
+                                                                  : "No Workshop items";
+                } else if (action_key == "workshop-apply") {
+                    const auto plan = workshop_plan(id);
+                    const auto blocker = workshop_blocker(id);
+                    item.enabled = plan.changed() && blocker.empty();
+                    // Short: Game actions shows it beside the name.
+                    const auto downloads = plan.downloads + plan.updates;
+                    const auto count = [](std::size_t n) { return std::to_string(n) + (n == 1 ? " item" : " items"); };
+                    std::string what;
+                    if (downloads && plan.removals)
+                        what = "Downloads " + std::to_string(downloads) + ", deletes " + std::to_string(plan.removals);
+                    else if (downloads) what = "Downloads " + count(downloads);
+                    else if (plan.removals) what = "Deletes " + count(plan.removals);
+                    if (!blocker.empty()) item.subtitle = blocker;
+                    else if (!plan.changed()) item.subtitle = "Nothing to change";
+                    else item.subtitle = what.empty() ? std::string("Saves your choice") : what;
+                } else if (action_key.rfind("workshop-item-", 0) == 0 && listing) {
+                    const auto item_id = std::strtoull(action_key.c_str() + std::strlen("workshop-item-"), nullptr, 10);
+                    for (const auto& entry : listing->items) {
+                        if (entry.id != item_id) continue;
+                        const bool on = workshop_item_on(entry, workshop_online());
+                        item.title = entry.title.empty() ? "Item " + std::to_string(entry.id) : entry.title;
+                        if (workshop_online()) {
+                            // Steam installs it: a plain row with its size, nothing to turn.
+                            item.kind = RowKind::Status;
+                        } else {
+                            item.kind = RowKind::Toggle;
+                            item.selected = entry.subscribed && on && entry.on_action != WorkshopItemAction::SkipLegacy;
+                            item.enabled = workshop_item_toggles(entry, false);
+                        }
+                        if (entry.file_size) item.value = format_bytes(entry.file_size);
+                        switch (workshop_item_action(entry, on)) {
+                            case WorkshopItemAction::Download: item.subtitle = "Downloads"; break;
+                            case WorkshopItemAction::Update: item.subtitle = "Update available"; break;
+                            case WorkshopItemAction::Remove:
+                                item.subtitle = entry.subscribed ? "Its files are deleted" : "Unsubscribed · Its files are deleted";
+                                break;
+                            case WorkshopItemAction::SkipLegacy: item.subtitle = "Can't be downloaded yet"; break;
+                            case WorkshopItemAction::SkipHandPlaced: item.subtitle = "Placed by hand"; break;
+                            case WorkshopItemAction::Keep:
+                                if (!entry.subscribed) item.subtitle = "Unsubscribed · Kept for now";
+                                break;
+                            case WorkshopItemAction::SkipOff: break;
+                        }
+                    }
+                }
             }
             if (modal.id == "install" && action_key == "install-language") {
                 const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
@@ -8876,6 +9199,34 @@ void Simulation::rebuild_view() {
                 else item.subtitle = "Install DLC you left out or bought later, or remove DLC to free space.";
                 // Game actions shows a value, not the line under the name: why it waits, in short.
                 if (!item.enabled) item.value = blocker == "Playing" ? "Quit the game first" : blocker == "In Queue" ? "Wait for Queue" : blocker;
+            } else if (modal.id == "context" && action_key == "workshop-items") {
+                // The game's Workshop items: what is on of what the player subscribed to, once the sheet read them.
+                if (const auto* listing = workshop_listing(settings_game); listing && listing->error.empty()) {
+                    std::size_t subscribed = 0, on = 0;
+                    const bool online = workshop_mode(settings_game) == "online";
+                    for (const auto& entry : listing->items) {
+                        if (!entry.subscribed) continue;
+                        ++subscribed;
+                        if (entry.on_action != WorkshopItemAction::SkipLegacy && workshop_item_on(entry, online)) ++on;
+                    }
+                    if (subscribed) item.value = std::to_string(on) + " of " + std::to_string(subscribed);
+                }
+                const auto blocker = workshop_blocker(settings_game);
+                const auto* game = find_game(state_, settings_game);
+                const std::string title = game && !game->title.empty() ? game->title : "the game";
+                const auto mode = workshop_mode(settings_game);
+                const auto* online = rt::FindSetting("steam_features");
+                item.enabled = blocker.empty();
+                if (blocker == "Playing") item.subtitle = "Quit " + title + " to change its Workshop items.";
+                else if (blocker == "In Queue") item.subtitle = "Wait for its job in Queue to finish.";
+                else if (!blocker.empty()) item.subtitle = blocker + ".";
+                else if (mode == "game")
+                    item.subtitle = "Games that ask Steam for their items need Steam features set to " +
+                                    (online ? choice_label(*online, "emulate") : std::string("Offline emulation")) + ".";
+                else if (mode == "online") item.subtitle = "In Online, Steam installs every item you subscribe to.";
+                else if (mode == "online-library") item.subtitle = workshop_library_hint();
+                else item.subtitle = "Download the items you subscribed to on Steam.";
+                if (!item.enabled) item.value = blocker == "Playing" ? "Quit the game first" : blocker == "In Queue" ? "Wait for Queue" : blocker;
             } else if (modal.id == "context" && action_key == "game-move") {
                 // The game's move to another drive: the same Queue job as the Move tab's.
                 const auto* installation = find_installation(state_, settings_game);
@@ -9379,6 +9730,9 @@ void Simulation::rebuild_view() {
         else if (modal.id == "content-language") view_.legends = {"Cross Use this language", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "install-dlc") view_.legends = {"Cross Turn on or off", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "manage-dlc") view_.legends = {"Cross Turn on or off", "L1/R1 Jump", "Circle Cancel"};
+        else if (modal.id == "workshop-items")
+            view_.legends = {workshop_mode(state_.navigation.selected_game_id) == "online" ? "Cross Select" : "Cross Turn on or off",
+                             "L1/R1 Jump", "Circle Cancel"};
         else if (modal.id == "invite-friends") view_.legends = {"Cross Select", "Circle Cancel"};
         else if (modal.id == "install-language") view_.legends = {"Cross Use this language", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "filter-compat" || modal.id == "filter-store") view_.legends = {"Cross Choose", "Circle Back"};
@@ -9643,7 +9997,8 @@ void Simulation::rebuild_view() {
                 if (job->state == JobState::Downloading && job->state_text.empty() && job->total_bytes > 0)
                     progress = std::to_string(static_cast<int>(100.0 * static_cast<double>(job->completed_bytes) /
                                                                static_cast<double>(job->total_bytes))) + "%";
-                auto& note = row("details-updating", RowKind::Status, job->dlc_change ? "Changing DLC" : "Updating", "");
+                auto& note = row("details-updating", RowKind::Status,
+                                 job->workshop_change ? "Workshop items" : job->dlc_change ? "Changing DLC" : "Updating", "");
                 note.value = progress;
                 if (!job->failure.empty()) note.subtitle = job->failure;
                 note.enabled = false;
@@ -12351,7 +12706,8 @@ void Simulation::activate() {
                 return action.rfind("job-pause-", 0) == 0 || action.rfind("job-cancel-", 0) == 0;
             });
         actions.push_back("logs"); actions.push_back("cancel");
-        open_modal({"job-actions", job && job->move ? "Move actions" : job && job->update ? "Update actions" : "Download actions",
+        open_modal({"job-actions", job && job->move ? "Move actions" : job && job->workshop_change ? "Workshop items"
+                                   : job && job->update ? "Update actions" : "Download actions",
                     selected.key, std::move(actions), 0, false});
     } else if (action_name == "details-prepare-next") {
         prepare_next(selected.game_id);
@@ -13475,6 +13831,43 @@ void Simulation::activate() {
         const auto offered = manage_dlc(game);
         if (std::any_of(offered.begin(), offered.end(), [&manage_app](const GameDlc& dlc) { return dlc.id == *manage_app; }))
             manage_dlc_choice_[*manage_app] = !manage_dlc_on(game, *manage_app);
+    } else if (action_name == "workshop-items") {
+        const auto game = state_.navigation.selected_game_id;
+        if (workshop_offered(game) && workshop_blocker(game).empty()) open_workshop_items(game);
+    } else if (action_name == "workshop-retry") {
+        const auto game = state_.navigation.selected_game_id;
+        if (live() && !workshop_loading_.contains(game)) {
+            workshop_loading_.insert(game);
+            workshop_requests_.push_back(game);
+            refresh_workshop_sheet();
+        }
+    } else if (action_name == "workshop-apply") {
+        const auto game = state_.navigation.selected_game_id;
+        const auto plan = workshop_plan(game);
+        if (!plan.changed() || !workshop_blocker(game).empty()) return;
+        if (live()) {
+            // Always the whole choice: it replaces a saved one, also one that can't be read.
+            InstallRequest request{InstallRequestKind::ChangeWorkshop, game};
+            // Online: every item, and the choice saved for Offline emulation stays.
+            request.workshop_all = workshop_mode(game) == "online";
+            if (!request.workshop_all) request.workshop_off = plan.off;
+            pending_install_requests_.push_back(std::move(request));
+            workshop_items_.erase(game);
+        }
+        workshop_choice_.clear();
+        while (!state_.navigation.modals.empty()) close_modal();
+        const auto* known = find_game(state_, game);
+        push_notice({"update-" + ToKey(game), "Workshop items queued", "", false, kLiveNoticeSeconds, false,
+                     live() ? (known && !known->title.empty() ? known->title : std::string("The game")) + " · Follow it in Queue"
+                            : std::string("Fixture: nothing downloads")});
+    } else if (action_name.rfind("workshop-item-", 0) == 0) {
+        const auto game = state_.navigation.selected_game_id;
+        const auto item_id = std::strtoull(action_name.c_str() + std::strlen("workshop-item-"), nullptr, 10);
+        if (const auto* listing = workshop_listing(game)) {
+            const bool online = workshop_mode(game) == "online";
+            for (const auto& entry : listing->items)
+                if (entry.id == item_id && workshop_item_toggles(entry, online)) workshop_choice_[entry.id] = !workshop_item_on(entry, online);
+        }
     } else if (action_name == "game-move") {
         const auto game = state_.navigation.selected_game_id;
         if (move_blocker(game, {}).empty() && move_volumes().size() >= 2) open_move_picker(game);
@@ -14593,6 +14986,7 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
               state_.navigation.modals.back().id == "install-language" ||
               state_.navigation.modals.back().id == "install-dlc" ||
               state_.navigation.modals.back().id == "manage-dlc" ||
+              state_.navigation.modals.back().id == "workshop-items" ||
               state_.navigation.modals.back().id == "install-version" ||
               state_.navigation.modals.back().id == "button-mapping" || state_.navigation.modals.back().id == "controller-tuning" ||
               !state_.navigation.modals.back().setting_id.empty()))
@@ -16871,6 +17265,8 @@ std::vector<std::string> Simulation::details_context_actions() const {
     if (cancelable_download(selected)) actions.push_back("cancel-download");
     // Its DLC can be installed or removed later (Manage DLC).
     if (set_up && manage_dlc_offered(selected)) actions.push_back("manage-dlc");
+    // A Steam game's Workshop items: the player's subscriptions, downloaded into its bottle (#856).
+    if (set_up && workshop_offered(selected)) actions.push_back("workshop-items");
     // The game's saves in the Saves tab; only a store with cloud saves has the link (imported and GOG games have none).
     if (live() && is_installed(state_, selected) && Traits(selected.store).cloud_saves) actions.push_back("manage-saves");
     // An installed game can move to another drive; imported games have Copy or Move into Playden instead.

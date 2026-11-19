@@ -33,6 +33,7 @@
 #include "steam/backend/collections_client.h"
 #include "steam/backend/entitled_library.h"
 #include "steam/backend/steam_install_runner.h"
+#include "steam/backend/workshop_listing_service.h"
 #include "steam/backend/steam_cloud_runner.h"
 #include "steam/backend/library_client.h"
 #include "steam/local_session_repository.h"
@@ -502,6 +503,9 @@ int main(int argc, char** argv) {
     std::unique_ptr<playden::LocalSessionRepository> servers_sessions;
     std::unique_ptr<playden::steam::CdnDownloadServerSource> servers_source;
     std::unique_ptr<playden::steam::DownloadServerService> servers;
+    // The Workshop items sheet's listings (#856). The Mac has no bottles: every listing says so.
+    std::unique_ptr<playden::LocalSessionRepository> workshop_sessions;
+    std::unique_ptr<playden::steam::WorkshopListingService> workshop_listing;
     // Steam friends, online-steam only.
     std::unique_ptr<playden::steam::CmClient> friends_cm;
     std::unique_ptr<playden::LocalSessionRepository> friends_sessions;
@@ -790,6 +794,15 @@ int main(int argc, char** argv) {
             return newest ? *newest->id.steam_app() : 0u;
         });
         servers = std::make_unique<playden::steam::DownloadServerService>(*servers_source, *servers_sessions);
+        workshop_sessions = std::make_unique<playden::LocalSessionRepository>(options->data_directory.string(), playden::LocalSessionRepository::DiagnosticReport{}, session_vault.get());
+        {
+            playden::steam::WorkshopListingConfig workshop_config;
+            workshop_config.bottle = [](std::uint32_t) -> std::optional<std::string> { return std::nullopt; };
+            workshop_config.log = [log_directory](const std::string& line) {
+                playden::app::AppendLogLine(log_directory, "install.log", line);
+            };
+            workshop_listing = std::make_unique<playden::steam::WorkshopListingService>(*workshop_sessions, std::move(workshop_config));
+        }
         servers->SetLog([log_directory](std::uint32_t app, const char* step, const char* category, const char* detail) {
             char line[640];
             std::snprintf(line, sizeof(line), "app=%u step=%s result=%s detail=%s", app, step, category, detail);
@@ -869,6 +882,7 @@ int main(int argc, char** argv) {
                                                                    cloud.get(), nullptr, auth_log);
         services->SetLocalLibrary(local);
         services->SetDownloadServers(servers.get());
+        services->SetWorkshopListing(workshop_listing.get());
         if (gog) gog->Attach(*services);
         services->SetFriends(friends.get());
         {
@@ -1121,6 +1135,7 @@ int main(int argc, char** argv) {
     // `installs`): its copy runner's change callback calls into the Local store. Explicit here, so
     // it doesn't rest on the controller's shutdown or on declaration order.
     if (servers) servers->Shutdown();
+    if (workshop_listing) workshop_listing->Shutdown();
     if (installs) installs->Shutdown();
     if (copy_runner) copy_runner->SetChanged({});
     if (artwork) artwork->Shutdown();

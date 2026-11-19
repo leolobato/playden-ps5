@@ -2701,6 +2701,142 @@ void SteamGameShownInSteamLibrary() {
   }
 }
 
+// Workshop items (#856) with Steam features = Online: Valve's client keeps them only once its appworkshop file lists them
+// as installed, so Play adds every item Playden holds there, turned off or not (Steam installs every subscription), while
+// the game is in the bottle's Steam library. Playden's own folder for the game, or Offline emulation, leaves the file
+// alone.
+void OnlineWorkshopItemsReachSteamsFile() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  auto kit = SyntheticKit(fixture.root / "kit");
+  kit.capabilities.push_back(kKitHelperProcess);
+  kit.capabilities.push_back(kKitSteamLibraryPath);
+  std::sort(kit.capabilities.begin(), kit.capabilities.end());
+  const auto client_zip = playden::test::StoredZip({{"steamclient64.dll", "MZ valve steamclient64"}});
+  const std::string client_manifest = "\"win64\"\n{\n\t\"version\"\t\"1792618285\"\n\t\"bins_win64\"\n\t{\n\t\t\"file\"\t\"bins_win64.zip.t\"\n"
+                                      "\t\t\"size\"\t\"" + std::to_string(client_zip.size()) + "\"\n\t\t\"sha2\"\t\"" +
+                                      *HashArtifactBytes(client_zip) + "\"\n\t}\n}\n";
+  config.fetch_text = [&](const std::string&, std::size_t, const std::atomic<bool>&, std::string*) -> std::optional<std::string> {
+    return client_manifest;
+  };
+  config.fetch_range = [&](const std::string&, std::uint64_t offset, std::uint64_t length, const std::atomic<bool>&,
+                           std::string*) -> std::optional<std::string> { return client_zip.substr(offset, length); };
+  config.online_session = []() -> std::optional<OnlineSession> {
+    OnlineSession session;
+    session.steam_id = 76561198000000001ull;
+    session.account_name = "player";
+    session.refresh_token = "eyJ.token";
+    session.login_id = 5;
+    return session;
+  };
+  std::mutex log_mutex;
+  std::vector<std::string> lines;
+  config.log = [&](const std::string& line) { std::lock_guard<std::mutex> lock(log_mutex); lines.push_back(line); };
+  const auto workshop_lines = [&] {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    std::vector<std::string> found;
+    for (const auto& line : lines)
+      if (line.rfind("steamworks app=4250 workshop", 0) == 0) found.push_back(line);
+    return found;
+  };
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-0000000000") + (uuids < 10 ? "0" : "") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  config.session_data_root = fixture.root / "data";
+  config.steamworks_dir = (fs::path(g_runtime_dir) / "steamworks").string();
+  config.launch_title = [](const std::string&, const std::vector<std::string>&) { return TitleResult{true, 0, "launch"}; };
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/4250";
+  Write(game / "Bin/Game.exe", pe, 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  std::mutex settings_mutex;
+  GameSettingsRecord saved;
+  saved.overrides = {{"default.steam_library_path", "steam"}, {"steam_features", "online"}};
+  config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    return saved;
+  };
+  const auto set = [&](const char* key, const char* value) {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    saved.overrides[key] = value;
+  };
+  RuntimePrepareRequest request{4250, "/data/homebrew/FAKE77031/games/4250", "internal", "Named Game"};
+  request.launches = {{"", "", "Bin/Game.exe", "", ""}};
+  request.steam_install_dir = "The Named Game";
+  RuntimeHost host(config);
+  host.SetSteamAccount("player", 76561198000000001ull);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(request);
+  const auto ready = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(4250) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  if (ready.refusals.count(4250)) std::fprintf(stderr, "Prepare refused: %s\n", ready.refusals.at(4250).c_str());
+  CHECK(ready.installs.size() == 1 && ready.installs[0].state == PreparationState::kReady);
+  // No Workshop folder: nothing to say.
+  CHECK(workshop_lines().empty());
+  fs::path bottle;
+  for (const auto& entry : fs::recursive_directory_iterator(fixture.root / "data/playden/games"))
+    if (entry.path().filename() == "user.reg") bottle = entry.path().parent_path();
+  CHECK(!bottle.empty());
+  const auto workshop = bottle / "drive_c/Program Files (x86)/Steam/steamapps/workshop";
+  const auto acf = workshop / "appworkshop_4250.acf";
+  // 111 on, 222 turned off (Online installs it anyway), 333 not downloaded yet, 444 held but its folder is gone.
+  Write(workshop / "content/4250/111/mod.pck", "pck", 0644);
+  Write(workshop / "content/4250/222/mod.pck", "pck", 0644);
+  Write(workshop / ".playden-workshop-4250",
+        "item=111,5,1700000000,2048,on,A mod\nitem=222,6,1700000001,10,off,Off mod\n"
+        "item=333,0,1700000002,10,on,Not downloaded\nitem=444,8,1700000003,10,on,Gone\n", 0644);
+  const auto apply = [&]() {
+    const auto before = host.Snapshot().maintenance_handled;
+    host.Maintain(4250, RuntimeMaintenance::kApplySettings);
+    const auto done = WaitFor(host, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
+    if (!done.maintenance.at(4250).ok) std::fprintf(stderr, "Apply: %s\n", done.maintenance.at(4250).message.c_str());
+    CHECK(done.maintenance.at(4250).ok);
+  };
+  apply();
+  auto text = Read(acf);
+  CHECK(text.rfind("\"AppWorkshop\"\n{\n\t\"appid\"\t\t\"4250\"\n\t\"SizeOnDisk\"\t\t\"2058\"\n", 0) == 0);
+  CHECK(text.find("\t\t\"111\"\n\t\t{\n\t\t\t\"size\"\t\t\"2048\"\n\t\t\t\"timeupdated\"\t\t\"1700000000\"\n"
+                  "\t\t\t\"manifest\"\t\t\"5\"\n") != std::string::npos);
+  CHECK(text.find("\t\t\"222\"\n") != std::string::npos);
+  CHECK(text.find("\"333\"") == std::string::npos && text.find("\"444\"") == std::string::npos);
+  CHECK(text.find("\"NeedsDownload\"\t\t\"0\"") != std::string::npos);
+  CHECK(workshop_lines() == std::vector<std::string>{"steamworks app=4250 workshop acf=written items=2"});
+  // The next start finds them listed.
+  apply();
+  CHECK(Read(acf) == text && workshop_lines().back() == "steamworks app=4250 workshop acf=unchanged items=2");
+  // Playden's own folder for the game: the client doesn't keep its items in the bottle's library; the file stays out.
+  fs::remove(acf);
+  set("steam_library_path", "playden");
+  apply();
+  CHECK(!fs::exists(acf) && workshop_lines().back() == "steamworks app=4250 workshop acf=skipped library=playden items=2");
+  // Offline emulation hands the items to gbe_fork instead.
+  set("steam_library_path", "steam");
+  set("steam_features", "emulate");
+  const auto said = workshop_lines().size();
+  apply();
+  CHECK(!fs::exists(acf));
+  const auto after = workshop_lines();
+  CHECK(std::none_of(after.begin() + static_cast<std::ptrdiff_t>(said), after.end(),
+                     [](const std::string& line) { return line.find("workshop acf") != std::string::npos; }));
+  host.Shutdown();
+}
+
 // A game set up before Playden's defaults for its engine changed takes the new ones on the next Play: its saved
 // recipe is refreshed and its title published again, with no Recreate bottle, and a player's extra arguments stay.
 // A game with no saved settings takes them too (1). Settings older than the title's can't be published, so the recipe
@@ -4505,6 +4641,57 @@ void LocalGameSteamworksAppId() {
   // The next start finds the client in place.
   apply();
   CHECK(logged("steamworks app=" + std::to_string(number) + " mode=steamclient found=1 changed=- client=kept"));
+  // Workshop items (#856): the ones turned on, whose folder is in the bottle, reach gbe_fork as mods.json beside the
+  // client, or beside the emulated DLL; any other mode takes Playden's file away.
+  {
+    const auto workshop = bottle / "drive_c/Program Files (x86)/Steam/steamapps/workshop";
+    Write(workshop / "content/4000/111/mod.pck", "pck", 0644);
+    Write(workshop / "content/4000/222/mod.pck", "pck", 0644);
+    Write(workshop / ".playden-workshop-4000",
+          "item=111,5,1700000000,2048,on,A \"quoted\" mod\nitem=222,6,1700000001,10,off,Off mod\n"
+          "item=333,7,1700000002,10,on,Not downloaded\n", 0644);
+    const auto client_mods = client / "steam_settings/mods.json";
+    const auto game_mods = game / "Bin/steam_settings/mods.json";
+    apply();
+    auto text = Read(client_mods);
+    CHECK(text.find("\"111\": {") != std::string::npos && text.find("\"title\": \"A \\\"quoted\\\" mod\"") != std::string::npos);
+    CHECK(text.find("C:\\\\Program Files (x86)\\\\Steam\\\\steamapps\\\\workshop\\\\content\\\\4000\\\\111\"") !=
+          std::string::npos);
+    CHECK(text.find("\"222\"") == std::string::npos && text.find("\"333\"") == std::string::npos);
+    CHECK(fs::exists(client / "steam_settings/.playden-mods") && !fs::exists(game_mods));
+    CHECK(logged("steamworks app=" + std::to_string(number) +
+                 " workshop mods mode=steamclient items=1 missing=1 hand_placed=0 written=1"));
+    // Emulation: beside the game's DLL, and gone from the client's folder.
+    set_features("emulate");
+    apply();
+    CHECK(Read(game_mods) == text && !fs::exists(client_mods) && !fs::exists(client / "steam_settings/.playden-mods"));
+    CHECK(fs::exists(game / "Bin/steam_settings/.playden-mods"));
+    // A hand-placed folder in the emulator's settings stays listed beside the items.
+    fs::create_directories(game / "Bin/steam_settings/mods/987");
+    apply();
+    CHECK(Read(game_mods).find("\"987\": {}") != std::string::npos);
+    // A state file Playden can't read hands over nothing; the game still starts.
+    Write(workshop / ".playden-workshop-4000", "not a state file\n", 0644);
+    apply();
+    CHECK(!fs::exists(game_mods) && fs::is_directory(game / "Bin/steam_settings/mods/987"));
+    CHECK(logged("steamworks app=" + std::to_string(number) +
+                 " workshop mods mode=emulate items=0 missing=0 hand_placed=0 state=unreadable removed=1"));
+    // A mods.json of the player's own is left as it is.
+    Write(game_mods, "{\"5\": {}}", 0644);
+    Write(workshop / ".playden-workshop-4000", "item=111,5,1700000000,2048,on,A mod\n", 0644);
+    apply();
+    CHECK(Read(game_mods) == "{\"5\": {}}");
+    fs::remove(game_mods);
+    apply();
+    CHECK(Read(game_mods).find("\"111\": {") != std::string::npos);
+    // Game's own files: Playden's mods.json goes.
+    set_features("game");
+    apply();
+    CHECK(!fs::exists(game_mods) && !fs::exists(game / "Bin/steam_settings/.playden-mods"));
+    fs::remove_all(game / "Bin/steam_settings/mods");
+    set_features("steamclient");
+    apply();
+  }
   // Game's own files: Valve's library must not find the client any more; the files may stay.
   set_features("game");
   apply();
@@ -10114,6 +10301,7 @@ int main(int argc, char** argv) {
   PreparesGameWithoutShippedRecipe();
   for (int scenario = 0; scenario <= 3; ++scenario) OlderEngineDefaultsArePublishedOnPlay(scenario);
   SteamGameShownInSteamLibrary();
+  OnlineWorkshopItemsReachSteamsFile();
   UpdatedFilesSetUpTheLaunchAgain();
   PreparesProgramChosenInSettings();
   SettingsChangeMakesNoFolderThroughLinkAboveGame();

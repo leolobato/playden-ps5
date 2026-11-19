@@ -36,12 +36,15 @@
 #include "runtime/steam_library.h"
 #include "runtime/steamworks.h"
 #include "runtime/self_heal.h"
+#include "runtime/workshop_acf.h"
+#include "runtime/workshop_mods.h"
 #include "steam/secret.h"
 #include "runtime/writable_folders.h"
 #include "runtime/title_parameters.h"
 #include "platform/managed_file_lock.h"
 #include "steam/backend/cloud_mapping.h"
 #include "steam/backend/json.h"
+#include "steam/backend/workshop_items.h"
 #include "stores/local/scanner.h"
 
 #include <algorithm>
@@ -1165,6 +1168,111 @@ void RuntimeHost::DropOnlineSession(const std::filesystem::path& bottle) {
     Log("online session " + bottle.filename().string() + " removed: the bottle is kept without its game");
 }
 
+namespace {
+// Steam Workshop items (#856) for gbe_fork: the items the player turned on, from the bottle's Workshop folder, as
+// mods.json in each steam_settings/ the emulator reads in this mode (beside each emulated steam_api DLL, or beside the
+// client in the bottle); Playden's mods.json leaves every other one. Never stops the preparation: a problem is logged and
+// the game starts with what gbe_fork finds. found: the game's steam_api DLLs (relative). The log line has counts only.
+void HandWorkshopItems(const std::filesystem::path& root, const std::string& prefix, std::uint32_t app_id, bool emulate,
+                       bool client, const std::vector<std::string>& found, const std::function<void(const std::string&)>& log) {
+  // Each steam_settings/ by its path from the folder it is opened from: the game's install root, or the bottle's drive_c.
+  std::vector<std::string> game_folders;
+  for (const auto& relative : found)
+    game_folders.push_back((std::filesystem::path(relative).parent_path() / "steam_settings").string());
+  std::sort(game_folders.begin(), game_folders.end());
+  game_folders.erase(std::unique(game_folders.begin(), game_folders.end()), game_folders.end());
+  const std::string drive = prefix + "/drive_c";
+  const std::string client_folder = "playden/steamclient/steam_settings";
+  std::vector<rt::WorkshopMod> items;
+  const char* state_note = "";
+  std::size_t listed = 0;
+  if ((emulate || client) && app_id != 0) {
+    const auto workshop = playden::steam::WorkshopFolder(prefix);
+    struct stat info {};
+    if (::lstat(workshop.c_str(), &info) != 0 && errno == ENOENT) {
+      // No Workshop folder: this game never had items.
+    } else if (const auto state = playden::steam::ReadWorkshopState(workshop, app_id)) {
+      for (const auto& item : state->items) {
+        if (!item.on || item.manifest == 0) continue;  // turned off, or a download that hasn't finished
+        ++listed;
+        rt::WorkshopMod mod;
+        mod.id = item.id;
+        mod.title = item.title;
+        mod.time_updated = item.time_updated;
+        mod.bytes = item.bytes;
+        items.push_back(std::move(mod));
+      }
+      items = rt::PresentWorkshopMods(workshop, app_id, std::move(items));
+    } else {
+      state_note = " state=unreadable";
+    }
+  }
+  std::map<rt::WorkshopModsOutcome, std::size_t> outcomes;
+  std::size_t hand_placed = 0;
+  const auto real_folder = [](const std::string& path) {
+    struct stat info {};
+    return ::lstat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
+  };
+  // Every folder from the trusted one down is checked by ManagedDirectory, which never follows a link. The game's
+  // folders are opened as unowned (a drive that keeps no owners, files put there by FTP), as EmulateSteamworks writes
+  // them; the client's as ProvideSteamClient opens them.
+  const auto apply = [&](const std::string& trusted, platform::DirectoryPolicy policy, const std::string& folder, bool active) {
+    // Only a steam_settings/ the emulator's setup made: a DLL it skipped has none.
+    if (active && !real_folder(trusted + "/" + folder)) return;
+    const auto result = active ? rt::ApplyWorkshopMods(trusted, policy, folder, app_id, items)
+                               : rt::RemoveWorkshopMods(trusted, policy, folder);
+    ++outcomes[result.outcome];
+    hand_placed += result.hand_placed;
+  };
+  for (const auto& folder : game_folders) apply(root.string(), platform::DirectoryPolicy::kUnownedTree, folder, emulate);
+  apply(drive, platform::DirectoryPolicy::kApprovedTree, client_folder, client);
+  outcomes.erase(rt::WorkshopModsOutcome::kNone);
+  if (items.empty() && listed == 0 && outcomes.empty() && !*state_note) return;
+  std::string line = std::string("workshop mods mode=") + (emulate ? "emulate" : client ? "steamclient" : "none") +
+                     " items=" + std::to_string(items.size()) + " missing=" + std::to_string(listed - items.size()) +
+                     " hand_placed=" + std::to_string(hand_placed) + state_note;
+  for (const auto& [outcome, count] : outcomes)
+    line += std::string(" ") + rt::WorkshopModsOutcomeName(outcome) + "=" + std::to_string(count);
+  log(line);
+}
+
+// Steam Workshop items (#856) for Valve's client in Online: every item Playden holds in the bottle (turned off or not:
+// Steam installs every item the account subscribes to) joins the installed list in the client's appworkshop file, which
+// it keeps beside the items only while the game is in the bottle's Steam library (Steam library folder = Steam's
+// folder). Without that the client downloads nothing and the game sees none. Never stops the preparation; the log
+// line has counts only.
+void HandWorkshopItemsToSteam(const std::string& prefix, std::uint32_t app_id, bool steam_library,
+                              const std::function<void(const std::string&)>& log) {
+  if (app_id == 0) return;
+  const auto workshop = playden::steam::WorkshopFolder(prefix);
+  struct stat info {};
+  if (::lstat(workshop.c_str(), &info) != 0 && errno == ENOENT) return;  // this game never had items
+  const auto state = playden::steam::ReadWorkshopState(workshop, app_id);
+  if (!state) {
+    log("workshop acf=skipped state=unreadable");
+    return;
+  }
+  std::vector<rt::WorkshopMod> held;
+  for (const auto& item : state->items) {
+    if (item.manifest == 0) continue;  // a download that hasn't finished
+    rt::WorkshopMod mod;
+    mod.id = item.id;
+    held.push_back(std::move(mod));
+  }
+  held = rt::PresentWorkshopMods(workshop, app_id, std::move(held));
+  if (held.empty()) return;
+  if (!steam_library) {
+    log("workshop acf=skipped library=playden items=" + std::to_string(held.size()));
+    return;
+  }
+  std::vector<rt::WorkshopAcfItem> items;
+  for (const auto& mod : held)
+    if (const auto* item = state->Find(mod.id)) items.push_back({item->id, item->bytes, item->time_updated, item->manifest});
+  const auto outcome = rt::ApplyAppWorkshopAcf(workshop, app_id, items);
+  log(std::string("workshop acf=") + rt::WorkshopAcfOutcomeName(outcome) + " items=" + std::to_string(items.size()));
+}
+}  // namespace
+
 // Steam-file step: the game's steam_api DLLs in the state its "Steam features" setting asks for, emulated
 // with its Steam app ID (SteamworksAppFor) and the signed-in account, or the game's own; then the legacy
 // steam.dll of a game from before Steamworks.
@@ -1365,6 +1473,17 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
         (client ? " client=" + std::string(provided.changed.empty() ? "kept" : "written") : std::string()) +
         (skipped.empty() ? std::string() : " copies_skipped=" + skipped) + (result.ok ? std::string() : " failed=" + result.message));
     if (!result.ok) return result.message;
+    const auto log_workshop = [&](const std::string& line) {
+      Log("steamworks app=" + std::to_string(record.runtime_number) + " " + line);
+    };
+    HandWorkshopItems(root, files.prefix, steam_app.app_id, emulate, client, result.found, log_workshop);
+    if (steam_host) {
+      // As SteamLibraryStep: only a game shown in steamapps\common is in the bottle's Steam library.
+      const auto library = files.settings.values.find("steam_library_path");
+      const bool steam_library = library != files.settings.values.end() && library->second.available &&
+                                 library->second.value == "steam";
+      HandWorkshopItemsToSteam(files.prefix, steam_app.app_id, steam_library, log_workshop);
+    }
   }
   // A game from before Steamworks (no steam_api DLL) checks for Steam through steam.dll instead
   // (GUN: "Failed to find Steam."); emulation gives it the minimal one, the game's mode takes it away.

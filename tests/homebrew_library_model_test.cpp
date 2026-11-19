@@ -888,6 +888,210 @@ void live_manage_dlc() {
     }
 }
 
+// Workshop items (#856) of an installed Steam game: Game actions offers the row, the sheet asks the controller for the
+// listing and waits for it, shows each item's state as a check box, and Apply queues one Workshop job with the whole
+// choice. The job says "Workshop items" wherever it shows, and its end leaves the game's own update alone.
+void live_workshop_items() {
+    using namespace playden::homebrew;
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "Modded"), game(SteamId(43), "Not installed")}, false, {}, false, false, {}}),
+          "library loaded");
+    model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
+    LiveInstalledGame installed{SteamId(42), 500'000'000, "internal", true, 0};
+    model.UpdateInstalls({}, {installed});
+    // An update of the game itself waits: a Workshop job must leave it.
+    model.UpdateAppDetails(SteamId(42), 300'000'000, 500'000'000, true, {"english"}, {}, {},
+                           GameUpdate{true, false, 120'000'000, 150'000'000, 1, true});
+
+    check(model.action("details:43"), "workshop: details open 1");
+    activate(model, "details-more");
+    check(!has_row(model, "workshop-items"), "a game that isn't installed has no Workshop items");
+    model.action("circle");
+    model.action("circle");
+
+    check(model.action("details:42"), "workshop: details open 2");
+    activate(model, "details-more");
+    const auto* row = find_row(model, "workshop-items");
+    check(row && row->enabled && row->title == "Workshop items…" && row->value.empty(),
+          "Game actions offers Workshop items, with no count before the items are read");
+    check(row->subtitle == "Games that ask Steam for their items need Steam features set to Offline emulation.",
+          "a game on its own Steam files is told which setting hands the items over");
+    activate(model, "workshop-items");
+    check(model.view().surface == "workshop-items" && model.view().title == "Workshop items", "the row opens the sheet");
+    check(has_row(model, "workshop-loading") && !has_row(model, "workshop-apply"), "the sheet waits for the listing");
+    check((model.TakeWorkshopRequests() == std::vector<playden::GameId>{SteamId(42)}), "opening asks for the game's items");
+    check(model.TakeWorkshopRequests().empty(), "once");
+
+    // Steam out of reach: the sentence, and Try again asks again.
+    LiveWorkshopItems failed;
+    failed.game_id = SteamId(42);
+    failed.error = "Could not reach Steam. Try again when you are online.";
+    model.UpdateWorkshopItems(failed);
+    check(has_row(model, "workshop-error") && has_row(model, "workshop-retry") && model.view().subtitle == failed.error,
+          "a failed listing says why");
+    activate(model, "workshop-retry");
+    check(has_row(model, "workshop-loading") && model.TakeWorkshopRequests().size() == 1, "Try again asks again");
+
+    // Nothing subscribed.
+    LiveWorkshopItems empty;
+    empty.game_id = SteamId(42);
+    model.UpdateWorkshopItems(empty);
+    check(has_row(model, "workshop-empty") &&
+              model.view().subtitle == "Subscribe to items on the Steam website or in the Steam app, then open this again.",
+          "no subscriptions says where to subscribe");
+
+    // An item in each state; 900 was turned off before and isn't listed any more (past a cut-short list).
+    using A = WorkshopItemAction;
+    LiveWorkshopItems listing;
+    listing.game_id = SteamId(42);
+    listing.items = {{101, "Current", 50'000'000, true, true, A::Keep, A::Remove, 0, 48'000'000},
+                     {102, "Changed", 4'000'000, true, true, A::Update, A::Remove, 4'000'000, 3'000'000},
+                     {103, "New", 2'000'000, true, true, A::Download, A::SkipOff, 2'000'000, 0},
+                     {104, "Turned off", 9'000'000, true, false, A::Download, A::SkipOff, 9'000'000, 0},
+                     {105, "Legacy", 1'000'000, true, true, A::SkipLegacy, A::SkipOff, 0, 0},
+                     {106, "By hand", 1'000'000, true, true, A::SkipHandPlaced, A::SkipOff, 0, 0},
+                     {107, "Gone", 7'000'000, false, true, A::Remove, A::Remove, 7'000'000, 7'000'000}};
+    listing.saved_off = {104, 900};
+    listing.truncated = true;
+    model.UpdateWorkshopItems(listing);
+    check(!has_row(model, "workshop-loading") && has_row(model, "workshop-apply"), "the listing replaces the waiting row");
+    row = find_row(model, "workshop-item-101");
+    check(row && row->kind == RowKind::Toggle && row->selected && row->enabled && row->subtitle.empty() && row->value == "50 MB",
+          "a current item is on, with its size");
+    check(find_row(model, "workshop-item-102")->subtitle == "Update available", "a changed item says so");
+    check(find_row(model, "workshop-item-103")->subtitle == "Downloads", "a new item downloads");
+    row = find_row(model, "workshop-item-104");
+    check(row && !row->selected && row->enabled && row->subtitle.empty(), "an item turned off before stays off");
+    row = find_row(model, "workshop-item-105");
+    check(row && !row->selected && !row->enabled && row->subtitle == "Can't be downloaded yet", "a legacy item can't be turned on");
+    row = find_row(model, "workshop-item-106");
+    check(row && row->selected && !row->enabled && row->subtitle == "Placed by hand", "a hand-placed item is left alone");
+    row = find_row(model, "workshop-item-107");
+    check(row && !row->enabled && row->subtitle == "Unsubscribed · Its files are deleted", "an unsubscribed item goes");
+    check(fact(model, "Download") == "About 6 MB · frees 7 MB" &&
+              model.view().subtitle == "Games that ask Steam for their items need Steam features set to Offline emulation.",
+          "the head says what Apply does, and the Steam features it needs");
+    row = find_row(model, "workshop-apply");
+    check(row && row->enabled && row->subtitle == "Downloads 2, deletes 1", "updates and downloads alone make Apply ready");
+
+    activate(model, "workshop-item-101");
+    activate(model, "workshop-item-104");
+    activate(model, "workshop-item-105");
+    check(model.view().surface == "workshop-items", "a toggle keeps the sheet open");
+    check(find_row(model, "workshop-item-101")->subtitle == "Its files are deleted" && !find_row(model, "workshop-item-101")->selected,
+          "turning a current item off deletes its files");
+    check(find_row(model, "workshop-item-104")->subtitle == "Downloads", "turning one on downloads it");
+    check(!find_row(model, "workshop-item-105")->selected, "a legacy item doesn't turn");
+    check(find_row(model, "workshop-apply")->subtitle == "Downloads 3, deletes 2", "Apply counts the change");
+    // A listing for another game (one a finished job asked for) leaves this sheet's choice alone.
+    LiveWorkshopItems other;
+    other.game_id = SteamId(44);
+    model.UpdateWorkshopItems(other);
+    check(!find_row(model, "workshop-item-101")->selected && find_row(model, "workshop-item-104")->selected &&
+              find_row(model, "workshop-apply")->subtitle == "Downloads 3, deletes 2",
+          "another game's listing keeps this sheet's choice");
+    check(model.TakeInstallRequests().empty(), "toggling asks for nothing");
+
+    // The game's page behind: Game actions shows the count once the items are known.
+    model.action("circle");
+    row = find_row(model, "workshop-items");
+    check(row && row->value == "4 of 6", "the row counts what is on of what is subscribed");
+    activate(model, "workshop-items");
+    model.TakeWorkshopRequests();
+    model.UpdateWorkshopItems(listing);
+    check(find_row(model, "workshop-item-101")->selected, "the sheet opens on the saved choice again");
+    activate(model, "workshop-item-101");
+    activate(model, "workshop-apply");
+    auto requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == InstallRequestKind::ChangeWorkshop && requests[0].game_id == SteamId(42) &&
+              (requests[0].workshop_off == std::vector<std::uint64_t>{101, 104, 900}),
+          "Apply asks for the whole choice, with saved items the sheet doesn't list");
+    check(model.state().navigation.modals.empty() && model.state().navigation.route == Route::Details, "back on the game's page");
+    check(std::any_of(model.state().notices.begin(), model.state().notices.end(),
+                      [](const auto& notice) { return notice.message == "Workshop items queued"; }),
+          "the notice says it is queued");
+    // A whole list names every subscription and every item Playden holds: a saved choice for any other item goes,
+    // so the choice never grows past what the service takes.
+    activate(model, "details-more");
+    activate(model, "workshop-items");
+    model.TakeWorkshopRequests();
+    auto whole = listing;
+    whole.truncated = false;
+    model.UpdateWorkshopItems(whole);
+    activate(model, "workshop-item-101");
+    activate(model, "workshop-apply");
+    requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && (requests[0].workshop_off == std::vector<std::uint64_t>{101, 104}),
+          "Apply leaves out a saved choice for an item a whole list doesn't name");
+    check(model.state().navigation.modals.empty() && model.state().navigation.route == Route::Details, "back on the game's page again");
+
+    // While the job runs: Queue and the page name the Workshop items, and the row waits.
+    LiveInstallJob job;
+    job.game_id = SteamId(42);
+    job.state = JobState::Downloading;
+    job.update = true;
+    job.workshop_change = true;
+    model.UpdateInstalls({job}, {installed});
+    const auto queued = std::find_if(model.state().jobs.begin(), model.state().jobs.end(),
+                                     [](const Job& value) { return value.game_id == SteamId(42); });
+    check(queued != model.state().jobs.end() && queued->stage_text == "Workshop items" && queued->workshop_change,
+          "Queue names the Workshop items, not an update");
+    const auto* note = find_row(model, "details-updating");
+    check(note && note->title == "Workshop items", "the game's page names them too");
+    activate(model, "details-more");
+    row = find_row(model, "workshop-items");
+    check(row && !row->enabled && row->subtitle == "Wait for its job in Queue to finish." && row->value == "Wait for Queue",
+          "one job at a time");
+    model.action("circle");
+
+    // A failure says Workshop items.
+    job.state = JobState::Failed;
+    job.failure = "Network problem. Resume to try again.";
+    model.UpdateInstalls({job}, {installed});
+    check(std::any_of(model.state().notices.begin(), model.state().notices.end(),
+                      [](const auto& notice) { return notice.message == "Workshop items failed"; }),
+          "a failed job says Workshop items");
+    job.state = JobState::Downloading;
+    job.failure.clear();
+    model.UpdateInstalls({job}, {installed});
+    model.UpdateInstalls({}, {installed});
+    check(std::any_of(model.state().notices.begin(), model.state().notices.end(),
+                      [](const auto& notice) { return notice.message == "Workshop items changed"; }),
+          "its end says the items changed");
+    check(std::none_of(model.state().notices.begin(), model.state().notices.end(),
+                       [](const auto& notice) { return notice.message == "Update complete"; }),
+          "not that the game updated");
+    const auto* still = find_game(model, SteamId(42));
+    check(still && still->update.newer, "the game's own update still waits");
+    activate(model, "details-more");
+    row = find_row(model, "workshop-items");
+    check(row && row->enabled && row->value.empty(), "the job's end drops the old listing: the count is read again");
+    check((model.TakeWorkshopRequests() == std::vector<playden::GameId>{SteamId(42)}), "the job's end asks for the listing");
+    model.UpdateWorkshopItems(whole);
+    row = find_row(model, "workshop-items");
+    check(row && row->value == "4 of 6" && model.view().surface != "workshop-items",
+          "the count comes back without opening the sheet");
+    model.action("circle");
+
+    // Another account doesn't see this one's items.
+    activate(model, "details-more");
+    activate(model, "workshop-items");
+    model.TakeWorkshopRequests();
+    model.UpdateWorkshopItems(listing);
+    model.action("circle");
+    model.action("circle");
+    model.UpdateAccount({AuthState::SignedIn, "456", "Other", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "Modded")}, false, {}, false, false, {}}), "the other account's library");
+    model.UpdateInstalls({}, {installed});
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    if (model.state().navigation.route == Route::Details) model.action("circle");
+    check(model.action("details:42"), "workshop: details open 3");
+    activate(model, "details-more");
+    row = find_row(model, "workshop-items");
+    check(row && row->value.empty(), "another account's listing isn't shown");
+}
+
 void live_install_optional_dlc() {
     auto model = make_live();
     model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
@@ -4194,7 +4398,7 @@ void live_game_menus_regrouped() {
 
     // The page: the game's rows, then Start, Library and Your rating, then Uninstall… and Cancel apart.
     const auto doom_page = page(SteamId(36));
-    check(doom_page == std::vector<std::string>{"game-settings", "manage-dlc", "manage-saves", "game-move", "game-maintenance",
+    check(doom_page == std::vector<std::string>{"game-settings", "manage-dlc", "workshop-items", "manage-saves", "game-move", "game-maintenance",
                                                 "heading-start", "run-once", "play-detailed-logs", "heading-library",
                                                 "favorite", "collection", "note", "hide", "heading-rating", "compatibility",
                                                 "share-feedback", "divider", "uninstall", "cancel"},
@@ -5432,6 +5636,7 @@ int main() {
     live_install_dlc_row();
     live_install_dlc_gog();
     live_manage_dlc();
+    live_workshop_items();
     live_install_optional_dlc();
     details_ask_follows_licenses_and_install_state();
     details_page_asks_only_while_open();

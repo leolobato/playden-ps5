@@ -50,9 +50,11 @@ class Parser {
     }
   }
 
-  // kOk: token produced; kNone: end of input; kError: unterminated string.
-  Status ParseToken(std::string* out) {
+  // kOk: token produced; kNone: end of input; kError: unterminated string. `structural`: the token is an unquoted
+  // brace. A quoted "{" or "}" is a string like any other.
+  Status ParseToken(std::string* out, bool* structural) {
     out->clear();
+    *structural = false;
     SkipWhitespaceAndComments();
     if (pos_ >= text_.size()) return Status::kNone;
     if (text_[pos_] == '"') {
@@ -82,6 +84,7 @@ class Parser {
     }
     if (text_[pos_] == '{' || text_[pos_] == '}') {
       out->push_back(text_[pos_]);
+      *structural = true;
       ++pos_;
       return Status::kOk;
     }
@@ -98,18 +101,22 @@ class Parser {
   Status ParsePair(VdfNode* parent, std::size_t depth) {
     const std::size_t save = pos_;
     std::string key;
-    Status status = ParseToken(&key);
+    bool key_structural = false;
+    Status status = ParseToken(&key, &key_structural);
     if (status == Status::kError) return status;
     if (status == Status::kNone) return Status::kNone;
-    if (key == "}") {
+    if (key_structural && key == "}") {
       pos_ = save;
       return Status::kNone;
     }
+    if (key_structural) return Status::kError;  // a dict without a key
     std::string next;
-    status = ParseToken(&next);
+    bool next_structural = false;
+    status = ParseToken(&next, &next_structural);
     if (status != Status::kOk) return Status::kError;  // key without value, or bad string
+    if (next_structural && next == "}") return Status::kError;  // a key without its value
     if (++nodes_ > kMaxVdfNodes) return Status::kError;
-    if (next == "{") {
+    if (next_structural) {
       if (depth + 1 > kMaxVdfDepth) return Status::kError;
       VdfNode child;
       child.is_dict = true;

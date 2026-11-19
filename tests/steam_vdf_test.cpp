@@ -104,11 +104,26 @@ void TestMalformed() {
   CHECK(!ParseVdf("a { b c"));
   CHECK(!ParseVdf("a { b { c d } "));
   CHECK(!ParseVdf("a b }"));
+  // A key without its value before a closing brace, and a dict without a key.
+  CHECK(!ParseVdf("\"AppWorkshop\" { \"appid\" \"7\" \"Future\" } }"));
+  CHECK(!ParseVdf("{ a b }"));
+  CHECK(!ParseVdf("a { { b c } }"));
   CHECK(!ParseVdf(std::string("a b\0", 4)));
   CHECK(!ParseVdf(std::string("a \"b\0c\"", 7)));
 }
 
 }  // namespace
+
+// Quoted braces are strings, as keys and as values; only bare ones open or close a dict.
+void TestQuotedBraces() {
+  const auto root = ParseVdf("\"AppWorkshop\" { \"appid\" \"7\" \"Future\" \"{\" \"}\" \"x\" \"open\" \"}\" }");
+  CHECK(root && root->children.size() == 1);
+  const auto* workshop = root->Find("AppWorkshop");
+  CHECK(workshop && workshop->is_dict && workshop->children.size() == 4);
+  CHECK(workshop->String("Future") == std::optional<std::string_view>("{"));
+  CHECK(workshop->String("}") == std::optional<std::string_view>("x"));
+  CHECK(workshop->String("open") == std::optional<std::string_view>("}"));
+}
 
 int main() {
   TestNested();
@@ -118,6 +133,7 @@ int main() {
   TestUint64();
   TestCaps();
   TestMalformed();
+  TestQuotedBraces();
   std::puts("steam_vdf_test: ok");
   return 0;
 }

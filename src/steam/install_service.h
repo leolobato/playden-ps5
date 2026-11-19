@@ -48,7 +48,8 @@ class SessionInstallRunner : public InstallRunner {
                 const std::atomic<bool>& cancel,
                 const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
                 const std::function<void(InstallStep)>& step, const std::function<bool()>& may_apply) final {
-    if (id.steam_app()) {
+    // Workshop items only: an update of the game's files on disk is not this job's (it has its own).
+    if (id.steam_app() && !options.workshop) {
       if (const auto state = installs::ReadUpdateState(root);
           state && state->phase != installs::UpdatePhase::kStaging && may_apply && !may_apply()) {
         Result waiting;

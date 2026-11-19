@@ -85,13 +85,14 @@ bool SaveFreeDlcMemory(const Storage& storage, std::uint64_t steam_id, const std
 class SteamInstallRunner final : public SessionInstallRunner {
  public:
   SteamInstallRunner(SessionRepository& sessions, CmClient& cm, CdnClient& cdn, FastestServerCache::Now now = {})
-      : SessionInstallRunner(sessions), cm_(cm), installer_(cm, cdn), fastest_(std::move(now)) {}
+      : SessionInstallRunner(sessions), cm_(cm), cdn_(cdn), installer_(cm, cdn), fastest_(std::move(now)) {}
   Result InstallApp(const StoredSession& session, std::uint32_t id, const std::string& root,
                  const InstallOptions& options, const std::atomic<bool>& cancel,
                  const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
                  const std::function<void(InstallStep)>& step) override;
   // An update selects depots as an install does, with the options (the service fills in the record's
-  // branch and language), and downloads only the files that changed.
+  // branch and language), and downloads only the files that changed. With `options.workshop` it brings the game's
+  // Workshop items in its bottle in line instead (RunWorkshopJob), leaving the game's files and record alone.
   Result UpdateApp(const StoredSession& session, std::uint32_t id, const std::string& root,
                    const InstallOptions& options, const std::atomic<bool>& cancel,
                    const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
@@ -110,6 +111,11 @@ class SteamInstallRunner final : public SessionInstallRunner {
   // Where the free DLC Steam refused are remembered (the user data root). Without it they are
   // asked for again on every install.
   void SetFreeDlcMemory(const Storage* storage) { free_dlc_memory_ = storage; }
+  // The bottle of an installed Steam game (its prefix folder, as this process reaches it), for its Workshop items;
+  // none while the game has none (it was never prepared). Called on the install worker. Unset: no game has one.
+  void SetWorkshopBottle(std::function<std::optional<std::string>(std::uint32_t app)> bottle) {
+    workshop_bottle_ = std::move(bottle);
+  }
   // Optional sanitized log: the Steam app ID, step, error category and a short detail; never
   // tokens or account identifiers. Called on the install worker.
   using LogFn = InstallLogFn;
@@ -151,7 +157,12 @@ class SteamInstallRunner final : public SessionInstallRunner {
              const std::atomic<bool>& cancel,
              const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
              const std::function<void(InstallStep)>& step, bool update, const std::function<bool()>& may_apply);
+  Result SyncWorkshop(const StoredSession& session, std::uint32_t id, const InstallOptions& options,
+                      const std::atomic<bool>& cancel,
+                      const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
+                      const std::function<void(InstallStep)>& step, const std::function<bool()>& may_apply);
   CmClient& cm_;
+  CdnClient& cdn_;
   DepotInstaller installer_;
   FastestServerCache fastest_;
   std::string server_name_;  // the install worker's own: set and read during InstallApp's progress
@@ -160,6 +171,7 @@ class SteamInstallRunner final : public SessionInstallRunner {
   std::function<std::string()> language_;
   const LicensedDepots* licensed_ = nullptr;
   const Storage* free_dlc_memory_ = nullptr;
+  std::function<std::optional<std::string>(std::uint32_t)> workshop_bottle_;
   std::atomic<std::uint32_t> current_app_{0};
 };
 

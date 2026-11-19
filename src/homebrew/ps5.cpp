@@ -54,6 +54,7 @@
 #include "steam/backend/collections_client.h"
 #include "steam/backend/entitled_library.h"
 #include "steam/backend/steam_install_runner.h"
+#include "steam/backend/workshop_listing_service.h"
 #include "steam/backend/steam_cloud_runner.h"
 #include "steam/backend/library_client.h"
 #include "steam/local_session_repository.h"
@@ -1137,6 +1138,17 @@ int main() {
         const auto gog = playden::homebrew::MakeGogServices(std::move(gog_config));
         // Without the GOG store there are no GOG tags: a saved GOG tag view falls back at once instead of waiting.
         if (!gog) simulation.UpdateStoreCollections(playden::Store::kGog, {});
+        // Workshop items (#856) go into the game's bottle; none until the runtime host knows the game's installs.
+        const auto workshop_bottle = [host = runtime_host.get()](std::uint32_t app) -> std::optional<std::string> {
+            if (!host) return std::nullopt;
+            const auto snapshot = host->Snapshot();
+            if (!snapshot.installs_known) return std::nullopt;
+            for (const auto& install : snapshot.installs)
+                if (install.game == playden::GameId::Steam(app) && !install.prefix_root.empty())
+                    return host->HostFilePath(install.prefix_root);
+            return std::nullopt;
+        };
+        install_runner.SetWorkshopBottle(workshop_bottle);
         playden::installs::InstallService::Runners install_runners{{playden::Store::kSteam, &install_runner}};
         if (copy_runner) install_runners[playden::Store::kLocal] = copy_runner.get();
         if (gog) install_runners[playden::Store::kGog] = gog->install_runner();
@@ -1171,6 +1183,21 @@ int main() {
             return newest ? *newest->id.steam_app() : 0u;
         });
         playden::steam::DownloadServerService servers(servers_source, servers_sessions);
+        // The Workshop items sheet's listings (#856): subscriptions over the shared session beside the bottle's items.
+        playden::steam::CmClient workshop_cm(paths.trust_store, library_storage);
+        workshop_cm.SetOwner("workshop");
+        workshop_cm.SetSharedSession(steam_cm);
+        playden::LocalSessionRepository workshop_sessions(user_root, {}, &session_vault);
+        playden::steam::WorkshopListingConfig workshop_config;
+        workshop_config.bottle = workshop_bottle;
+        workshop_config.subscriptions = [&workshop_cm](const playden::StoredSession& session, std::uint32_t app,
+                                                       const std::atomic<bool>& cancel) {
+            return playden::steam::FetchWorkshopSubscriptions(workshop_cm, session, app, cancel, [](const std::string& line) {
+                playden::app::AppendLogLine(log_root, "install.log", line);
+            });
+        };
+        workshop_config.log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "install.log", line); };
+        playden::steam::WorkshopListingService workshop_listing(workshop_sessions, std::move(workshop_config));
         // Steam friends, online-steam only: kept on the shared session, read by the friends worker.
         std::unique_ptr<playden::steam::CmClient> friends_cm;
         std::unique_ptr<playden::LocalSessionRepository> friends_sessions;
@@ -1293,6 +1320,7 @@ int main() {
         playden::web::Service web(std::move(web_config));
         playden::homebrew::Controller services(simulation, stores, &persistence, &installs, &cloud, runtime_host.get(), auth_log);
         services.SetDownloadServers(&servers);
+        services.SetWorkshopListing(&workshop_listing);
         services.SetFriends(friends.get());
         if (gog) gog->Attach(services);
         if (!web_probe_on) services.SetWebAccess(&web);
@@ -1549,6 +1577,7 @@ int main() {
         // `installs`): its copy runner's change callback calls into the Local store. Explicit here,
         // so it doesn't rest on the controller's shutdown or on declaration order.
         servers.Shutdown();
+        workshop_listing.Shutdown();
         installs.Shutdown();
         if (copy_runner) copy_runner->SetChanged({});
         playden::app::AppendLogLine(log_root, "launch.log", "shutdown artwork start");

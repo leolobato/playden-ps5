@@ -345,6 +345,149 @@ void live_vac_warns_on_online(const std::filesystem::path& base) {
     playden::runtime::SetOnlineSteamEnabled(false);
 }
 
+// Workshop items (#856) follow the game's Steam features: in Online Steam installs every subscription, so nothing turns
+// and Apply downloads them all with no choice saved; Offline emulation keeps the switches, and the game's own files say
+// which setting hands them over.
+void live_workshop_items_follow_steam_features(const std::filesystem::path& base) {
+    std::filesystem::create_directories(base);
+    playden::runtime::SetOnlineSteamEnabled(true);
+    auto model = make_live(base);
+    model.SetGameSettingsFile(base / "workshop-settings.json");
+    model.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
+    model.SetKitCapabilities(playden::runtime::KitCapabilitiesFromManifest({"dxvk", "helper-process", "steam-library-path"}, true));
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    playden::GameSummary game;
+    game.id = SteamId(1942280);
+    game.title = "Brotato";
+    check(model.UpdateLibrary({{game}, false, {}, false, true, 100}), "workshop: library delivered");
+    model.UpdateInstalls({}, {{SteamId(1942280), 1024, "internal", true}});
+    playden::homebrew::LiveRuntimeGame runtime;
+    runtime.game_id = SteamId(1942280);
+    runtime.prepared = runtime.has_title = true;
+    runtime.runtime_current = true;
+    runtime.launch_entry_id = "game";
+    runtime.activity = playden::homebrew::TitleActivity::Stopped;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
+    check(model.action("details:1942280"), "workshop: details open");
+    activate(model, "details-more");
+    const auto subtitle = [&model] {
+        const auto& rows = model.view().rows;
+        const auto row = std::find_if(rows.begin(), rows.end(), [](const auto& value) { return value.key == "workshop-items"; });
+        return row == rows.end() ? std::string("(no row)") : row->subtitle;
+    };
+    check(subtitle() == "Games that ask Steam for their items need Steam features set to Offline emulation.", "workshop: the game's own files");
+    const auto choose_setting = [&model, &runtime](const char* setting, const char* choice) {
+        activate(model, "game-settings");
+        activate(model, "section-compatibility");
+        model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});  // the console's answer: not running
+        activate(model, setting);
+        if (find_row(model, "unlock-setting")) activate(model, "unlock-setting");
+        activate(model, choice);
+        while (!model.state().navigation.modals.empty()) model.action("circle");
+        activate(model, "details-more");
+    };
+    const auto choose = [&](const char* choice) { choose_setting("setting-steam_features", choice); };
+    using A = playden::homebrew::WorkshopItemAction;
+    using playden::homebrew::RowKind;
+    // 1 is in the bottle; 2 was turned off in Offline emulation and isn't.
+    playden::homebrew::LiveWorkshopItems listing;
+    listing.game_id = SteamId(1942280);
+    listing.items = {{1, "Mod", 1'000'000, true, true, A::Keep, A::Remove, 0, 1'000'000},
+                     {2, "Off mod", 2'000'000, true, false, A::Download, A::SkipOff, 2'000'000, 0}};
+    listing.saved_off = {2};
+    choose("choice-1");
+    // Online, but the game in Playden's folder: Valve's client gets none of the items. The sheet says what they need
+    // and keeps the switches of Offline emulation, where they work.
+    const std::string hint = "In Online, Workshop items need Game settings › Steam library folder set to Steam's folder.";
+    check(subtitle() == hint, "workshop: Online in Playden's folder says what the items need");
+    activate(model, "workshop-items");
+    model.UpdateWorkshopItems(listing);
+    check(model.view().subtitle == hint && model.view().legends.front() == "Cross Turn on or off",
+          "workshop: the sheet says it too, and keeps the switches");
+    auto row = find_row(model, "workshop-item-2");
+    check(row && row->kind == RowKind::Toggle && row->enabled && !row->selected, "workshop: the Offline choice holds");
+    activate(model, "workshop-item-2");
+    activate(model, "workshop-item-1");
+    model.TakeInstallRequests();
+    activate(model, "workshop-apply");
+    auto requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && !requests[0].workshop_all && (requests[0].workshop_off == std::vector<std::uint64_t>{1}),
+          "workshop: Apply saves the choice as in Offline emulation");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    activate(model, "details-more");
+    choose_setting("setting-steam_library_path", "choice-0");
+    check(subtitle() == "In Online, Steam installs every item you subscribe to.", "workshop: Online says Steam installs them");
+    activate(model, "workshop-items");
+    model.UpdateWorkshopItems(listing);
+    check(model.view().subtitle == "In Online, Steam installs every item you subscribe to. Unsubscribe on Steam to remove one.",
+          "workshop: the sheet says Steam installs every subscription");
+    check(model.view().legends.front() == "Cross Select", "workshop: Online has nothing to turn on or off");
+    row = find_row(model, "workshop-item-1");
+    check(row && row->kind == RowKind::Status && row->value == "1 MB" && row->subtitle.empty(), "workshop: an item is a plain row");
+    row = find_row(model, "workshop-item-2");
+    check(row && row->kind == RowKind::Status && row->subtitle == "Downloads", "workshop: an item turned off downloads in Online");
+    activate(model, "workshop-item-2");
+    activate(model, "workshop-item-1");
+    check(find_row(model, "workshop-item-2")->subtitle == "Downloads" && find_row(model, "workshop-item-1")->subtitle.empty(),
+          "workshop: Cross turns nothing in Online");
+    row = find_row(model, "workshop-apply");
+    check(row && row->enabled && row->subtitle == "Downloads 1 item", "workshop: Apply downloads every subscription");
+    model.TakeInstallRequests();
+    activate(model, "workshop-apply");
+    requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == playden::homebrew::InstallRequestKind::ChangeWorkshop &&
+              requests[0].workshop_all && requests[0].workshop_off.empty(),
+          "workshop: Online asks for every item and leaves the saved choice alone");
+    // A cut-short list, with an item Playden holds that it doesn't name and that was turned off in Offline emulation:
+    // the Online job keeps it, so the sheet doesn't promise to delete it.
+    activate(model, "details-more");
+    activate(model, "workshop-items");
+    auto cut = listing;
+    cut.truncated = true;
+    cut.items.push_back({3, "Held", 3'000'000, false, false, A::Keep, A::Remove, 0, 3'000'000});
+    cut.saved_off = {2, 3};
+    model.UpdateWorkshopItems(cut);
+    row = find_row(model, "workshop-item-3");
+    check(row && row->subtitle == "Unsubscribed · Kept for now", "workshop: Online keeps what a cut-short list doesn't name");
+    row = find_row(model, "workshop-apply");
+    check(row && row->subtitle == "Downloads 1 item" &&
+              std::none_of(model.view().facts.begin(), model.view().facts.end(), [](const auto& fact) {
+                  return fact.label == "Frees" || fact.value.find("frees") != std::string::npos;
+              }), "workshop: Online deletes nothing turned off");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    // Everything there and nothing chosen: nothing to apply, even with a choice saved in Offline emulation.
+    activate(model, "details-more");
+    activate(model, "workshop-items");
+    auto held = listing;
+    held.items[1].on_action = A::Keep;
+    held.items[1].off_action = A::Remove;
+    model.UpdateWorkshopItems(held);
+    row = find_row(model, "workshop-apply");
+    check(row && !row->enabled && row->subtitle == "Nothing to change", "workshop: an Offline choice alone is no change in Online");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    activate(model, "details-more");
+    row = find_row(model, "workshop-items");
+    check(row && row->value == "2 of 2", "workshop: Online counts every subscription");
+    choose("choice-0");
+    check(subtitle() == "Download the items you subscribed to on Steam.", "workshop: Offline emulation needs no word");
+    // Offline emulation keeps the switches and the saved choice.
+    activate(model, "workshop-items");
+    model.UpdateWorkshopItems(listing);
+    check(model.view().legends.front() == "Cross Turn on or off", "workshop: Offline turns items on or off");
+    row = find_row(model, "workshop-item-2");
+    check(row && row->kind == RowKind::Toggle && row->enabled && !row->selected && row->subtitle.empty(),
+          "workshop: Offline keeps the item off");
+    row = find_row(model, "workshop-apply");
+    check(row && !row->enabled && row->subtitle == "Nothing to change", "workshop: nothing to change in Offline");
+    activate(model, "workshop-item-2");
+    check(find_row(model, "workshop-item-2")->selected, "workshop: Cross turns it on in Offline");
+    activate(model, "workshop-item-1");
+    activate(model, "workshop-apply");
+    requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && (requests[0].workshop_off == std::vector<std::uint64_t>{1}), "workshop: Offline saves the choice");
+    playden::runtime::SetOnlineSteamEnabled(false);
+}
+
 // Steam friends from the controller (online-steam): the Friends tab and a game's page list them; Join on a VAC game not
 // set to Online warns, sets Online and plays into the lobby; Invite friends takes 16 at most. Without online-steam,
 // none of it is shown and friends handed over are dropped.
@@ -4418,6 +4561,7 @@ int main() {
     live_settings_follow_the_prepared_title(base);
     live_120hz_waits_for_the_title_update(base / "display");
     live_vac_warns_on_online(base / "vac");
+    live_workshop_items_follow_steam_features(base / "workshop");
     live_friends_join_and_invite(base / "friends");
     live_refresh_rate_keeps_off_over_a_preset_cap(base / "capped");
     live_update_runtime_from_maintenance(base / "update-runtime");

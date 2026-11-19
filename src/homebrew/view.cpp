@@ -4671,8 +4671,8 @@ class Render::Impl
         {
             // Below the facts and a two-line message; six rows, the most an install sheet has, still fit.
             float rows_top = view.surface != "install" ? 292.0F : view.facts.empty() ? 414.0F : 444.0F;
-            // Join and Invite friends: the rows start under their facts and message, however long they are.
-            if (view.surface == "join-lobby" || view.surface == "invite-friends")
+            // Join, Invite friends and Workshop items: the rows start under their facts and message, however long they are.
+            if (view.surface == "join-lobby" || view.surface == "invite-friends" || view.surface == "workshop-items")
                 rows_top = std::max(rows_top, std::max(subtitle_bottom, 160.0F + facts_height) + 36.0F - drop);
             if (notice_bottom > 0.0F)
                 rows_top = std::max(rows_top, notice_bottom + 20.0F - drop);
@@ -5222,10 +5222,10 @@ class Render::Impl
                 return 30.0F;
             if (row.kind == RowKind::Heading || row.kind == RowKind::Separator)
                 return 54.0F;
-            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc" || view.surface == "manage-dlc" || view.surface == "invite-friends") &&
+            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc" || view.surface == "manage-dlc" || view.surface == "workshop-items" || view.surface == "invite-friends") &&
                                   row.kind == RowKind::Toggle;
             const bool described = (settings_sheet || checkbox || import_sheet || friends_sheet ||
-                                    row.key == "install-settings") && !row.subtitle.empty();
+                                    row.key == "install-settings" || row.key.rfind("workshop-item-", 0) == 0) && !row.subtitle.empty();
             return (described ? 96.0F + hint_extra(row) + lines_extra(row) : 72.0F) + 12.0F;
         };
         std::vector<float> tops;
@@ -5353,10 +5353,10 @@ class Render::Impl
             // Game settings rows carry an effect line under the name (or the reason a row is
             // disabled), an accent dot when the player changed the value, and a tag.
             // Kept game data: each game is a checkbox row with its kept date under the name.
-            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc" || view.surface == "manage-dlc" || view.surface == "invite-friends") &&
+            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc" || view.surface == "manage-dlc" || view.surface == "workshop-items" || view.surface == "invite-friends") &&
                                   row.kind == RowKind::Toggle;
             const bool described = (settings_sheet || checkbox || import_sheet || friends_sheet ||
-                                    row.key == "install-settings") && !row.subtitle.empty() && row.kind != RowKind::Heading;
+                                    row.key == "install-settings" || row.key.rfind("workshop-item-", 0) == 0) && !row.subtitle.empty() && row.kind != RowKind::Heading;
             const gfx::Rect rect{bounds.x, y, bounds.w, described ? 96.0F + hint_extra(row) + lines_extra(row) : 72.0F};
             const float amount = control_focus("sheet-" + row.key, index == view.focused_row);
             focus_glow(overlay_, rect, amount);

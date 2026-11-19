@@ -31,6 +31,10 @@
 #include <optional>
 #include <set>
 
+namespace playden::steam {
+class WorkshopListingService;
+}
+
 namespace playden::homebrew {
 // The community recipe objects the cache must keep, as the main thread last knew them: the
 // recipes installed games use (RuntimeSnapshot::community_references), every saved choice and the
@@ -85,6 +89,9 @@ class Controller {
   void SetStoreDetails(steam::StoreDetailsService* store_details) { store_details_ = store_details; }
   // The server list and measurements run on their own worker; only their public snapshot enters the UI.
   void SetDownloadServers(steam::DownloadServerService* servers) { download_servers_ = servers; }
+  // Workshop items (#856): the sheet's listings are read on the service's worker; only plain values (titles, sizes,
+  // what a sync would do) reach the UI. Unset: the sheet says Playden can't list them here.
+  void SetWorkshopListing(steam::WorkshopListingService* listing) { workshop_listing_ = listing; }
   // Steam friends (online-steam only; otherwise never set): wanted while signed in. The latest snapshot is
   // kept here for the UI; no credentials are in it.
   void SetFriends(steam::FriendsService* friends) { friends_ = friends; }
@@ -222,6 +229,9 @@ class Controller {
   std::optional<GameId> requested_store_detail_;
   void TickInstalls();
   void TickDownloadServers();
+  void TickWorkshop();
+  steam::WorkshopListingService* workshop_listing_ = nullptr;
+  std::uint64_t workshop_generation_ = 0;  // the account generation the service last had
   bool DownloadServerTestAllowed() const;
   steam::DownloadServerService* download_servers_ = nullptr;
   web::Service* web_ = nullptr;

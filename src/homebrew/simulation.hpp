@@ -94,8 +94,9 @@ enum class RuntimeState { Unavailable, Checking, Ready, Failed };
 enum class LogState { Loading, Ready, Failed };
 // Update: an installed game's update (or DLC bought since), from its details page. Move: an installed game to
 // another drive (volume_id). ChangeDlc: an installed game's DLC from Manage DLC, as an update with excluded_dlc.
+// ChangeWorkshop: an installed Steam game's Workshop items (#856), with workshop_off.
 enum class InstallRequestKind { Install, Pause, Resume, DownloadNow, MoveUp, MoveDown, Cancel, Uninstall, SetDefaultVolume,
-                                DismissCompleted, ClearCompleted, Update, Move, ChangeDlc };
+                                DismissCompleted, ClearCompleted, Update, Move, ChangeDlc, ChangeWorkshop };
 struct InstallRequest {
     InstallRequestKind kind = InstallRequestKind::Install;
     GameId game_id;
@@ -110,6 +111,11 @@ struct InstallRequest {
     std::optional<std::uint64_t> install_bytes;
     // Install: the DLC turned off in the install sheet, sorted. ChangeDlc: every DLC the game is to leave out, sorted.
     std::vector<GameId> excluded_dlc;
+    // ChangeWorkshop: every Workshop item the player turned off, sorted (the whole choice, saved beside the items).
+    std::vector<std::uint64_t> workshop_off;
+    // ChangeWorkshop in Online: Steam installs every subscription, so every item is on for the job and the choice
+    // saved for Offline emulation stays as it is (workshop_off is not sent).
+    bool workshop_all = false;
 };
 // Game maintenance the details page offers (simulated in fixture mode).
 enum class MaintenanceKind { ApplySettings, ClearShaderCache, Repair, BackupSaves, RecreateBottle, UpdateRuntime, RegisterAgain };
@@ -149,6 +155,7 @@ struct LiveInstallJob {
     std::uint64_t check_files = 0;
     std::optional<std::uint64_t> estimated_bytes;  // what the job was asked with, DLC choice included
     bool dlc_change = false;  // an update that changes the game's DLC (Manage DLC)
+    bool workshop_change = false;  // an update of the game's Workshop items only, not of the game
 };
 struct LiveInstalledGame {
     GameId game_id;
@@ -160,6 +167,27 @@ struct LiveInstalledGame {
     bool dlc_known = false;
     std::vector<GameId> installed_dlc;
     std::vector<GameId> excluded_dlc;
+};
+// Workshop items (#856): what a sync does to one item with it on and with it off (steam::WorkshopAction).
+enum class WorkshopItemAction { Download, Update, Keep, Remove, SkipLegacy, SkipHandPlaced, SkipOff };
+struct LiveWorkshopItem {
+    std::uint64_t id = 0;
+    std::string title;
+    std::uint64_t file_size = 0;
+    bool subscribed = true;  // false: Playden holds it, the player unsubscribed
+    bool on = true;          // the saved choice
+    WorkshopItemAction on_action = WorkshopItemAction::Keep;
+    WorkshopItemAction off_action = WorkshopItemAction::SkipOff;
+    std::uint64_t on_bytes = 0;   // what that action downloads (Download, Update) or frees (Remove)
+    std::uint64_t off_bytes = 0;
+};
+// One game's Workshop items as the listing worker read them, or why it couldn't (a sentence for the player).
+struct LiveWorkshopItems {
+    GameId game_id;
+    std::string error;
+    std::vector<LiveWorkshopItem> items;   // subscriptions in Steam's order, then items held but unsubscribed
+    std::vector<std::uint64_t> saved_off;  // the saved choice, sorted
+    bool truncated = false;
 };
 // A recent finished download, listed in Downloads after the queue.
 struct LiveCompletedDownload {
@@ -895,6 +923,7 @@ struct Job {
     std::string server_name;  // live, while downloading: the download server's display name
     bool update = false;  // an installed game's update (kind stays "install": a game's download)
     bool dlc_change = false;  // live: the update changes the game's DLC (Manage DLC)
+    bool workshop_change = false;  // live: the update brings the game's Workshop items in line, not the game
     bool locked = false;  // the update is putting its files in place, or the move must finish: Play waits for it
     bool move = false;    // an installed game moving to volume_id from from_volume_id: Play waits while it runs
     std::string from_volume_id;
@@ -1362,7 +1391,8 @@ public:
     void NotifyUninstallStopped(GameId id, const std::string& reason);
     // A move or an update the install service refused when it was asked (InstallRequestKind::Move, ::Update).
     void NotifyMoveRefused(GameId id, const std::string& reason);
-    void NotifyUpdateRefused(GameId id, const std::string& reason);
+    // `title`: what the notice says ("Can't update", or the Workshop items' "Can't change Workshop items").
+    void NotifyUpdateRefused(GameId id, const std::string& reason, const std::string& title = "Can't update");
     // The uninstall is over: the game's PS5 title and files are gone. Queue lists it as done.
     void NotifyUninstallFinished(GameId id);
     // Play prepared the game first and that ended without a playable title.
@@ -1415,6 +1445,10 @@ public:
     // starts from Home next, and Playden hands it what Play would first (Controller::HandOverForHome).
     [[nodiscard]] std::optional<GameId> FinishSetupGame() const;
     [[nodiscard]] std::vector<DownloadServerRequest> TakeDownloadServerRequests();
+    // Live mode: the games whose Workshop items the sheet asks for (it opened, or Try again), oldest first; and the
+    // listing worker's answer for one, which the open sheet shows at once.
+    [[nodiscard]] std::vector<GameId> TakeWorkshopRequests();
+    void UpdateWorkshopItems(LiveWorkshopItems listing);
     // Live mode: the folder holding install.log, auth.log and launch.log for the log viewer.
     void SetLogDirectory(std::filesystem::path directory);
     // Live mode: the drives installs can use and the one new installs go to.
@@ -1729,6 +1763,12 @@ private:
     std::string install_language_;
     std::map<GameId, bool> install_dlc_choice_;  // what the install sheet's player changed (on?), for this install only
     std::map<GameId, bool> manage_dlc_choice_;  // Manage DLC: what the player changed (on?) while the sheet is open
+    // Workshop items (#856): each game's last listing (with the account generation it was read under), the games
+    // waiting for one, the requests for the controller, and what the player changed (on?) while the sheet is open.
+    std::map<GameId, std::pair<std::uint64_t, LiveWorkshopItems>> workshop_items_;
+    std::set<GameId> workshop_loading_;
+    std::vector<GameId> workshop_requests_;
+    std::map<std::uint64_t, bool> workshop_choice_;
     bool page_under_install_sheet_ = false;  // while the page behind the install sheet is built
     // Live: the version (branch) chosen in the install sheet for this one install (empty: public).
     std::string install_version_;
@@ -2028,6 +2068,7 @@ private:
     std::map<GameId, JobState> live_job_states_;
     std::set<GameId> live_update_jobs_;  // the live jobs that are updates, as last projected
     std::set<GameId> live_dlc_jobs_;     // of those, the DLC changes
+    std::set<GameId> live_workshop_jobs_;  // of those, the Workshop items jobs
     std::set<GameId> live_move_jobs_;    // the live jobs that are moves, as last projected
     std::set<GameId> canceled_updates_;  // updates the player canceled, until their job ends
     std::set<GameId> live_installed_ids_;
@@ -2551,6 +2592,36 @@ private:
     [[nodiscard]] bool manage_dlc_short_of_room(GameId id) const;
     [[nodiscard]] bool manage_dlc_offered(GameId id) const;
     void open_manage_dlc(GameId id);
+    // Workshop items (#856) of an installed Steam game: its listing once read (this account's), each item's choice
+    // in the sheet, what Apply does, why it can't now, and the sheet's rows.
+    [[nodiscard]] const LiveWorkshopItems* workshop_listing(GameId id) const;
+    // In Online Steam installs every item the account subscribes to: none turns, and each one that downloads is on.
+    // `online`: workshop_mode is "online".
+    [[nodiscard]] bool workshop_item_on(const LiveWorkshopItem& item, bool online) const;
+    [[nodiscard]] static bool workshop_item_toggles(const LiveWorkshopItem& item, bool online);
+    [[nodiscard]] static WorkshopItemAction workshop_item_action(const LiveWorkshopItem& item, bool on);
+    struct WorkshopPlan {
+        std::vector<std::uint64_t> off;  // the whole choice: the listed items off, and saved ones it doesn't list
+        std::size_t downloads = 0, updates = 0, removals = 0;
+        std::uint64_t download_bytes = 0;
+        std::uint64_t freed_bytes = 0;
+        bool choice_changed = false;  // off differs from the saved choice (never in Online, which has none)
+        [[nodiscard]] bool changed() const noexcept { return downloads || updates || removals || choice_changed; }
+    };
+    [[nodiscard]] WorkshopPlan workshop_plan(GameId id) const;
+    [[nodiscard]] std::string workshop_blocker(GameId id) const;
+    [[nodiscard]] bool workshop_offered(GameId id) const;
+    // What the game's Steam features setting means for its items: "online" (Valve's client keeps every subscription),
+    // "online-library" (Online, but the game isn't in the bottle's Steam library: nothing reaches the client), "game"
+    // (not handed over), or empty (Offline emulation).
+    [[nodiscard]] std::string workshop_mode(GameId id) const;
+    // What Online needs for the items to reach Valve's client.
+    [[nodiscard]] std::string workshop_library_hint() const;
+    void open_workshop_items(GameId id);
+    void refresh_workshop_sheet();
+    [[nodiscard]] std::vector<std::string> workshop_sheet_actions(GameId id) const;
+    // Fixture mode: a synthetic listing with an item in each state.
+    [[nodiscard]] LiveWorkshopItems fixture_workshop_items(GameId id) const;
     // A sheet's rows depend on the game's details and on the version and language chosen.
     void refresh_install_sheet(GameId id);
     // The version chosen in the install sheet for `id`, when it is not the public one.

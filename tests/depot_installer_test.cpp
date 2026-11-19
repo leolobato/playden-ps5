@@ -1,6 +1,7 @@
 #include "steam/backend/depot_chunk.h"
 #include "steam/backend/depot_installer.h"
 #include "steam/backend/steam_install_runner.h"
+#include "steam/backend/workshop_items.h"
 #include "installs/install_record.h"
 #include "steam/install_volumes.h"
 
@@ -1055,6 +1056,48 @@ void StatsAndRemovalLogs(const std::filesystem::path& root) {
   CHECK(removals == 2);
   CHECK(!runner.Remove((root / "account-name").string() + "/..").empty());
   CHECK(removals == 2); // no unvalidated path/name is logged
+}
+
+// A Workshop items job (#856) runs on the game's bottle only: without one it fails before Steam is asked anything,
+// and an update of the game's own files waiting on disk is left to the game's own update.
+void WorkshopJobNeedsABottle(const std::filesystem::path& root) {
+  CmClient cm(CmClientHooks{}, cm::DeviceIdentity{});
+  CdnClient cdn([](const HttpRequest&, const std::atomic<bool>&) { return HttpResponse{}; });
+  struct OneSession final : SessionRepository {
+    Result<std::optional<StoredSession>> Load() const override {
+      return Result<std::optional<StoredSession>>::Success(StoredSession{123, "synthetic", "refresh", "access", {}});
+    }
+    Result<void> Save(const StoredSession&) const override { return Result<void>::Success(); }
+    Result<void> Clear() const override { return Result<void>::Success(); }
+  } sessions;
+  SteamInstallRunner runner(sessions, cm, cdn);
+  std::vector<std::string> lines;
+  runner.SetLog([&lines](std::uint32_t, const char* step, const char* result, const char*) {
+    lines.push_back(std::string(step) + ":" + result);
+  });
+  const auto game = (root / "1942280").string();
+  std::filesystem::create_directories(std::filesystem::path(game) / ".playden-update");
+  std::ofstream(std::filesystem::path(game) / ".playden-update" / "update.json")
+      << "{\"version\":1,\"phase\":\"replacing\",\"depots\":[],\"branch\":\"public\",\"language\":\"english\"}";
+  InstallOptions options;
+  options.workshop = true;
+  std::atomic<bool> cancel{false};
+  int asked_apply = 0;
+  const std::function<bool()> may_apply = [&asked_apply] { ++asked_apply; return true; };
+  // Unset: no game has a bottle.
+  auto result = runner.Update(GameId::Steam(1942280), game, options, cancel, {}, {}, may_apply);
+  CHECK(!result.ok && !result.retry_later && result.failure == kWorkshopNoBottle);
+  std::vector<std::uint32_t> resolved;
+  runner.SetWorkshopBottle([&resolved](std::uint32_t app) -> std::optional<std::string> {
+    resolved.push_back(app);
+    return std::nullopt;
+  });
+  result = runner.Update(GameId::Steam(1942280), game, options, cancel, {}, {}, may_apply);
+  CHECK(!result.ok && result.failure == kWorkshopNoBottle && resolved == std::vector<std::uint32_t>{1942280});
+  CHECK(asked_apply == 0 && lines.size() == 2 && lines.back() == "workshop:no-bottle");
+  // The game's own update was neither finished nor discarded.
+  const auto state = installs::ReadUpdateState(game);
+  CHECK(state && state->phase != installs::UpdatePhase::kStaging);
 }
 
 void RunStats(const std::filesystem::path& base) {
@@ -2960,6 +3003,7 @@ int main(int argc, char** argv) {
   CountsActualUsefulCompressedBytes(base / "actual-compressed");
   StorageFailureEndsStats(base / "storage-stats");
   StatsAndRemovalLogs(base / "removal");
+  WorkshopJobNeedsABottle(base / "workshop-bottle");
   RunStats(base / "stats");
   FactsGoInBeforeTheRecord(base / "facts-before-record");
   InstallsMergedDepotsAndWritesRecord(base / "install");

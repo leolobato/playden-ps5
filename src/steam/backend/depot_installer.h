@@ -288,6 +288,17 @@ class DepotInstaller {
     hooks_.remember_fastest = std::move(remember);
   }
   void SetTuning(DownloadTuning tuning) { tuning_ = tuning; }
+  // Checks each manifest once it is fetched and decrypted, before any of its chunks: an error other than kNone
+  // takes the place of the manifest's (Run then tries another server, as after a bad manifest).
+  void SetManifestCheck(std::function<InstallError(const DepotManifest&)> check) {
+    auto inner = hooks_.manifest;
+    hooks_.manifest = [inner = std::move(inner), check = std::move(check)](
+                          const ContentServer& server, const DepotGrant& grant, const std::atomic<bool>& cancel,
+                          DepotManifest* out) {
+      const auto error = inner ? inner(server, grant, cancel, out) : InstallError::kProtocol;
+      return error != InstallError::kNone ? error : check(*out);
+    };
+  }
  private:
   DownloadTuning tuning_;
 };

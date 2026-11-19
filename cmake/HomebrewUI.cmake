@@ -66,6 +66,7 @@ add_library(playden_steam_cm_codec STATIC
     "${CMAKE_SOURCE_DIR}/src/steam/backend/binary_kv.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/vdf.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/app_info.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/workshop_acf.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/prospero_profile.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/game_settings.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/my_presets.cpp"
@@ -271,7 +272,7 @@ target_link_libraries(playden_homebrew_runtime_host PUBLIC playden_native_coordi
     playden_runtime_installs playden_runtime_install_service playden_runtime_package_installer
     playden_runtime_private_directories playden_runtime_launch_service playden_runtime_session_reconciler
     playden_storage playden_steam_cm_codec playden_runtime_steamworks playden_runtime_layout_migration playden_local_store
-    playden_self_update playden_steam_core playden_gog)
+    playden_self_update playden_steam_core playden_gog playden_steam_cm)
 
 add_library(playden_homebrew_artwork STATIC
     "${CMAKE_SOURCE_DIR}/src/homebrew/artwork.cpp"
@@ -672,6 +673,30 @@ if(BUILD_TESTING)
     add_executable(runtime_steamworks_test tests/runtime_steamworks_test.cpp)
     target_link_libraries(runtime_steamworks_test PRIVATE playden_runtime_steamworks)
     add_test(NAME runtime_steamworks COMMAND runtime_steamworks_test "${CMAKE_SOURCE_DIR}/runtime/steamworks")
+    # Steam Workshop items handed to gbe_fork (mods.json), and the same on the console's code paths.
+    add_executable(runtime_workshop_mods_test tests/runtime_workshop_mods_test.cpp)
+    target_link_libraries(runtime_workshop_mods_test PRIVATE playden_runtime_steamworks)
+    target_compile_features(runtime_workshop_mods_test PRIVATE cxx_std_17)
+    add_test(NAME runtime_workshop_mods COMMAND runtime_workshop_mods_test)
+    add_executable(runtime_workshop_mods_native_policy_test tests/runtime_workshop_mods_test.cpp
+        "${CMAKE_SOURCE_DIR}/src/runtime/workshop_mods.cpp" "${CMAKE_SOURCE_DIR}/src/platform/managed_directory.cpp")
+    target_include_directories(runtime_workshop_mods_native_policy_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
+    target_link_libraries(runtime_workshop_mods_native_policy_test PRIVATE playden_runtime_artifact_hash)
+    target_compile_features(runtime_workshop_mods_native_policy_test PRIVATE cxx_std_17)
+    target_compile_definitions(runtime_workshop_mods_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1)
+    add_test(NAME runtime_workshop_mods_native_policy COMMAND runtime_workshop_mods_native_policy_test)
+    # Steam Workshop items in Valve's appworkshop_<appid>.acf (Online), and the same on the console's code paths.
+    add_executable(runtime_workshop_acf_test tests/runtime_workshop_acf_test.cpp)
+    target_link_libraries(runtime_workshop_acf_test PRIVATE playden_steam_cm_codec)
+    target_compile_features(runtime_workshop_acf_test PRIVATE cxx_std_17)
+    add_test(NAME runtime_workshop_acf COMMAND runtime_workshop_acf_test)
+    add_executable(runtime_workshop_acf_native_policy_test tests/runtime_workshop_acf_test.cpp
+        "${CMAKE_SOURCE_DIR}/src/runtime/workshop_acf.cpp" "${CMAKE_SOURCE_DIR}/src/steam/backend/vdf.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/managed_directory.cpp")
+    target_include_directories(runtime_workshop_acf_native_policy_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
+    target_compile_features(runtime_workshop_acf_native_policy_test PRIVATE cxx_std_17)
+    target_compile_definitions(runtime_workshop_acf_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1)
+    add_test(NAME runtime_workshop_acf_native_policy COMMAND runtime_workshop_acf_native_policy_test)
     add_executable(runtime_steam_client_install_test tests/runtime_steam_client_install_test.cpp)
     target_link_libraries(runtime_steam_client_install_test PRIVATE playden_homebrew_runtime_host)
     add_test(NAME runtime_steam_client_install COMMAND runtime_steam_client_install_test)
@@ -766,6 +791,10 @@ if(BUILD_TESTING)
     add_executable(homebrew_download_servers_test "${CMAKE_SOURCE_DIR}/tests/homebrew_download_servers_test.cpp")
     target_link_libraries(homebrew_download_servers_test PRIVATE playden_homebrew_controller)
     add_test(NAME homebrew_download_servers COMMAND homebrew_download_servers_test)
+    # Workshop items (#856): the sheet's listing worker and its Apply through the controller.
+    add_executable(homebrew_workshop_wiring_test "${CMAKE_SOURCE_DIR}/tests/homebrew_workshop_wiring_test.cpp")
+    target_link_libraries(homebrew_workshop_wiring_test PRIVATE playden_homebrew_controller)
+    add_test(NAME homebrew_workshop_wiring COMMAND homebrew_workshop_wiring_test)
     add_executable(homebrew_update_check_test "${CMAKE_SOURCE_DIR}/tests/homebrew_update_check_test.cpp")
     target_link_libraries(homebrew_update_check_test PRIVATE playden_homebrew_controller)
     add_test(NAME homebrew_update_check COMMAND homebrew_update_check_test)

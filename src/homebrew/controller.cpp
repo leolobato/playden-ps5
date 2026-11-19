@@ -4,6 +4,7 @@
 #include "diagnostics/redaction.h"
 #include "platform/secret.h"
 #include "platform/usb_mount.h"
+#include "steam/backend/workshop_listing_service.h"
 #include "steam/install_volumes.h"
 #include "steam/secret.h"
 #include <algorithm>
@@ -456,6 +457,7 @@ void Controller::Tick() {
   TickImports();
   TickInstalls();
   TickDownloadServers();
+  TickWorkshop();
   TickFriends();
   TickWebAccess();
   TickGogRelay();
@@ -2485,6 +2487,74 @@ void Controller::TickDownloadServers() {
   model_.ApplyLiveDownloadServers(live);
   shown_download_servers_ = std::move(live);
 }
+namespace {
+WorkshopItemAction ModelAction(steam::WorkshopAction action) {
+  switch (action) {
+    case steam::WorkshopAction::kDownload: return WorkshopItemAction::Download;
+    case steam::WorkshopAction::kUpdate: return WorkshopItemAction::Update;
+    case steam::WorkshopAction::kKeep: return WorkshopItemAction::Keep;
+    case steam::WorkshopAction::kRemove: return WorkshopItemAction::Remove;
+    case steam::WorkshopAction::kSkipLegacy: return WorkshopItemAction::SkipLegacy;
+    case steam::WorkshopAction::kSkipHandPlaced: return WorkshopItemAction::SkipHandPlaced;
+    case steam::WorkshopAction::kSkipOff: return WorkshopItemAction::SkipOff;
+  }
+  return WorkshopItemAction::Keep;
+}
+
+// The sentence the Workshop items sheet shows for a listing that failed.
+std::string WorkshopListingText(steam::WorkshopListingError error) {
+  switch (error) {
+    case steam::WorkshopListingError::kNone: return {};
+    case steam::WorkshopListingError::kNoSession: return "Sign in to Steam to see the game's Workshop items.";
+    case steam::WorkshopListingError::kNetwork: return "Could not reach Steam. Try again when you are online.";
+    case steam::WorkshopListingError::kSteam: return "Steam didn't send the game's Workshop items. Try again later.";
+    case steam::WorkshopListingError::kNoBottle: return steam::kWorkshopNoBottle;
+    case steam::WorkshopListingError::kStorage: return "Could not read the game's Workshop items on the console.";
+  }
+  return "Could not get the game's Workshop items.";
+}
+}  // namespace
+
+void Controller::TickWorkshop() {
+  const auto requests = model_.TakeWorkshopRequests();
+  if (!workshop_listing_) {
+    // Nothing reads them here: the sheet says so instead of waiting.
+    for (const auto& game : requests) {
+      LiveWorkshopItems listing;
+      listing.game_id = game;
+      listing.error = "Playden can't list Workshop items here.";
+      model_.UpdateWorkshopItems(std::move(listing));
+    }
+    return;
+  }
+  // Another account's subscriptions never reach this one's sheet.
+  const auto generation = model_.state().account_generation;
+  if (generation != workshop_generation_) {
+    workshop_listing_->Invalidate();
+    workshop_generation_ = generation;
+  }
+  for (const auto& game : requests) {
+    if (const auto app = game.steam_app()) workshop_listing_->Request(*app);
+    else {
+      LiveWorkshopItems listing;
+      listing.game_id = game;
+      listing.error = "Only Steam games have Workshop items.";
+      model_.UpdateWorkshopItems(std::move(listing));
+    }
+  }
+  for (auto& answer : workshop_listing_->Pump()) {
+    LiveWorkshopItems listing;
+    listing.game_id = GameId::Steam(answer.app_id);
+    listing.error = WorkshopListingText(answer.error);
+    listing.saved_off = std::move(answer.saved_off);
+    listing.truncated = answer.truncated;
+    for (auto& item : answer.items)
+      listing.items.push_back({item.id, std::move(item.title), item.file_size, item.subscribed, item.on,
+                               ModelAction(item.on_action), ModelAction(item.off_action), item.on_bytes, item.off_bytes});
+    model_.UpdateWorkshopItems(std::move(listing));
+  }
+}
+
 // The model checks a batch against the Queue's size before asking for it.
 static_assert(kQueueJobLimit == steam::InstallService::kMaxJobs);
 void Controller::TickInstalls() {
@@ -2524,6 +2594,15 @@ void Controller::TickInstalls() {
         options.dlc_choice = true;
         if (const auto refused = installs_->Update(request.game_id, options, request.install_bytes); !refused.empty())
           model_.NotifyUpdateRefused(request.game_id, refused);
+        break;
+      }
+      case InstallRequestKind::ChangeWorkshop: {
+        // Workshop items: the whole choice of items turned off, saved beside the items by the job; nothing is reserved
+        // on the game's drive (the items go to its bottle). Online: every item, and the saved choice is left alone.
+        const auto refused = request.workshop_all ? installs_->SyncWorkshop(request.game_id, std::nullopt, true)
+                                                  : installs_->SyncWorkshop(request.game_id, request.workshop_off);
+        if (!refused.empty())
+          model_.NotifyUpdateRefused(request.game_id, refused, "Can't change Workshop items");
         break;
       }
       case InstallRequestKind::Move:
@@ -2683,6 +2762,7 @@ void Controller::TickInstalls() {
                         update && running && (job.step == steam::InstallStep::kApplying || job.locked)};
     live.estimated_bytes = job.estimated_bytes;
     live.dlc_change = job.dlc_change;
+    live.workshop_change = job.workshop_change;
     if (move) {
       using Step = LiveInstallJob::MoveStep;
       live.move = true;

@@ -3,6 +3,7 @@
 #include "runtime/steamworks.h"
 #include "steam/backend/app_info.h"
 #include "steam/backend/cloud_mapping.h"
+#include "steam/backend/workshop_items.h"
 
 #include <algorithm>
 #include <set>
@@ -298,7 +299,71 @@ InstallRunner::Result SteamInstallRunner::UpdateApp(const StoredSession& session
                                                  const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
                                                  const std::function<void(InstallStep)>& step,
                                                  const std::function<bool()>& may_apply) {
+  if (options.workshop) return SyncWorkshop(session, id, options, cancel, progress, step, may_apply);
   return Run(session, id, root, options, cancel, progress, step, true, may_apply);
+}
+
+InstallRunner::Result SteamInstallRunner::SyncWorkshop(const StoredSession& session, std::uint32_t id,
+                                                    const InstallOptions& options, const std::atomic<bool>& cancel,
+                                                    const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
+                                                    const std::function<void(InstallStep)>& step,
+                                                    const std::function<bool()>& may_apply) {
+  Result result;
+  current_app_.store(id);
+  server_name_.clear();
+  const auto log = [this, id](const char* category, const std::string& detail) {
+    if (log_) log_(id, "workshop", category, detail.c_str());
+  };
+  // Before Steam is asked anything: without a bottle there is nowhere to put the items.
+  const auto prefix = workshop_bottle_ ? workshop_bottle_(id) : std::nullopt;
+  if (!prefix || prefix->empty()) {
+    log("no-bottle", "");
+    result.failure = kWorkshopNoBottle;
+    return result;
+  }
+  // The game's appinfo names the depot its items download from.
+  const auto info = cm_.FetchAppInfo(session, {id}, cancel);
+  if (cancel.load()) {
+    result.canceled = true;
+    return result;
+  }
+  if (!info.ok()) {
+    log("app_info", CmErrorName(info.error));
+    result.failure = "Could not reach Steam. Resume to try again.";
+    result.retry_later = info.error == CmError::kNetwork || info.error == CmError::kTimeout;
+    return result;
+  }
+  const auto buffer = info.buffers.find(id);
+  if (buffer == info.buffers.end()) {
+    log("app_info", "missing");
+    result.failure = "Steam has no install details for this game.";
+    return result;
+  }
+  const auto depot = WorkshopDepotId(id, buffer->second);
+  WorkshopJobRequest request;
+  request.app_id = id;
+  request.prefix = *prefix;
+  if (options.workshop_off) request.off = std::set<std::uint64_t>(options.workshop_off->begin(), options.workshop_off->end());
+  request.all_on = options.workshop_all;
+  request.subscriptions = [this, &session, id, log](const std::atomic<bool>& stop) {
+    return FetchWorkshopSubscriptions(cm_, session, id, stop, [&log](const std::string& line) { log("subscriptions", line); });
+  };
+  request.download = MakeWorkshopDownloader(cm_, cdn_, session, id, depot);
+  request.may_apply = may_apply;
+  // The game was held only for that change; the job goes on downloading.
+  request.applied = [&step] { if (step) step(InstallStep::kDownloading); };
+  request.progress = [&progress](std::uint64_t done, std::uint64_t total) { if (progress) progress(done, total, 0); };
+  request.log = [&log](const std::string& line) { log("sync", line); };
+  if (step) step(InstallStep::kDownloading);
+  const auto outcome = RunWorkshopJob(request, cancel);
+  log("job", std::string("ok=") + (outcome.ok ? "1" : "0") + " canceled=" + (outcome.canceled ? "1" : "0") +
+                 " retry=" + (outcome.retry_later ? "1" : "0") + " depot_is_app=" + (depot == id ? "1" : "0"));
+  result.ok = outcome.ok;
+  result.canceled = outcome.canceled;
+  result.retry_later = outcome.retry_later;
+  result.failure = outcome.failure;
+  if (outcome.game_running) result.waiting = kWaitingForGame;
+  return result;
 }
 
 InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std::uint32_t id, const std::string& root,

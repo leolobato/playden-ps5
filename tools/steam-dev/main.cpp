@@ -16,6 +16,12 @@
 //   playden-steam-dev --data <folder> config <namespace> [version] <out file>
 //                                                    CloudConfigStore.Download#1 over CM for one namespace; writes
 //                                                    the decoded entries to <out file> (0600) and prints counts
+//   playden-steam-dev --data <folder> workshop <app id>
+//                                                    PublishedFile.GetUserFiles#1 over CM: the account's Workshop
+//                                                    subscriptions for the game, one line per item (#856)
+//   playden-steam-dev --data <folder> workshop-sync <app id> <bottle folder>
+//                                                    downloads them as Playden does, into
+//                                                    <bottle folder>/drive_c/Program Files (x86)/Steam/steamapps/workshop
 //
 // <folder> is absolute, with no link in any component. Output never holds a token or the account name.
 #include "homebrew/qr.hpp"
@@ -23,7 +29,10 @@
 #include "steam/backend/auth_client.h"
 #include "steam/backend/collections_client.h"
 #include "steam/backend/cm_client.h"
+#include "steam/backend/cdn_client.h"
 #include "steam/backend/proto_wire.h"
+#include "steam/backend/workshop_client.h"
+#include "steam/backend/workshop_items.h"
 #include "steam/session_store.h"
 
 #include <sys/stat.h>
@@ -51,7 +60,8 @@ namespace proto = playden::steam::proto;
 
 int Usage() {
   std::fputs("usage: playden-steam-dev --data <folder> sign-in | sign-in-qr <png file> | collections |\n"
-             "                         config <namespace> [version] <out file>\n", stderr);
+             "                         config <namespace> [version] <out file> | workshop <app id> |\n"
+             "                         workshop-sync <app id> <bottle folder>\n", stderr);
   return 2;
 }
 
@@ -313,6 +323,56 @@ int Collections(const std::string& folder) {
   return 0;
 }
 
+std::optional<StoredSession> LoadSession(Storage& storage) {
+  const auto loaded = SessionStore(storage).Load();
+  if (!loaded.ok() || !loaded.value()) {
+    std::fputs("no saved session\n", stderr);
+    return std::nullopt;
+  }
+  return *loaded.value();
+}
+
+// The account's Workshop subscriptions for one game (#856), as Playden reads them.
+int Workshop(const std::string& folder, std::uint32_t app_id, const std::string& bottle) {
+  Storage storage(folder);
+  const auto session = LoadSession(storage);
+  if (!session) return 1;
+  steam::CmClient cm(PLAYDEN_STEAM_DEV_CA_BUNDLE, storage);
+  std::atomic<bool> cancel{false};
+  const auto log = [](const std::string& line) { std::printf("%s\n", line.c_str()); };
+  const auto subscriptions = steam::FetchWorkshopSubscriptions(cm, *session, app_id, cancel, log);
+  std::printf("error=%s eresult=%d total=%u pages=%u kept=%zu truncated=%d\n", steam::CmErrorName(subscriptions.error),
+              subscriptions.eresult, subscriptions.total, subscriptions.pages, subscriptions.items.size(),
+              subscriptions.truncated ? 1 : 0);
+  for (const auto& item : subscriptions.items)
+    std::printf("item %" PRIu64 " manifest=%" PRIu64 " bytes=%" PRIu64 " updated=%u legacy=%d title=\"%s\"\n", item.id,
+                item.manifest, item.file_size, item.time_updated, item.manifest == 0 ? 1 : 0, Escape(item.title).c_str());
+  if (!subscriptions.ok()) return 1;
+  if (bottle.empty()) return 0;
+
+  std::uint32_t depot = app_id;
+  const auto infos = cm.FetchAppInfo(*session, {app_id}, cancel);
+  if (infos.ok() && infos.buffers.count(app_id)) depot = steam::WorkshopDepotId(app_id, infos.buffers.at(app_id));
+  std::printf("workshop depot=%u (appinfo %s)\n", depot, infos.ok() ? "read" : "not read");
+  if (!steam::EnsureWorkshopFolder(bottle)) {
+    std::fputs("cannot make the workshop folder\n", stderr);
+    return 1;
+  }
+  steam::CdnClient cdn(PLAYDEN_STEAM_DEV_CA_BUNDLE);
+  steam::WorkshopSyncRequest request;
+  request.app_id = app_id;
+  request.workshop_folder = steam::WorkshopFolder(bottle);
+  request.subscribed = subscriptions.items;
+  request.download = steam::MakeWorkshopDownloader(cm, cdn, *session, app_id, depot);
+  request.log = log;
+  const auto result = steam::SyncWorkshopItems(request, cancel);
+  std::printf("sync error=%s detail=%s\n", steam::InstallErrorName(result.error), result.detail.c_str());
+  for (const auto& item : result.items)
+    std::printf("item %" PRIu64 " %s error=%s %s\n", item.id, steam::WorkshopOutcomeName(item.outcome),
+                steam::InstallErrorName(item.error), item.detail.c_str());
+  return result.error == steam::InstallError::kNone ? 0 : 1;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -327,6 +387,9 @@ int main(int argc, char** argv) {
   if (command == "sign-in") return SignIn(folder);
   if (command == "sign-in-qr" && argc - i == 1 && argv[i][0] == '/') return SignInQr(folder, argv[i]);
   if (command == "collections" && argc - i == 0) return Collections(folder);
+  if (command == "workshop" && argc - i == 1) return Workshop(folder, static_cast<std::uint32_t>(std::strtoul(argv[i], nullptr, 10)), {});
+  if (command == "workshop-sync" && argc - i == 2 && argv[i + 1][0] == '/')
+    return Workshop(folder, static_cast<std::uint32_t>(std::strtoul(argv[i], nullptr, 10)), argv[i + 1]);
   if (command == "config") {
     if (argc - i == 2) return Config(folder, std::strtoul(argv[i], nullptr, 10), 0, argv[i + 1]);
     if (argc - i == 3) return Config(folder, std::strtoul(argv[i], nullptr, 10), std::strtoull(argv[i + 1], nullptr, 10), argv[i + 2]);

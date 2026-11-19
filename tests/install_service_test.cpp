@@ -92,6 +92,7 @@ class Runner final : public SessionInstallRunner {
   // Updates: a fake that stages (holding while `block`), reports kApplying, holds while `apply_block`
   // (cancel leaves it putting files in place), then writes a record of 8192 bytes.
   std::atomic<bool> apply_block{false};
+  std::atomic<bool> workshop_block{false};
   std::atomic<int> updates{0};
   std::atomic<int> finishes{0};
   std::vector<std::string> update_roots;
@@ -116,6 +117,23 @@ class Runner final : public SessionInstallRunner {
       std::lock_guard<std::mutex> lock(mutex);
       update_roots.push_back(root);
       update_options.push_back(options);
+    }
+    if (options.workshop) {
+      // As SteamInstallRunner's Workshop items: the game's folder is never touched. Downloads, asks before an item
+      // folder changes, reports downloading again after it, holds while `workshop_block`, then reports nothing installed.
+      step(InstallStep::kDownloading);
+      progress(10, 100, 0);
+      while (block) {
+        if (cancel) return {false, true, {}, 0};
+        std::this_thread::sleep_for(1ms);
+      }
+      if (may_apply && !may_apply()) return {false, false, {}, 0, true, kWaitingForGame};
+      step(InstallStep::kDownloading);
+      while (workshop_block) {
+        if (cancel) return {false, true, {}, 0};
+        std::this_thread::sleep_for(1ms);
+      }
+      return {true, false, {}, 0};
     }
     WriteState(root, "staging");
     step(InstallStep::kDownloading);
@@ -1456,6 +1474,170 @@ void UpdatesAnInstalledGame(const std::filesystem::path& root) {
 // Manage DLC: an update with the whole DLC choice. Turning every DLC on leaves nothing out, so only the flag says the
 // choice replaces the record's; it reaches the runner with the record's branch and language, and a change Playden stopped
 // keeps it across a restart, also with nothing left out.
+// A Workshop items job (#856) is the game's update in the Queue but leaves the game as it is: its record, size, install
+// time and registry line, and it isn't listed as updated. The choice it carries survives a restart.
+void WorkshopJobLeavesTheGame(const std::filesystem::path& root) {
+  std::filesystem::remove_all(root);
+  Sessions sessions;
+  Runner runner(sessions);
+  const auto game = SteamId(720);
+  {
+    InstallService service(runner, root.string());
+    service.Install(game);
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return Installed(s, game) && !JobOf(s, game); });
+  }
+  const std::string record = "{\"version\":2,\"install_bytes\":4096,\"branch\":\"public\",\"language\":\"german\",\"excluded_dlc\":[721]}";
+  std::ofstream(root / "720" / ".playden-install.json") << record;
+  const auto record_text = [&root] {
+    std::ifstream in(root / "720" / ".playden-install.json");
+    return std::string(std::istreambuf_iterator<char>(in), {});
+  };
+  std::int64_t finished_at = 0;
+  runner.block = true;
+  {
+    InstallService service(runner, root.string());
+    for (const auto& installed : service.Snapshot().installed)
+      if (installed.id == game) finished_at = installed.finished_at;
+    CHECK(service.SyncWorkshop(SteamId(721), std::vector<std::uint64_t>{}) == "The game is not installed.");
+    // More items turned off than the bottle's choice keeps: refused with a sentence, never cut (the IDs cut would
+    // download). Repeats and zeros don't count toward it.
+    std::vector<std::uint64_t> too_many, at_cap{0, 1};
+    for (std::uint64_t item = 1; item <= 1001; ++item) too_many.push_back(item);
+    for (std::uint64_t item = 1; item <= 1000; ++item) at_cap.push_back(item);
+    CHECK(service.SyncWorkshop(game, too_many) == "Playden can keep at most 1,000 Workshop items turned off.");
+    CHECK(!JobOf(service.Snapshot(), game) && runner.updates == 0);
+    CHECK(service.SyncWorkshop(game, at_cap).empty());
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return runner.updates == 1; });
+    {
+      std::lock_guard<std::mutex> lock(runner.mutex);
+      CHECK(runner.update_options.back().workshop_off && runner.update_options.back().workshop_off->size() == 1000);
+    }
+    service.Cancel(game);
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, game); });
+    runner.updates = 0;
+    CHECK(service.SyncWorkshop(game, std::vector<std::uint64_t>{9, 3, 3, 0}).empty());
+    CHECK(service.SyncWorkshop(game) == "The game is already in the Queue.");
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return runner.updates == 1; });
+    {
+      std::lock_guard<std::mutex> lock(runner.mutex);
+      const auto& asked = runner.update_options.back();
+      CHECK(asked.workshop && asked.workshop_off == (std::vector<std::uint64_t>{3, 9}));
+      CHECK(asked.excluded_dlc.empty() && !asked.dlc_choice);
+    }
+    const auto running = service.Snapshot();
+    const auto* job = JobOf(running, game);
+    CHECK(job && job->kind == InstallJobKind::kUpdate && job->workshop_change && !job->dlc_change);
+    CHECK(job && !job->estimated_bytes);  // the items go to the bottle: nothing reserved on the game's drive
+    CHECK(RegistryLine(root, "720") == "720\tinternal\t4096\tupdate\tlang=german\tbranch=public\tworkshop\twsoff=3,9");
+    // Playden closes while it downloads: the job and its choice wait in the registry.
+  }
+  runner.workshop_block = true;
+  {
+    InstallService service(runner, root.string());
+    std::atomic<int> asked{0};
+    std::atomic<bool> locked_when_asked{false};
+    service.SetApplyGate([&](GameId id) {
+      locked_when_asked = service.Locked(id);
+      ++asked;
+      return ApplyAnswer::kApply;
+    });
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return runner.updates == 2; });
+    {
+      const auto restored = service.Snapshot();
+      const auto* job = JobOf(restored, game);
+      CHECK(job && job->workshop_change && !job->locked);
+      std::lock_guard<std::mutex> lock(runner.mutex);
+      CHECK(runner.update_options.back().workshop &&
+            runner.update_options.back().workshop_off == (std::vector<std::uint64_t>{3, 9}));
+    }
+    runner.block = false;
+    // Held only while the item folder changes: the step after it lets the game run again.
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return asked == 1; });
+    CHECK(locked_when_asked);
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return !service.Locked(game); });
+    CHECK(JobOf(service.Snapshot(), game));
+    runner.workshop_block = false;
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, game); });
+    const auto done = service.Snapshot();
+    const auto installed = std::find_if(done.installed.begin(), done.installed.end(),
+                                        [&](const playden::installs::InstalledGame& entry) { return entry.id == game; });
+    CHECK(installed != done.installed.end() && installed->install_bytes == 4096 && !installed->updated &&
+          installed->update_bytes == 0 && installed->finished_at == finished_at);
+    CHECK(installed != done.installed.end() && installed->record && installed->record->language == "german" &&
+          installed->record->excluded_dlc == std::vector<std::uint32_t>{721});
+    CHECK(std::none_of(done.completed.begin(), done.completed.end(),
+                       [&](const playden::installs::CompletedDownload& entry) { return entry.id == game && entry.updated; }));
+    CHECK(record_text() == record && !std::filesystem::exists(root / "720" / ".playden-update"));
+    CHECK(RegistryLine(root, "720") == "720\tinternal\t4096");
+  }
+  {
+    // Still installed after a restart. Without a choice the saved one holds: no "wsoff=". A Workshop job canceled
+    // deletes nothing of the game.
+    InstallService again(runner, root.string());
+    CHECK(Installed(again.Snapshot(), game) && !JobOf(again.Snapshot(), game));
+    runner.block = true;
+    CHECK(again.SyncWorkshop(game).empty());
+    AwaitAt(__LINE__, again, [&](const InstallSnapshot&) { return runner.updates == 3; });
+    CHECK(RegistryLine(root, "720") == "720\tinternal\t4096\tupdate\tlang=german\tbranch=public\tworkshop");
+    {
+      std::lock_guard<std::mutex> lock(runner.mutex);
+      CHECK(runner.update_options.back().workshop && !runner.update_options.back().workshop_off);
+    }
+    again.Cancel(game);
+    AwaitAt(__LINE__, again, [&](const InstallSnapshot& s) { return !JobOf(s, game); });
+    runner.block = false;
+    CHECK(Installed(again.Snapshot(), game) && record_text() == record);
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    CHECK(runner.discarded.empty());
+  }
+  {
+    // The game runs: the job waits for it to close, and the game stays playable meanwhile.
+    InstallService service(runner, root.string());
+    service.SetRetryDelays(20ms, 30s);
+    std::atomic<bool> running{true};
+    service.SetApplyGate([&](GameId) { return running.load() ? ApplyAnswer::kGameRunning : ApplyAnswer::kApply; });
+    CHECK(service.SyncWorkshop(game, std::vector<std::uint64_t>{}).empty());
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) {
+      const auto* job = JobOf(s, game);
+      return job && job->state == InstallJobState::kQueued && job->failure == InstallRunner::kWaitingForGame;
+    });
+    CHECK(!service.Locked(game));
+    running = false;
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, game); });
+    CHECK(RegistryLine(root, "720") == "720\tinternal\t4096" && record_text() == record);
+  }
+  {
+    // Workshop fields read back strictly: bad IDs are skipped, the rest of the line stays.
+    std::ofstream(root / ".playden-games")
+        << "720\tinternal\t4096\tupdate\tpaused\tworkshop\twsoff=07,x,0,5,,18446744073709551616,4\n";
+    InstallService service(runner, root.string());
+    CHECK(JobOf(service.Snapshot(), game) && JobOf(service.Snapshot(), game)->workshop_change);
+    service.Resume(game);
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, game); });
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    CHECK(runner.update_options.back().workshop_off == (std::vector<std::uint64_t>{4, 5}));
+  }
+  {
+    // Online: every item on, and no choice carried (the one saved in the bottle stays); kept across a restart.
+    std::ofstream(root / ".playden-games") << "720\tinternal\t4096\n";
+    runner.workshop_block = true;
+    {
+      InstallService service(runner, root.string());
+      CHECK(service.SyncWorkshop(game, std::vector<std::uint64_t>{7}, true).empty());
+      AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return JobOf(s, game) != nullptr; });
+      CHECK(RegistryLine(root, "720").find("\tworkshop\twsall") != std::string::npos &&
+            RegistryLine(root, "720").find("wsoff=") == std::string::npos);
+    }
+    runner.workshop_block = false;
+    InstallService service(runner, root.string());
+    service.Resume(game);
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, game); });
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    CHECK(runner.update_options.back().workshop && runner.update_options.back().workshop_all &&
+          !runner.update_options.back().workshop_off);
+  }
+}
+
 void DlcChangeKeepsItsChoice(const std::filesystem::path& root) {
   std::filesystem::remove_all(root);
   Sessions sessions;
@@ -1877,6 +2059,7 @@ int main() {
   UpdateWaitsForTheGameToClose(std::filesystem::temp_directory_path() / ("playden-update-wait-" + std::to_string(::getpid())));
   UpdatesAnInstalledGame(std::filesystem::temp_directory_path() / ("playden-update-service-" + std::to_string(::getpid())));
   DlcChangeKeepsItsChoice(std::filesystem::temp_directory_path() / ("playden-dlc-change-service-" + std::to_string(::getpid())));
+  WorkshopJobLeavesTheGame(std::filesystem::temp_directory_path() / ("playden-workshop-service-" + std::to_string(::getpid())));
   ScanFindsUpdatesFirst(std::filesystem::temp_directory_path() / ("playden-update-scan-" + std::to_string(::getpid())));
   InstallRecordsParse(std::filesystem::temp_directory_path() / ("playden-record-service-" + std::to_string(::getpid())));
   InstallOptionsReachTheRunner(std::filesystem::temp_directory_path() / ("playden-options-service-" + std::to_string(::getpid())));

@@ -58,9 +58,18 @@ struct InstallOptions {
   // An update that changes the game's DLC (Manage DLC): `excluded_dlc` is the whole choice and replaces what the
   // install record left out, so DLC can be turned on again. Otherwise an update leaves out the record's DLC too.
   bool dlc_choice = false;
+  // An update of a Steam game's Workshop items only (#856): the game's own files, install record and update state
+  // stay as they are; the DLC fields don't apply. `workshop_off`: the items the player turned off, sorted, the whole
+  // choice, which the job saves beside the items; none: the choice saved before. `workshop_all` (Steam features =
+  // Online): every subscribed item is on for this job, and the saved choice is neither read nor written (no
+  // `workshop_off` then).
+  bool workshop = false;
+  std::optional<std::vector<std::uint64_t>> workshop_off;
+  bool workshop_all = false;
   bool operator==(const InstallOptions& other) const {
     return language == other.language && branch == other.branch && excluded_dlc == other.excluded_dlc &&
-           dlc_choice == other.dlc_choice;
+           dlc_choice == other.dlc_choice && workshop == other.workshop && workshop_off == other.workshop_off &&
+           workshop_all == other.workshop_all;
   }
   bool operator!=(const InstallOptions& other) const { return !(*this == other); }
 };
@@ -106,6 +115,9 @@ struct InstallJobView {
   std::uint64_t held_bytes = 0;  // installed bytes already on disk (see PendingInstallBytes)
   std::optional<std::uint64_t> estimated_bytes;  // what the job was asked with, which its drive reserves
   bool dlc_change = false;  // an update that changes the game's DLC (InstallOptions::dlc_choice)
+  // An update of the game's Workshop items only (InstallOptions::workshop): "Workshop items", not an update of the
+  // game. It never locks the game for long: only while one item folder changes.
+  bool workshop_change = false;
   std::string failure;  // short, user-facing
   std::string volume_id;
   std::optional<std::uint64_t> bytes_per_second;
@@ -284,7 +296,16 @@ class InstallService {
   // download) is reserved as for installs. With `options.dlc_choice` the update changes the game's DLC to
   // `options.excluded_dlc`: DLC turned on downloads, files only a turned-off DLC had are deleted. Empty when
   // queued, or why not (a sentence for the player).
+  // With `options.workshop` (Steam games only) the update brings the game's Workshop items in line instead; see
+  // SyncWorkshop.
   std::string Update(GameId id, const InstallOptions& options = {}, std::optional<std::uint64_t> estimated_bytes = std::nullopt);
+  // Queues a Workshop items job for an installed Steam game (InstallOptions::workshop): it saves `off` (the items
+  // the player turned off; none: keep the saved choice) beside the items in the game's bottle, then downloads the
+  // subscribed items that are on and deletes the ones Playden downloaded that are off or unsubscribed. Nothing is
+  // reserved: the items go to the game's bottle, not its drive. Refused as Update refuses (no job, installed and
+  // available); empty when queued, or why not (a sentence for the player). `all` (Online): every subscribed item
+  // is on and the saved choice stays as it is; `off` is ignored.
+  std::string SyncWorkshop(GameId id, std::optional<std::vector<std::uint64_t>> off = std::nullopt, bool all = false);
   // True while the game's update is putting files in place, also when Playden stopped during that, and
   // while the game's move runs or must finish: the game must not run then.
   bool Locked(GameId id);
