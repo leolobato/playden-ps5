@@ -342,7 +342,8 @@ Playden.
 
 ## Import Windows games
 
-You can add Windows games you already have, without a Steam account.
+You can add Windows games you already have, without a Steam account. The full guide, with recipes and title art in
+the game folder, is [Importing games](docs/importing-games.md).
 
 **Put the game folders in place:**
 
@@ -372,20 +373,10 @@ You can import a game that plays from its folder later, with **Copy to storage**
 one in the drop folder). The PS5 adds the
 game's title to Home when Playden quits. Importing a game later keeps its saves.
 
-**A recipe in the game folder:** when the folder has a `recipe.json` at its root (a recipe exported from Playden),
-Playden asks whether to use it once the game is added. The recipe sets the game's settings, and replaces the ones a
-folder you added before brought back. A recipe Playden can't use is skipped with a notice, and the game is added
-without it. The file stays in the game folder.
-
-**Title art in the game folder:** to give the game's PS5 title your own art, put PNG pictures in a `playden` folder
-at the root of the game folder, before Playden sets up the game:
-
-- `playden/icon.png`: the icon on Home. Playden uses the middle square of the picture, at 512x512.
-- `playden/background.png`: the background on Home. Playden scales and crops it to fill 3840x2160 (16:9).
-
-A picture of any size up to 3840x2160 pixels is used. Playden reads the pictures once, when it first sets up the
-game's title. It doesn't use pictures that you add or change after that. A picture Playden can't use is skipped with a
-notice, and the title keeps Playden's art for it. Art you set later with another app, such as ArtSwap, stays.
+**Recipe and title art in the game folder:** a `playden` folder in the game folder can hold `recipe.json` (the game's
+settings, a recipe exported from Playden), and `icon.png` and `background.png` (the game's icon and background on PS5
+Home). Playden asks whether to use the recipe when the game is added, and uses the pictures when it first sets up the
+game. See [Importing games](docs/importing-games.md) for the files and what Playden checks.
 
 **Limits:**
 
