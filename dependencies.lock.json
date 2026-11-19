@@ -85,6 +85,7 @@
     "curl": {
       "version": "8.22.0",
       "source_sha256": "f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7",
+      "mbedtls_blocked_send_patch_sha256": "5ce73bd80ee955542b3c052453cf2c09e84da91e347e17334abaf34daf46fd4d",
       "ps5_nonblock_patch_sha256": "8ad3d3b23ed6c526d89e289c0acc11784df994f6ba99a3d6392cac0f5065e526"
     },
     "mbedtls": {
@@ -115,7 +116,7 @@
       "curl/websockets.h": "05b70dbce5274aa6e360703bb17d67a0390fea18bf4437745a25b08b55d6962b"
     },
     "ps5_archives": {
-      "libcurl.a": "48073d585213b7698514c3d15ee9f85f6fa74ba8d7f3728116b96271601eb951",
+      "libcurl.a": "ff839f4e7af057be7ae2abbdc3ba77564133995a651064c8534cb2f22adc289f",
       "libeverest.a": "beb61a9fb21e7a9cc016f0ad7fc9027cc09da674a3f2c743bfa8d1bfe06de00c",
       "libmbedcrypto.a": "16e45abd9b232a057a490be00ff6a25335a4a8d7722bf43f5b0655b5583913ac",
       "libmbedtls.a": "d46e1a4b8d5c70307f1f24edfa96b810dbdb846259960bdb50c952ff882198f1",

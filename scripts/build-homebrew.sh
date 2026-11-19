@@ -70,7 +70,11 @@ if (( prepare_only )); then
     exit 0
 fi
 
-if [[ ! -f $root/scripts/network-deps/.deps/host/lib/libcurl.a ]]; then
+# Rebuild when the prefix is missing or predates the current curl patches (CMake refuses such a prefix).
+curl_patches_wanted="curl_mbedtls_blocked_send_patch_sha256=$(sed -n 's/^curl_mbedtls_patch_sha256=//p' \
+    "$root/scripts/network-deps/prepare-host-deps.sh")"
+if [[ ! -f "$root/scripts/network-deps/.deps/host/lib/libcurl.a" ]] ||
+    [[ "$(cat "$root/scripts/network-deps/.deps/host/curl-patches.txt" 2>/dev/null)" != "$curl_patches_wanted" ]]; then
     "$root/scripts/network-deps/prepare-host-deps.sh"
 fi
 

@@ -112,8 +112,10 @@ std::string AccountKey(std::uint64_t steam_id);
 // Steam Cloud save sync for one game, run synchronously on a worker thread. Timestamps never pick
 // a winner: a file changed on both sides since the last sync is a conflict for the player. Local
 // files are backed up under state_root before they are replaced or removed, and so are the Cloud
-// copies an upload replaces or removes (under cloud/). The first upload from this console that would
-// replace Cloud saves is asked first (CloudPlan::first_overwrite).
+// copies an upload replaces or removes (under cloud/). A Cloud copy Steam serves damaged (not the size
+// and SHA-1 it lists) is kept as it arrived: a download of it fails (one copy per file in
+// cloud-damaged/), an upload replaces or removes it (copy in that backup's cloud-damaged/). The first upload from this console that would replace Cloud saves is asked first
+// (CloudPlan::first_overwrite).
 class CloudSync {
  public:
   CloudSync(CmClient& cm, HttpClient& http);

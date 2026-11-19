@@ -1,0 +1,101 @@
+--- a/lib/vtls/mbedtls.c
++++ b/lib/vtls/mbedtls.c
+@@ -88,9 +88,11 @@
+ #endif
+   int *ciphersuites;
+   size_t send_blocked_len;
++  size_t send_blocked_queued_len; /* what mbedtls_ssl_write() put in it */
+   BIT(initialized); /* mbedtls_ssl_context is initialized */
+   BIT(sent_shutdown);
+   BIT(send_blocked);
++  BIT(send_blocked_queued); /* the blocked bytes sit in mbedTLS' pending record */
+ };
+ 
+ /** A context for random number generation (RNG).
+@@ -1287,13 +1289,77 @@
+     CURL_TRC_CF(data, cf, "mbedtls_ssl_write(len=%zu) -> previously blocked "
+                 "on %zu bytes", len, backend->send_blocked_len);
+     len = backend->send_blocked_len;
++    if(backend->send_blocked_queued) {
++      /* The blocked bytes were encrypted into a record that mbedTLS still
++       * holds. A handshake step flushes pending output before it runs, and
++       * one runs for a post-handshake message such as a TLS 1.3
++       * NewSessionTicket: in mbedtls_ssl_read() while we waited, or in the
++       * next mbedtls_ssl_write() before it looks at the data. Once the record
++       * is out, mbedtls_ssl_write() would encrypt the bytes a second time and
++       * the peer would receive them twice. Run any pending handshake step
++       * here, then report the bytes sent when the record has left. */
++      while(backend->ssl.MBEDTLS_PRIVATE(state) != MBEDTLS_SSL_HANDSHAKE_OVER) {
++        int ret = mbedtls_ssl_handshake(&backend->ssl);
++        if(ret == MBEDTLS_ERR_SSL_WANT_WRITE || ret == MBEDTLS_ERR_SSL_WANT_READ) {
++          connssl->io_need = (ret == MBEDTLS_ERR_SSL_WANT_WRITE) ?
++                             CURL_SSL_IO_NEED_SEND : CURL_SSL_IO_NEED_RECV;
++          result = CURLE_AGAIN;
++          goto out;
++        }
++#ifdef MBEDTLS_SSL_PROTO_TLS1_3
++        if(ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) {
++          mbed_new_session(cf, data); /* as mbed_recv() does */
++          continue;
++        }
++#endif
++        if(ret) {
++          result = CURLE_SEND_ERROR;
++          goto out;
++        }
++      }
++      if(!backend->ssl.MBEDTLS_PRIVATE(out_left)) {
++        *pnwritten = backend->send_blocked_queued_len;
++        CURL_TRC_CF(data, cf, "mbedtls_ssl_write(len=%zu) -> %zu sent while "
++                    "handling a handshake message", len, *pnwritten);
++        backend->send_blocked = FALSE;
++        backend->send_blocked_queued = FALSE;
++        goto out;
++      }
++    }
+   }
+ 
+-  nwritten = mbedtls_ssl_write(&backend->ssl, (const unsigned char *)mem, len);
++  {
++    /* Only a write that runs no handshake step puts the data into the record
++     * it may leave pending; otherwise mbedtls_ssl_write() may block in that
++     * step (or in a renegotiation it starts) with the data untouched. So the
++     * state must be MBEDTLS_SSL_HANDSHAKE_OVER before and after, and the
++     * pending record must hold application data. (A post-handshake message
++     * such as a NewSessionTicket is a state past MBEDTLS_SSL_HANDSHAKE_OVER,
++     * so this compares the state, as mbedtls_ssl_write() does.) */
++    const bool handshake_over =
++      backend->ssl.MBEDTLS_PRIVATE(state) == MBEDTLS_SSL_HANDSHAKE_OVER;
++    nwritten = mbedtls_ssl_write(&backend->ssl, (const unsigned char *)mem,
++                                 len);
++    if(nwritten == MBEDTLS_ERR_SSL_WANT_WRITE && handshake_over &&
++       !backend->send_blocked_queued &&
++       backend->ssl.MBEDTLS_PRIVATE(state) == MBEDTLS_SSL_HANDSHAKE_OVER &&
++       backend->ssl.MBEDTLS_PRIVATE(out_left) &&
++       backend->ssl.MBEDTLS_PRIVATE(out_msgtype) ==
++         MBEDTLS_SSL_MSG_APPLICATION_DATA) {
++      /* The record holds at most one record's payload of the data. */
++      const int max_payload =
++        mbedtls_ssl_get_max_out_record_payload(&backend->ssl);
++      backend->send_blocked_queued = TRUE;
++      backend->send_blocked_queued_len =
++        (max_payload > 0 && (size_t)max_payload < len) ?
++        (size_t)max_payload : len;
++    }
++  }
+ 
+   if(nwritten >= 0) {
+     *pnwritten = (size_t)nwritten;
+     backend->send_blocked = FALSE;
++    backend->send_blocked_queued = FALSE;
+   }
+   else {
+     CURL_TRC_CF(data, cf, "mbedtls_ssl_write(len=%zu) -> -0x%04X",
+@@ -1320,6 +1386,7 @@
+     }
+   }
+ 
++out:
+   CURL_TRC_CF(data, cf, "mbedtls_ssl_write(len=%zu) -> %d, %zu",
+               len, (int)result, *pnwritten);
+   return result;

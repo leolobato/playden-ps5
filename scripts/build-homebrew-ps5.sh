@@ -49,7 +49,11 @@ fi
 if [[ $native_access == ON && -z ${PLAYDEN_RELAUNCH_ELF:-} ]]; then
  "$root/scripts/build-self-update-relaunch.sh"
 fi
-if [[ ! -f "$root/scripts/network-deps/.deps/ps5/lib/libcurl.a" ]]; then
+# Rebuild when the prefix is missing or predates the current curl patches (CMake refuses such a prefix).
+curl_patches_wanted="curl_mbedtls_blocked_send_patch_sha256=$(sed -n 's/^curl_mbedtls_patch_sha256=//p' \
+    "$root/scripts/network-deps/prepare-ps5-deps.sh")"
+if [[ ! -f "$root/scripts/network-deps/.deps/ps5/lib/libcurl.a" ]] ||
+    [[ "$(cat "$root/scripts/network-deps/.deps/ps5/curl-patches.txt" 2>/dev/null)" != "$curl_patches_wanted" ]]; then
  "$root/scripts/network-deps/prepare-ps5-deps.sh"
 fi
 bash "$environment" bash -c 'exec "$PS5_PAYLOAD_SDK/bin/prospero-cmake" "$@"' bash \

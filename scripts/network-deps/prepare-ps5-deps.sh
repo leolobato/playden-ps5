@@ -16,6 +16,9 @@ curl_version=8.22.0
 curl_sha256=f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
 curl_patch="$root/patches/curl-ps5-native-nonblock.patch"
 curl_patch_sha256=8ad3d3b23ed6c526d89e289c0acc11784df994f6ba99a3d6392cac0f5065e526
+# A blocked upload write must not be encrypted twice when a TLS 1.3 ticket arrives meanwhile (#50).
+curl_mbedtls_patch="$root/patches/curl-mbedtls-blocked-send.patch"
+curl_mbedtls_patch_sha256=5ce73bd80ee955542b3c052453cf2c09e84da91e347e17334abaf34daf46fd4d
 mbedtls_version=3.6.7
 mbedtls_sha256=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
 cacert_sha256=a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505
@@ -32,6 +35,10 @@ fetch() {
 [[ -f "$compiler_launcher" ]] || { echo "missing PS5 compiler launcher: $compiler_launcher" >&2; exit 1; }
 [[ "$(shasum -a 256 "$curl_patch" | awk '{print $1}')" == "$curl_patch_sha256" ]] || {
     echo "hash mismatch for $curl_patch" >&2
+    exit 1
+}
+[[ "$(shasum -a 256 "$curl_mbedtls_patch" | awk '{print $1}')" == "$curl_mbedtls_patch_sha256" ]] || {
+    echo "hash mismatch for $curl_mbedtls_patch" >&2
     exit 1
 }
 mkdir -p "$downloads" "$deps/src" "$deps/build"
@@ -52,6 +59,7 @@ for option in MBEDTLS_THREADING_C MBEDTLS_THREADING_PTHREAD; do
 done
 tar -xJf "$downloads/curl-$curl_version.tar.xz" -C "$deps/src"
 patch --fuzz=0 -d "$deps/src/curl-$curl_version" -p1 < "$curl_patch"
+patch --fuzz=0 -d "$deps/src/curl-$curl_version" -p1 < "$curl_mbedtls_patch"
 # Record source paths relative to the extracted tree: the archives are then identical in every
 # checkout and no local path reaches the PS5 title.
 physical_src=$(cd "$deps/src" && pwd -P)
@@ -106,6 +114,7 @@ sdk_archive_sha256=$(cat "$sdk/.playden-source-sha256" 2>/dev/null || echo unkno
     printf 'curl_version=%s\n' "$curl_version"
     printf 'curl_source_sha256=%s\n' "$curl_sha256"
     printf 'curl_ps5_native_nonblock_patch_sha256=%s\n' "$curl_patch_sha256"
+    printf 'curl_mbedtls_blocked_send_patch_sha256=%s\n' "$curl_mbedtls_patch_sha256"
     printf 'mbedtls_version=%s\n' "$mbedtls_version"
     printf 'mbedtls_source_sha256=%s\n' "$mbedtls_sha256"
     printf 'cacert_version=2026-09-25\n'
@@ -130,6 +139,8 @@ sdk_archive_sha256=$(cat "$sdk/.playden-source-sha256" 2>/dev/null || echo unkno
     printf 'output_cacert.pem_sha256=%s\n' \
         "$(shasum -a 256 "$prefix/cacert.pem" | awk '{print $1}')"
 } > "$manifest"
+# CMake refuses a prefix built without the current curl patches.
+printf 'curl_mbedtls_blocked_send_patch_sha256=%s\n' "$curl_mbedtls_patch_sha256" > "$prefix/curl-patches.txt"
 
 echo "PS5 dependency prefix: $prefix"
 echo "PS5 dependency manifest: $manifest"

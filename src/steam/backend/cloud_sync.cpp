@@ -788,6 +788,15 @@ CloudOutcome CloudSync::Apply(const StoredSession& session, const GameSaveLocati
   std::string failure;
   std::string detail;  // for the log: which file and what failed (never a URL path or header: they carry tokens)
   std::optional<RemoteFileList> final_list;
+  // For the log: the damaged Cloud copies this upload replaces or removes, with whether it removes them.
+  std::vector<std::pair<bool, std::string>> damaged_copies;
+  const auto damaged_notes = [&](bool done) {
+    std::string text;
+    for (const auto& [removed, note] : damaged_copies)
+      text += (text.empty() ? "" : "; ") + std::string(!done ? "found" : removed ? "removed" : "replaced") +
+              " damaged Cloud copy " + note;
+    return text;
+  };
   // Set when a request stopped because the caller canceled it: that failure is not Steam's or this device's.
   bool canceled = false;
   const auto http = [&](const HttpRequest& request) {
@@ -824,8 +833,10 @@ CloudOutcome CloudSync::Apply(const StoredSession& session, const GameSaveLocati
       return CmError::kRejected;
     }
 
-    // One Cloud file's current content, checked against what the check saw.
-    const auto fetch = [&](const Decision& decision) -> std::optional<std::vector<std::uint8_t>> {
+    // One Cloud file's current content, checked against what the check saw. When Steam served a body that
+    // fails that check, `damaged` (if given) receives the body as it arrived (still zipped if it came zipped).
+    const auto fetch = [&](const Decision& decision,
+                           std::optional<std::vector<std::uint8_t>>* damaged) -> std::optional<std::vector<std::uint8_t>> {
       PLAYDEN_CLOUD_TRACE("download");
       reply.clear();
       const auto named = "file=" + decision.remote_name;
@@ -877,22 +888,36 @@ CloudOutcome CloudSync::Apply(const StoredSession& session, const GameSaveLocati
         if (!UnzipFirstEntry(response.body, InflateRaw, &unpacked)) {
           failure = "A downloaded Cloud save was damaged.";
           detail = named + " unzip failed body=" + std::to_string(response.body.size());
+          if (damaged) *damaged = response.body;
           return std::nullopt;
         }
         data = std::move(unpacked);
       }
-      if (data.size() != decision.remote_fact.size || Sha1(data) != decision.remote_fact.sha1) {
+      if (const auto sha1 = Sha1(data); data.size() != decision.remote_fact.size || sha1 != decision.remote_fact.sha1) {
         failure = "A downloaded Cloud save was damaged.";
         detail = named + " content size=" + std::to_string(data.size()) + " listed_size=" +
-                 std::to_string(decision.remote_fact.size) + " sha1_match=0";
+                 std::to_string(decision.remote_fact.size) + " sha1_match=0 sha1=" + Hex(sha1.data(), sha1.size()) +
+                 " listed_sha1=" + Hex(decision.remote_fact.sha1.data(), decision.remote_fact.sha1.size());
+        if (damaged) *damaged = response.body;
         return std::nullopt;
       }
       return data;
     };
 
+    const auto side = [](const Decision& decision) {
+      return std::string(decision.local.root == SaveRoot::kGame ? "game/" : "prefix/") + decision.local.path;
+    };
     for (const auto& decision : downloads) {
-      const auto fetched = fetch(decision);
-      if (!fetched) return CmError::kProtocol;
+      std::optional<std::vector<std::uint8_t>> damaged;
+      const auto fetched = fetch(decision, &damaged);
+      if (!fetched) {
+        // Kept so it can be compared with the save it should have been (#50): one copy per file, outside the
+        // backups, so failed downloads never push real backups out.
+        if (damaged)
+          detail += WriteFileAtomic(location.state_root + "/cloud-damaged/" + side(decision), *damaged)
+                        ? " (copy kept in cloud-damaged)" : " (no copy kept)";
+        return CmError::kProtocol;
+      }
       const auto& data = *fetched;
       const auto target = Absolute(location, decision.local);
       if (!backup(decision) || !WriteFileAtomic(target, data)) {
@@ -924,13 +949,29 @@ CloudOutcome CloudSync::Apply(const StoredSession& session, const GameSaveLocati
         }
         contents.push_back(std::move(*data));
       }
-      // Keep the Cloud copies this upload replaces or removes, next to the local backups.
+      // Keep the Cloud copies this upload replaces or removes, next to the local backups. A copy Steam serves
+      // damaged (not the size and SHA-1 it lists) is kept as it arrived, under cloud-damaged/, and the upload goes
+      // on, which replaces it. Stopping there would block every later upload of this game (#50).
       for (const auto* list : {&uploads, &remote_deletes})
         for (const auto& decision : *list) {
           if (!decision.remote_fact.present) continue;
           PLAYDEN_CLOUD_TRACE("backup-cloud");
-          const auto fetched = fetch(decision);
-          if (!fetched) return CmError::kProtocol;
+          std::optional<std::vector<std::uint8_t>> damaged;
+          const auto fetched = fetch(decision, &damaged);
+          if (!fetched && !damaged) return CmError::kProtocol;
+          if (!fetched) {
+            if (!WriteFileAtomic(backup_root + "/cloud-damaged/" + side(decision), *damaged)) {
+              failure = "Playden could not keep a copy of the Cloud saves it would replace.";
+              return CmError::kProtocol;
+            }
+            backed_up = true;
+            damaged_copies.emplace_back(list == &remote_deletes,
+                                        detail + " (copy kept in backup/" +
+                                            backup_root.substr(backup_root.find_last_of('/') + 1) + "/cloud-damaged)");
+            failure.clear();
+            detail.clear();
+            continue;
+          }
           backed_up = true;
           if (!WriteFileAtomic(backup_root + "/cloud/" + (decision.local.root == SaveRoot::kGame ? "game/" : "prefix/") +
                                    decision.local.path,
@@ -1049,6 +1090,8 @@ CloudOutcome CloudSync::Apply(const StoredSession& session, const GameSaveLocati
   if (backed_up) PruneBackups(location.state_root);
   if (result != CmError::kNone) {
     outcome.canceled = canceled || result == CmError::kCanceled;
+    // A damaged copy found on the way is still worth the log, even though nothing was confirmed replaced.
+    if (!damaged_copies.empty()) detail += (detail.empty() ? "" : "; ") + damaged_notes(false);
     if (!failure.empty()) return fail(failure, detail);
     // The work never ran: the session could not be opened.
     const auto why = hooks_.failure ? hooks_.failure() : CmFailure{};
@@ -1095,6 +1138,7 @@ CloudOutcome CloudSync::Apply(const StoredSession& session, const GameSaveLocati
     WriteIndex(location, plan.account_key, final_list->change_number, index.rules, ScanLocal(location, paths, known));
   }
   outcome.ok = true;
+  outcome.detail = damaged_notes(true);
   const std::size_t moved = outcome.downloaded + outcome.uploaded + outcome.removed_local + outcome.removed_remote;
   outcome.message = moved == 0 ? "Saves are up to date"
                     : outcome.downloaded > 0 && outcome.uploaded > 0

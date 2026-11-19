@@ -167,6 +167,8 @@ struct FakeCloud {
   std::uint64_t steam_id = kSteamId;
   bool declares_ufs = true;
   bool corrupt_downloads = false;
+  bool corrupt_inside_zip = false;  // a zipped file arrives as a valid zip of the wrong bytes
+  long upload_status = 200;  // another status refuses every upload block
   long download_status = 200;  // another status refuses every download
   int download_transport_code = 0;  // nonzero fails every download in transport with this curl code
   std::string download_blocked_address;  // nonempty: every download's host resolves to this unusable address
@@ -281,8 +283,11 @@ struct FakeCloud {
       CHECK(request.method == HttpMethod::kGet);
       CHECK(request.headers.size() == 1 && request.headers[0].first == "x-test-signature");
       const auto& file = files.at(path.substr(4));
-      response.body = file.zipped ? StoredZip("f", file.data) : file.data;
-      if (corrupt_downloads && !response.body.empty()) response.body.back() ^= 0xff;
+      auto data = file.data;
+      if (corrupt_inside_zip && file.zipped && !data.empty()) data.front() ^= 0xff;
+      response.body = file.zipped ? StoredZip("f", data) : data;
+      // A zipped body loses its local header signature, so it no longer unzips.
+      if (corrupt_downloads && !response.body.empty()) (file.zipped ? response.body.front() : response.body.back()) ^= 0xff;
       if (download_status != 200) {
         response.status_code = download_status;
         response.body.clear();
@@ -302,7 +307,8 @@ struct FakeCloud {
       }
     } else if (path.rfind("/up/", 0) == 0) {
       CHECK(request.method == HttpMethod::kPut);
-      pending[path.substr(4)] = request.body;
+      if (upload_status != 200) response.status_code = upload_status;
+      else pending[path.substr(4)] = request.body;
     } else {
       response.status_code = 404;
     }
@@ -563,7 +569,13 @@ void SyncEndToEnd() {
   CHECK(!outcome.ok && outcome.message.find("damaged") != std::string::npos);
   CHECK(outcome.detail.find("file=%WinMyDocuments%My Games/Cloud Game/slot3.sav") != std::string::npos &&
         outcome.detail.find("sha1_match=0") != std::string::npos);
+  CHECK(outcome.detail.find(" sha1=") != std::string::npos && outcome.detail.find(" listed_sha1=") != std::string::npos);
   CHECK(!std::filesystem::exists(docs / "slot3.sav"));
+  // The bytes as they arrived are kept, to compare with the save they should have been: one copy per file, outside
+  // the backups, so repeated failed downloads never push real backups out.
+  CHECK(outcome.detail.find("(copy kept in cloud-damaged)") != std::string::npos);
+  CHECK(std::filesystem::file_size(base / "state/cloud-damaged/prefix/drive_c/users/prospero/Documents/My Games/Cloud Game/slot3.sav") == 5);
+  CHECK(!std::filesystem::exists(base / "state/backup/1800000000/cloud-damaged"));
   cloud.corrupt_downloads = false;
 
   // A download the server refuses: the player reads a short message, the log gets the file and the HTTP status.
@@ -597,6 +609,98 @@ void SyncEndToEnd() {
   plan = sync.Check(session, location, cancel);
   CHECK(plan.status == PlanStatus::kUnsupported && plan.message == "This game does not use Steam Cloud.");
 
+  std::filesystem::remove_all(base);
+}
+
+// #50: a Cloud copy Steam serves damaged (not the size and SHA-1 it lists) must not block the upload that replaces
+// it. Before, the backup of the Cloud copy failed and every later upload of the game stopped there.
+void DamagedCloudCopyDoesNotBlockUploads() {
+  const auto base = std::filesystem::temp_directory_path() / ("playden-cloud-damaged-" + std::to_string(::getpid()));
+  std::filesystem::remove_all(base);
+  GameSaveLocation location{kApp, (base / "game").string(), (base / "prefix").string(), (base / "state").string()};
+  std::filesystem::create_directories(location.game_root);
+  const auto docs = base / "prefix/drive_c/users/prospero/Documents/My Games/Cloud Game";
+  const StoredSession session{kSteamId, "account", "refresh", "access", {}};
+  const std::atomic<bool> cancel{false};
+
+  FakeCloud cloud;
+  cloud.files["%WinMyDocuments%My Games/Cloud Game/slot1.sav"] = {Bytes("cloud slot one"), 1'000, false};
+  cloud.files["%GameInstall%cfg/config.cfg"] = {Bytes("volume=5"), 1'100, true};  // arrives zipped
+  CloudSync sync(cloud.Hooks());
+  auto plan = sync.Check(session, location, cancel);
+  CHECK(sync.Apply(session, location, plan, Resolution::kAutomatic, false, cancel).ok);
+
+  // Both Cloud copies now arrive damaged: one fails its SHA-1, the zipped one fails to unzip.
+  WriteText(docs / "slot1.sav", "local progress");
+  WriteText(base / "game/cfg/config.cfg", "volume=7");
+  cloud.corrupt_downloads = true;
+  plan = sync.Check(session, location, cancel);
+  CHECK(plan.status == PlanStatus::kConflict && plan.first_overwrite && plan.conflicts == 2);
+  const auto outcome = sync.Apply(session, location, plan, Resolution::kUseLocal, false, cancel);
+  if (!outcome.ok) std::fprintf(stderr, "apply: %s (%s)\n", outcome.message.c_str(), outcome.detail.c_str());
+  CHECK(outcome.ok && outcome.uploaded == 2);
+  CHECK(cloud.files.at("%WinMyDocuments%My Games/Cloud Game/slot1.sav").data == Bytes("local progress"));
+  CHECK(cloud.files.at("%GameInstall%cfg/config.cfg").data == Bytes("volume=7"));
+  // The log says which copies were replaced and why; the bytes as they arrived are kept with the backups.
+  CHECK(outcome.detail.rfind("replaced damaged Cloud copy file=", 0) == 0 &&
+        outcome.detail.find("(copy kept in backup/1800000000/cloud-damaged)") != std::string::npos);
+  CHECK(outcome.detail.find("file=%WinMyDocuments%My Games/Cloud Game/slot1.sav content size=14 listed_size=14 sha1_match=0") !=
+        std::string::npos);
+  CHECK(outcome.detail.find("file=%GameInstall%cfg/config.cfg unzip failed") != std::string::npos);
+  const auto kept = base / "state/backup/1800000000/cloud-damaged";
+  auto damaged = Bytes("cloud slot one");
+  damaged.back() ^= 0xff;
+  CHECK(ReadText(kept / "prefix/drive_c/users/prospero/Documents/My Games/Cloud Game/slot1.sav") ==
+        std::string(damaged.begin(), damaged.end()));
+  CHECK(std::filesystem::exists(kept / "game/cfg/config.cfg"));
+  CHECK(!std::filesystem::exists(base / "state/backup/1800000000/cloud/prefix"));
+  cloud.corrupt_downloads = false;
+  CHECK(sync.Check(session, location, cancel).status == PlanStatus::kUpToDate);
+
+  // A Cloud copy that could not be fetched at all still stops the upload: that one may be fine, so try again.
+  WriteText(docs / "slot1.sav", "even more");
+  plan = sync.Check(session, location, cancel);
+  CHECK(plan.status == PlanStatus::kReady && plan.uploads == 1);
+  cloud.download_status = 403;
+  CHECK(!sync.Apply(session, location, plan, Resolution::kAutomatic, false, cancel).ok);
+  CHECK(cloud.files.at("%WinMyDocuments%My Games/Cloud Game/slot1.sav").data == Bytes("local progress"));
+  cloud.download_status = 200;
+
+  // A damaged copy that cannot be kept is not replaced: without the copy the player could not get it back.
+  std::filesystem::remove_all(kept);
+  WriteText(kept, "in the way");
+  cloud.corrupt_downloads = true;
+  auto failed = sync.Apply(session, location, plan, Resolution::kAutomatic, false, cancel);
+  CHECK(!failed.ok && failed.message == "Playden could not keep a copy of the Cloud saves it would replace.");
+  CHECK(cloud.files.at("%WinMyDocuments%My Games/Cloud Game/slot1.sav").data == Bytes("local progress"));
+  std::filesystem::remove(kept);
+
+  // The upload fails after the damaged copy was kept: the log still names it, as found, not replaced.
+  cloud.upload_status = 503;
+  failed = sync.Apply(session, location, plan, Resolution::kAutomatic, false, cancel);
+  CHECK(!failed.ok && failed.message == "A Cloud save could not be uploaded. Try again.");
+  CHECK(failed.detail.find("; found damaged Cloud copy file=%WinMyDocuments%My Games/Cloud Game/slot1.sav content ") !=
+            std::string::npos &&
+        failed.detail.find("replaced") == std::string::npos);
+  CHECK(cloud.files.at("%WinMyDocuments%My Games/Cloud Game/slot1.sav").data == Bytes("local progress"));
+  cloud.upload_status = 200;
+  cloud.corrupt_downloads = false;
+  CHECK(sync.Apply(session, location, plan, Resolution::kAutomatic, false, cancel).ok);
+
+  // A valid zip of the wrong bytes: the zip is kept as it arrived. Removing the save here removes the
+  // damaged Cloud copy too, and the log says removed.
+  std::filesystem::remove_all(kept);
+  std::filesystem::remove(base / "game/cfg/config.cfg");
+  cloud.files["%GameInstall%cfg/config.cfg"].zipped = true;
+  cloud.corrupt_inside_zip = true;
+  plan = sync.Check(session, location, cancel);
+  const auto removed = sync.Apply(session, location, plan, Resolution::kUseLocal, false, cancel);
+  if (!removed.ok) std::fprintf(stderr, "apply: %s (%s)\n", removed.message.c_str(), removed.detail.c_str());
+  CHECK(removed.ok && removed.removed_remote == 1 && !cloud.files.contains("%GameInstall%cfg/config.cfg"));
+  CHECK(removed.detail.rfind("removed damaged Cloud copy file=%GameInstall%cfg/config.cfg content ", 0) == 0);
+  const auto zip = ReadText(kept / "game/cfg/config.cfg");
+  CHECK(zip.rfind("PK", 0) == 0);
+  cloud.corrupt_inside_zip = false;
   std::filesystem::remove_all(base);
 }
 
@@ -1052,6 +1156,7 @@ int main() {
   MapsLeadingSeparatorPaths();
   ProfileSaveFoldersStayInUserFolder();
   SyncEndToEnd();
+  DamagedCloudCopyDoesNotBlockUploads();
   QuickCheckAndIndex();
   MissingGameFolder();
   std::puts("steam cloud tests passed");

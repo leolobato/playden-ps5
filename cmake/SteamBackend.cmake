@@ -50,6 +50,21 @@ foreach(required_path IN ITEMS
     endif()
 endforeach()
 
+# The prefix must be built with the current curl patches: host archives are not pinned by hash, so a prefix
+# from before a patch would otherwise link silently (#50: duplicated TLS records in uploads).
+string(JSON expected_curl_patch_hash GET "${playden_dependency_lock}"
+    steam_network_probe curl mbedtls_blocked_send_patch_sha256)
+set(playden_curl_patches "${PLAYDEN_STEAM_PREFIX}/curl-patches.txt")
+set(actual_curl_patches "")
+if(EXISTS "${playden_curl_patches}")
+    file(READ "${playden_curl_patches}" actual_curl_patches)
+endif()
+if(NOT actual_curl_patches STREQUAL "curl_mbedtls_blocked_send_patch_sha256=${expected_curl_patch_hash}\n")
+    message(FATAL_ERROR "The curl in ${PLAYDEN_STEAM_PREFIX} was built without the current curl patches. "
+        "Rebuild with scripts/network-deps/prepare-${playden_steam_dependency_platform}-deps.sh")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${playden_curl_patches}")
+
 # Threading changes public context layouts, so headers and all linked archives must be rebuilt together.
 set(playden_mbedtls_config "${PLAYDEN_STEAM_PREFIX}/include/mbedtls/mbedtls_config.h")
 string(JSON expected_mbedtls_config_hash GET "${playden_dependency_lock}"
@@ -274,6 +289,13 @@ function(playden_register_steam_backend_tests)
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/http_fixture_server.py"
                 "$<TARGET_FILE:http_client_test>" "${CMAKE_SOURCE_DIR}/tests/fixtures/http")
         set_tests_properties(http_client PROPERTIES TIMEOUT 15)
+
+        # #50: an upload must reach the server once when a TLS 1.3 ticket arrives while its write is blocked.
+        add_executable(http_upload_ticket_test "${CMAKE_SOURCE_DIR}/tests/http_upload_ticket_test.cpp")
+        target_link_libraries(http_upload_ticket_test PRIVATE playden_steam_http)
+        add_test(NAME http_upload_ticket
+            COMMAND http_upload_ticket_test "${CMAKE_SOURCE_DIR}/tests/fixtures/http")
+        set_tests_properties(http_upload_ticket PROPERTIES TIMEOUT 60)
 
         add_executable(auth_client_test "${CMAKE_SOURCE_DIR}/tests/auth_client_test.cpp")
         target_link_libraries(auth_client_test PRIVATE playden_steam_auth)

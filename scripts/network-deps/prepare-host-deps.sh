@@ -9,6 +9,9 @@ jobs=${JOBS:-$(sysctl -n hw.logicalcpu 2>/dev/null || getconf _NPROCESSORS_ONLN)
 
 curl_version=8.22.0
 curl_sha256=f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
+# A blocked upload write must not be encrypted twice when a TLS 1.3 ticket arrives meanwhile (#50).
+curl_mbedtls_patch="$root/patches/curl-mbedtls-blocked-send.patch"
+curl_mbedtls_patch_sha256=5ce73bd80ee955542b3c052453cf2c09e84da91e347e17334abaf34daf46fd4d
 mbedtls_version=3.6.7
 mbedtls_sha256=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
 cacert_sha256=a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505
@@ -20,6 +23,10 @@ fetch() {
     [[ "$actual" == "$expected" ]] || { echo "hash mismatch for $output" >&2; exit 1; }
 }
 
+[[ "$(shasum -a 256 "$curl_mbedtls_patch" | awk '{print $1}')" == "$curl_mbedtls_patch_sha256" ]] || {
+    echo "hash mismatch for $curl_mbedtls_patch" >&2
+    exit 1
+}
 mkdir -p "$downloads" "$deps/src" "$deps/build"
 fetch "https://curl.se/download/curl-$curl_version.tar.xz" "$downloads/curl-$curl_version.tar.xz" "$curl_sha256"
 fetch "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-$mbedtls_version/mbedtls-$mbedtls_version.tar.bz2" \
@@ -37,6 +44,7 @@ for option in MBEDTLS_THREADING_C MBEDTLS_THREADING_PTHREAD; do
         --file "$deps/src/mbedtls-$mbedtls_version/include/mbedtls/mbedtls_config.h" set "$option"
 done
 tar -xJf "$downloads/curl-$curl_version.tar.xz" -C "$deps/src"
+patch --fuzz=0 -d "$deps/src/curl-$curl_version" -p1 < "$curl_mbedtls_patch"
 
 # Relative source paths keep local paths out of the objects (see prepare-ps5-deps.sh).
 physical_src=$(cd "$deps/src" && pwd -P)
@@ -63,5 +71,7 @@ cmake -S "$deps/src/curl-$curl_version" -B "$deps/build/curl-host" -G Ninja \
 cmake --build "$deps/build/curl-host" --parallel "$jobs"
 cmake --install "$deps/build/curl-host"
 install -m 0644 "$downloads/cacert.pem" "$prefix/cacert.pem"
+# CMake refuses a prefix built without the current curl patches (host archives are not pinned by hash).
+printf 'curl_mbedtls_blocked_send_patch_sha256=%s\n' "$curl_mbedtls_patch_sha256" > "$prefix/curl-patches.txt"
 
 echo "host dependency prefix: $prefix"
