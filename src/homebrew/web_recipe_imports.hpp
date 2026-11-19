@@ -46,7 +46,7 @@ class WebRecipeImports {
     web::RecipeImportAnswer refusal;
   };
   // Any worker: checks the file and keeps it as Import does, without waiting for a game to use it. The revision is kept
-  // until Playden closes (Revisions), so the main thread may use it later (the recipe.json in an imported game's folder).
+  // until Playden closes (Revisions), so the main thread may use it later (the playden/recipe.json in an imported game's folder).
   Kept Keep(std::string file);
 
   struct Pending {
@@ -82,7 +82,7 @@ class WebRecipeImports {
   std::set<std::string> revisions_;
 };
 
-// The Local store's keep_folder_recipe: the recipe.json of a game being added, kept through `imports` (Keep).
+// The Local store's keep_folder_recipe: the playden/recipe.json of a game being added, kept through `imports` (Keep).
 std::function<stores::local::FolderRecipeKept(std::string bytes)> FolderRecipeKeeper(std::shared_ptr<WebRecipeImports> imports);
 
 }  // namespace playden::homebrew

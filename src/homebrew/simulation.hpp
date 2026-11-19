@@ -1590,7 +1590,7 @@ public:
     // for Playden's own recipe. Share uses it as the recipe the game is based on.
     [[nodiscard]] std::optional<playden::runtime::CommunityRecipeChoice> RecipeBaseFor(GameId id) const;
     // Where an imported recipe file came from. Web: a paired browser sent it over web access. GameFolder: the
-    // recipe.json at the root of an imported game's folder, which the player chose to use when the game was added.
+    // playden/recipe.json in an imported game's folder, which the player chose to use when the game was added.
     enum class RecipeSource { Web, GameFolder };
     // A recipe file kept in the community recipe store as `revision` (community::PrepareImportedRecipe): the game uses
     // it now, and a notification on the TV says so. Returns the HTTP status and a sentence for the browser.
@@ -1598,11 +1598,11 @@ public:
     // game's folder, it replaces the game's settings (Reset, then the recipe; the program the game was added with
     // stays only when the recipe names none), and the game it names doesn't have to be this one.
     std::pair<int, std::string> ImportRecipe(GameId id, const std::string& revision, RecipeSource source = RecipeSource::Web);
-    // Live mode: an imported game just added whose folder has a recipe.json, kept as `revision`. Once the library
+    // Live mode: an imported game just added whose folder has a playden/recipe.json, kept as `revision`. Once the library
     // lists the game, a dialog asks whether to use it; it says the game's settings will be replaced when the game
     // already has some (the folder was added before). Call before SeedGameProgram.
     void OfferFolderRecipe(GameId id, const std::string& revision);
-    // Live mode: the recipe.json in the folder of a game just added can't be used (`problem`, a sentence): a notice
+    // Live mode: the playden/recipe.json in the folder of a game just added can't be used (`problem`, a sentence): a notice
     // says so, and the game is added without it.
     void NotifyFolderRecipeRefused(const ImportRequest& request, GameId id, const std::string& problem);
     // Live mode: pictures in the playden folder of a game just added can't be used as its title art (`problems`, one

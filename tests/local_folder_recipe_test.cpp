@@ -1,5 +1,5 @@
-// local_folder_recipe_test.cpp - The recipe.json a packager puts at the root of a game's folder: the Local store reads
-// it when the game is added and hands it to keep_folder_recipe, and the Add's outcome carries what became of it (#1034).
+// local_folder_recipe_test.cpp - The recipe a packager puts in a game's folder (playden/recipe.json): the Local store
+// reads it when the game is added and hands it to keep_folder_recipe, and the Add's outcome carries what became of it (#1034).
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "stores/local/library_source.h"
@@ -82,18 +82,26 @@ int main() {
   const std::string recipe = "{\"recipe_id\": \"community-imported-minecraft-1-20-1\"}";
   Write(import / "Plain/Game.exe", PeProgram());
   Write(import / "Packaged/Game.exe", PeProgram());
-  Write(import / "Packaged/recipe.json", recipe);
+  Write(import / "Packaged/playden/recipe.json", recipe);
   Write(import / "Refused/Game.exe", PeProgram());
-  Write(import / "Refused/recipe.json", "{}");
+  Write(import / "Refused/playden/recipe.json", "{}");
   Write(import / "Large/Game.exe", PeProgram());
-  Write(import / "Large/recipe.json", std::string(kMaxFolderRecipeBytes + 1, ' '));
+  Write(import / "Large/playden/recipe.json", std::string(kMaxFolderRecipeBytes + 1, ' '));
   Write(import / "Linked/Game.exe", PeProgram());
   Write(root / "outside.json", recipe);
-  CHECK(::symlink((root / "outside.json").c_str(), (import / "Linked/recipe.json").c_str()) == 0);
+  fs::create_directories(import / "Linked/playden");
+  CHECK(::symlink((root / "outside.json").c_str(), (import / "Linked/playden/recipe.json").c_str()) == 0);
+  // A playden folder that is a link: never followed, so no recipe at all.
+  Write(import / "LinkedFolder/Game.exe", PeProgram());
+  Write(root / "elsewhere/recipe.json", recipe);
+  CHECK(::symlink((root / "elsewhere").c_str(), (import / "LinkedFolder/playden").c_str()) == 0);
+  // A recipe.json at the root of the folder (where 0.12.0-beta.2 looked) is not read.
+  Write(import / "Root/Game.exe", PeProgram());
+  Write(import / "Root/recipe.json", recipe);
   Write(import / "Folder/Game.exe", PeProgram());
-  fs::create_directories(import / "Folder/recipe.json");
+  fs::create_directories(import / "Folder/playden/recipe.json");
   Write(import / "Unkept/Game.exe", PeProgram());
-  Write(import / "Unkept/recipe.json", recipe);
+  Write(import / "Unkept/playden/recipe.json", recipe);
   Write(import / "Art/Game.exe", PeProgram());
   Write(import / "Art/playden/icon.png", "not a png");
 
@@ -122,7 +130,7 @@ int main() {
   };
   LocalLibrarySource source(store, config);
 
-  // No recipe.json: nothing is offered and the keeper is never asked.
+  // No playden/recipe.json: nothing is offered and the keeper is never asked.
   {
     const auto outcome = AddAndWait(source, "Plain");
     if (!outcome.ok) std::fprintf(stderr, "add refused: %s\n", outcome.message.c_str());
@@ -138,13 +146,13 @@ int main() {
     CHECK(outcome.art_problems == std::vector<std::string>{"playden/icon.png is not a PNG picture."});
     CHECK(art_folders.back() == (import / "Art").string());
   }
-  // A recipe.json at the folder's root: its bytes are kept, the outcome names the revision, and the file stays.
+  // A playden/recipe.json: its bytes are kept, the outcome names the revision, and the file stays.
   {
     const auto outcome = AddAndWait(source, "Packaged");
     CHECK(outcome.ok && !outcome.id.empty());
     CHECK(outcome.recipe_revision == "sha256-of-the-recipe" && outcome.recipe_problem.empty());
     CHECK(keeper.files.size() == 1 && keeper.files.back() == recipe);
-    CHECK(fs::is_regular_file(import / "Packaged/recipe.json"));
+    CHECK(fs::is_regular_file(import / "Packaged/playden/recipe.json"));
   }
   // One the keeper refuses: the game is added, and the outcome says why the recipe isn't used.
   {
@@ -152,7 +160,7 @@ int main() {
     CHECK(outcome.ok && !outcome.id.empty());
     CHECK(outcome.recipe_revision.empty() && outcome.recipe_problem == "This file is not a recipe.");
   }
-  // Too large, a link, a folder: refused before the keeper sees anything.
+  // Too large, a link, a folder, a linked folder, a file at the root: refused or ignored before the keeper sees anything.
   const auto before = keeper.files.size();
   {
     const auto outcome = AddAndWait(source, "Large");
@@ -164,7 +172,12 @@ int main() {
   }
   {
     const auto outcome = AddAndWait(source, "Folder");
-    CHECK(outcome.ok && outcome.recipe_revision.empty() && outcome.recipe_problem == "The game's recipe.json is not a file.");
+    CHECK(outcome.ok && outcome.recipe_revision.empty() && outcome.recipe_problem == "playden/recipe.json is not a file.");
+  }
+  // A linked playden folder and a recipe.json at the root: no recipe, no problem, the keeper never asked.
+  for (const char* folder : {"LinkedFolder", "Root"}) {
+    const auto outcome = AddAndWait(source, folder);
+    CHECK(outcome.ok && outcome.recipe_revision.empty() && outcome.recipe_problem.empty());
   }
   CHECK(keeper.files.size() == before);
   // A keeper that answers nothing still gives the player a reason.

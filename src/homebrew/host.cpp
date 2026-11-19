@@ -830,7 +830,7 @@ int main(int argc, char** argv) {
         // GOG's account and library join Steam's (gog-store line on).
         if (gog) gog->Register(*stores, simulation);
         // Imported games: <data>/playden-import is the drop folder, playden/import on each extra drive.
-        // Recipe files from a paired browser, and the recipe.json in a game's folder when it is added; where they are kept
+        // Recipe files from a paired browser, and the playden/recipe.json in a game's folder when it is added; where they are kept
         // is set with the community recipes below.
         auto recipe_imports = std::make_shared<playden::homebrew::WebRecipeImports>();
         recipe_imports->SetFeatureCheck([online_steam = features.online_steam](const std::string& feature) {

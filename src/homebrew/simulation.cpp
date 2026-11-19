@@ -3716,7 +3716,7 @@ void Simulation::show_alert_prompt() {
         folder_recipe_replaces_ = alert.folder_recipe_replaces;
         ModalEntry question{"confirmation", "Use the recipe in the game's folder?", state_.navigation.focus_key,
                             {"folder-recipe-skip", "folder-recipe-use"}, 1, false};
-        question.body = name + "'s folder has a recipe.json. " +
+        question.body = name + "'s folder has a recipe in playden/recipe.json. " +
                         (alert.folder_recipe_replaces ? std::string("Using it replaces the game's current settings.")
                                                       : std::string("Playden can set up the game with it.")) +
                         " You can change the settings later in Game settings.";
@@ -7304,7 +7304,7 @@ bool Simulation::scenario(const std::string& name) {
             state_.navigation.route = Route::Library;
             open_game_page(id);
             if (name == "import-recipe") {
-                // Just added from a folder with a recipe.json: the question over its page.
+                // Just added from a folder with a playden/recipe.json: the question over its page.
                 AlertPrompt alert;
                 alert.settings_game = id;
                 alert.folder_recipe = "fixture";
@@ -15992,7 +15992,7 @@ void Simulation::NotifyFolderRecipeRefused(const ImportRequest& request, GameId 
         if (title.empty() && candidate.volume_id == request.volume_id && candidate.folder == request.folder) title = candidate.title;
     if (title.empty()) title = request.folder.substr(request.folder.find_last_of('/') + 1);
     push_notice({"folder-recipe-" + ToKey(id), "Recipe not used", "", false, kLiveNoticeSeconds * 2, true,
-                 title + " was added without its recipe.json. " + problem, false});
+                 title + " was added without its recipe. " + problem, false});
     rebuild_view();
 }
 
@@ -16117,7 +16117,7 @@ std::pair<int, std::string> Simulation::ImportRecipe(GameId id, const std::strin
     const auto title = object->title.empty() ? std::string(cm::kImportedRecipeTitle) : object->title;
     push_notice({"recipe-imported", "Recipe imported", "", false, kLiveNoticeSeconds, false,
                  name + " now uses \u201c" + title + "\u201d, " +
-                     (from_folder ? "from the recipe.json in its folder." : "sent from web access.")});
+                     (from_folder ? "from playden/recipe.json in its folder." : "sent from web access.")});
     std::string message = name + " now uses this recipe.";
     if (!dropped.empty()) message += " Some of your changes no longer apply.";
     return {200, message};

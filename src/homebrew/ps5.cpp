@@ -1207,7 +1207,7 @@ int main() {
         if (gog) gog->Register(stores, simulation);
         // Imported games: imports.json next to installs.json in the runtime state folder; their
         // folders in /data/playden-import and playden/import on each drive (a drive counts while mounted).
-        // Recipe files from a paired browser, and the recipe.json in a game's folder when it is added: kept through the
+        // Recipe files from a paired browser, and the playden/recipe.json in a game's folder when it is added: kept through the
         // community service.
         auto recipe_imports = std::make_shared<playden::homebrew::WebRecipeImports>();
         recipe_imports->SetKeeper([service = community.get()](const std::string& bytes, std::string* error) {

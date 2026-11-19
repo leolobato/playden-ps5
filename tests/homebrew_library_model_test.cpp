@@ -4700,7 +4700,7 @@ void live_import_sheet_sends_requests() {
     check(model.action("circle") && model.state().navigation.modals.empty(), "the sheet closes");
 }
 
-// Live (#1034): a folder with a recipe.json added from the Import sheet. The controller hands the store's outcome over
+// Live (#1034): a folder with a playden/recipe.json added from the Import sheet. The controller hands the store's outcome over
 // (OfferFolderRecipe) before the scan names the game's ID; once the library lists the game, its page opens over the
 // sheet and the question about the recipe opens over the page.
 void live_import_folder_recipe() {

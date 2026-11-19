@@ -1,5 +1,6 @@
 #include "stores/local/library_source.h"
 
+#include "platform/directory_walk.h"
 #include "platform/usb_mount.h"
 
 #include "stores/local/copy_plan.h"
@@ -536,19 +537,28 @@ void LocalLibrarySource::WarmRuntimeNumber(const std::function<std::uint32_t(con
 
 FolderRecipeKept LocalLibrarySource::KeepFolderRecipe(const std::string& path) {
   if (!config_.keep_folder_recipe) return {};
-  const auto file = HostPath(Join(path, kFolderRecipeName));
-  // A link is never followed out of the game's folder.
-  const int fd = ::open(file.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  const std::string file_name = std::string(kGameFolderDirectory) + "/" + kFolderRecipeName;
+  // A link is never followed out of the game's folder: the playden folder and the file are opened by a checked walk.
+  const int folder = platform::OpenDirectoryWalk(HostPath(Join(path, kGameFolderDirectory)));
+  if (folder < 0) {
+    // No playden folder, or a file or link by that name: no recipe.
+    if (errno == ENOENT || errno == ENOTDIR || errno == ELOOP || errno == EMLINK) return {};
+    return {{}, "Playden couldn't read " + file_name + "."};
+  }
+  const int fd = platform::OpenWalkChildUnprivileged(folder, kFolderRecipeName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  const int error = errno;
+  ::close(folder);
   if (fd < 0) {
-    if (errno == ENOENT) return {};
-    return {{}, "Playden couldn't read the game's recipe.json."};
+    if (error == ENOENT) return {};
+    if (error == ELOOP || error == EMLINK) return {{}, file_name + " is not a file."};
+    return {{}, "Playden couldn't read " + file_name + "."};
   }
   std::string bytes;
   struct stat info {};
   bool too_large = false, read_ok = ::fstat(fd, &info) == 0 && S_ISREG(info.st_mode);
   if (!read_ok) {
     ::close(fd);
-    return {{}, "The game's recipe.json is not a file."};
+    return {{}, file_name + " is not a file."};
   }
   char buffer[4096];
   for (;;) {
@@ -560,10 +570,10 @@ FolderRecipeKept LocalLibrarySource::KeepFolderRecipe(const std::string& path) {
     if (bytes.size() > kMaxFolderRecipeBytes) { too_large = true; break; }
   }
   ::close(fd);
-  if (too_large) return {{}, "The game's recipe.json is larger than 16 KB."};
-  if (!read_ok) return {{}, "Playden couldn't read the game's recipe.json."};
+  if (too_large) return {{}, file_name + " is larger than 16 KB."};
+  if (!read_ok) return {{}, "Playden couldn't read " + file_name + "."};
   auto kept = config_.keep_folder_recipe(std::move(bytes));
-  if (kept.revision.empty() && kept.problem.empty()) kept.problem = "Playden couldn't keep the game's recipe.json.";
+  if (kept.revision.empty() && kept.problem.empty()) kept.problem = "Playden couldn't keep " + file_name + ".";
   return kept;
 }
 

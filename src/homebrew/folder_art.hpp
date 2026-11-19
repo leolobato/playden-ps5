@@ -12,7 +12,8 @@
 
 namespace playden::homebrew {
 
-// The folder at the root of a game's folder that holds what a player gives Playden for that game.
+// The folder at the root of a game's folder that holds what a player gives Playden for that game (the same folder as
+// stores::local::kGameFolderDirectory, where its recipe.json is).
 inline constexpr const char* kFolderArtDirectory = "playden";
 // PNG pictures in it: the title's icon (any size, its centred square is used) and its Home background
 // (any size, scaled and cropped to fill 16:9).

@@ -572,7 +572,7 @@ void ImportedGamePlaysInPlace() {
                                                                 const std::function<void(const std::function<bool()>&)>&)>& body) {
     hb::Simulation model({}, {}, hb::ModelMode::Live);
     model.SetGameSettingsFile(settings_file);
-    // The recipe.json in a game's folder is kept in the community recipe store, as on the console.
+    // The playden/recipe.json in a game's folder is kept in the community recipe store, as on the console.
     const auto recipes_root = fixture.root / "community-recipes";
     auto recipe_store = std::make_shared<playden::community::RecipeStore>(recipes_root);
     model.SetCommunityRecipeLoader([recipe_store](const std::string& revision) -> std::optional<CommunityRecipe> {
@@ -934,13 +934,13 @@ void ImportedGamePlaysInPlace() {
     CHECK(launched.size() == plays_before);
   });
 
-  // A packager put a recipe.json in a drop-folder game (#1034). Added to play in place, the game is not prepared until
+  // A packager put a playden/recipe.json in a drop-folder game (#1034). Added to play in place, the game is not prepared until
   // the player answers the question about it; the recipe it names another key in is used, and the file stays.
   const auto tundra = fixture.root / "data/playden-import/Tundra";
   run(false, [&](hb::Simulation& model, hb::Controller&, RuntimeHost& host, local::LocalLibrarySource& source,
                  const std::function<void(const std::function<bool()>&)>& tick_until) {
     Write(tundra / "Game.exe", pe + std::string(4096, 'x'), 0755);
-    Write(tundra / "recipe.json", R"({
+    Write(tundra / "playden/recipe.json", R"({
   "recipe_id": "community-imported-tundra-1-0",
   "recipe_version": 1,
   "game": {"store": "imported", "key": "tundra-1-0", "name": "Tundra"},
@@ -979,7 +979,7 @@ void ImportedGamePlaysInPlace() {
       if (imported.folder == "playden-import/Tundra") tundra_id = imported.id;
     CHECK(!tundra_id.empty());
     const auto game = GameId::Local(tundra_id);
-    CHECK(model.state().navigation.modals.back().body.find("Tundra's folder has a recipe.json") != std::string::npos);
+    CHECK(model.state().navigation.modals.back().body.find("Tundra's folder has a recipe in playden/recipe.json") != std::string::npos);
     CHECK(model.FolderRecipeWaiting(game));
     // Listed and playable in place, yet not prepared while the question is open: its files were opened at the add, and
     // are not opened again for a preparation.
@@ -1003,7 +1003,7 @@ void ImportedGamePlaysInPlace() {
       CHECK(LoadGameSettingsFile(settings_file.string(), &saved, &reason) && saved.at(game).community_recipe.id == choice->id);
     }
     tick_until([&] { return drop_opens.load() == opens_at_add + 2; });
-    CHECK(fs::is_regular_file(tundra / "recipe.json"));
+    CHECK(fs::is_regular_file(tundra / "playden/recipe.json"));
   });
 
   // A newer kit with 120 Hz output: Sky's title keeps the older runtime until it is updated. 120 Hz output and Frame

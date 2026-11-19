@@ -1718,7 +1718,7 @@ static void t18_imported_game_page(const std::filesystem::path& fixtures, const 
     check(simulation.view().surface == "confirmation" && simulation.state().navigation.route == Route::Details &&
               simulation.state().navigation.focus_key == "folder-recipe-use" &&
               simulation.state().navigation.modals.back().title == "Use the recipe in the game's folder?",
-          "T18 a recipe.json in the folder is asked about over the game's page");
+          "T18 a playden/recipe.json in the folder is asked about over the game's page");
     press("folder-recipe-skip");
     check(simulation.state().navigation.modals.empty() && simulation.state().navigation.route == Route::Details,
           "T18 Don't use it closes the question");

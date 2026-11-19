@@ -2113,7 +2113,7 @@ void Controller::TickImports() {
       model_.NotifyImportFailed(it->second, outcome->message);
     } else if (it->second.kind == ImportRequestKind::Add && !outcome->id.empty()) {
       const auto game = GameId::Local(outcome->id);
-      // A recipe.json in its folder: the player is asked whether to use it (before the program is seeded, so a folder
+      // A playden/recipe.json in its folder: the player is asked whether to use it (before the program is seeded, so a folder
       // added before is told apart by the settings it brought back), or told why it can't be used.
       if (!outcome->recipe_revision.empty()) model_.OfferFolderRecipe(game, outcome->recipe_revision);
       else if (!outcome->recipe_problem.empty()) model_.NotifyFolderRecipeRefused(it->second, game, outcome->recipe_problem);

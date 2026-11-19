@@ -1761,7 +1761,7 @@ void web_import_without_app_id(const std::filesystem::path& base) {
     check(model.ImportRecipe(kGame, own_revision).first == 422, "Darkwood refuses the imported game's recipe");
 }
 
-// The recipe.json at the root of an imported game's folder (#1034): the Local store keeps it through WebRecipeImports::Keep
+// The playden/recipe.json in an imported game's folder (#1034): the Local store keeps it through WebRecipeImports::Keep
 // when the game is added, and once the library lists the game the TV asks whether to use it. Using it replaces the
 // game's settings; the game it names doesn't matter; a refusal is a notice, and the game stays as it was.
 void folder_recipe(const std::filesystem::path& base) {
@@ -1809,7 +1809,7 @@ void folder_recipe(const std::filesystem::path& base) {
     {
         const auto& question = model.state().navigation.modals.back();
         check(question.title == "Use the recipe in the game's folder?", "the question's title");
-        check(contains(question.body, "Minecraft 1.20.1's folder has a recipe.json") &&
+        check(contains(question.body, "Minecraft 1.20.1's folder has a recipe in playden/recipe.json") &&
                   contains(question.body, "Playden can set up the game with it") && !contains(question.body, "replaces"),
               "a new game's question says what the recipe does");
         check(question.action_keys == std::vector<std::string>{"folder-recipe-skip", "folder-recipe-use"} &&
@@ -1853,7 +1853,7 @@ void folder_recipe(const std::filesystem::path& base) {
     check(!model.state().game_settings.at(game).overrides.count("program"), "the recipe's program is used");
     check(model.RecipeFallbackFor(game).empty(), "and the game runs with the recipe");
     check(std::any_of(model.state().notices.begin(), model.state().notices.end(), [](const auto& notice) {
-              return notice.id == "recipe-imported" && contains(notice.detail, "from the recipe.json in its folder");
+              return notice.id == "recipe-imported" && contains(notice.detail, "from playden/recipe.json in its folder");
           }),
           "a notification says where the recipe came from");
 
@@ -1884,7 +1884,7 @@ void folder_recipe(const std::filesystem::path& base) {
                                     game, refused.problem);
     check(!question_open() && !model.FolderRecipeWaiting(game), "a refused recipe asks nothing");
     check(std::any_of(model.state().notices.begin(), model.state().notices.end(), [&](const auto& notice) {
-              return notice.message == "Recipe not used" && contains(notice.detail, "added without its recipe.json") &&
+              return notice.message == "Recipe not used" && contains(notice.detail, "added without its recipe.") &&
                      contains(notice.detail, refused.problem);
           }),
           "and a notice says why");
