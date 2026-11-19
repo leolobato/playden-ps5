@@ -817,6 +817,23 @@ const SettingDefinition* FindSetting(std::string_view id) {
   return nullptr;
 }
 
+// Rows this build no longer has (RetiredSetting), with the `since` they had: a recipe may still name one, and an older
+// Playden still needs to know the row to read it.
+constexpr std::pair<const char*, const char*> kRetiredSettings[] = {{"opengl_thread", ""}};
+
+std::string SettingsSinceJson() {
+  std::map<std::string, std::string> rows;
+  for (const auto& definition : SettingsCatalogue()) rows[definition.id] = definition.since;
+  for (const auto& [retired, since] : kRetiredSettings) rows.emplace(retired, since);
+  std::string text = "{\n  \"format_version\": 1,\n  \"settings\": {";
+  const char* separator = "\n";
+  for (const auto& [id, since] : rows) {
+    text += separator + std::string("    \"") + json::escape(id) + "\": \"" + json::escape(since) + "\"";
+    separator = ",\n";
+  }
+  return text + "\n  }\n}\n";
+}
+
 bool SettingShown(const SettingDefinition& definition, const KitCapabilities& kit) {
   if ((definition.id == "start_through_launcher" || definition.id == "launcher_controller_preset") &&
       !kit.launcher_mode && !kit.launcher_mode_needs_update)
@@ -2204,7 +2221,10 @@ bool ParseGameRecipe(std::string_view text, GameRecipe* recipe, std::string* rea
   return ParseRecipeFile(text, recipe, reason, false);
 }
 
-bool RetiredSetting(std::string_view id) { return id == "opengl_thread"; }
+bool RetiredSetting(std::string_view id) {
+  return std::any_of(std::begin(kRetiredSettings), std::end(kRetiredSettings),
+                     [id](const auto& retired) { return id == retired.first; });
+}
 
 bool ValidatePresetSetting(std::string_view id, std::string_view value, std::string* reason) {
   // Presets bundle choices and button bindings; launch entries, graphics and free text belong to the recipe or the

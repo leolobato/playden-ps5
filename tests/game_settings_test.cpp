@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -56,6 +57,37 @@ int main(int argc, char** argv) {
   std::string reason;
   // The Steam network and Online cases run with the experimental feature on; the last block turns it off.
   SetOnlineSteamEnabled(true);
+
+  // The recipes repository copies docs/settings-since.json: it must be what this build makes. Regenerate it with
+  // community_recipe_check --settings-since > docs/settings-since.json.
+  CHECK(ReadText(source / "docs/settings-since.json") == SettingsSinceJson());
+  // The rows from before `since` existed. Any other row must name the release it ships in, or an older Playden would
+  // be offered a recipe that it refuses.
+  const std::set<std::string> before_since = {
+      "address_space", "architecture", "arguments", "button.circle", "button.create", "button.cross", "button.down",
+      "button.l1", "button.l2", "button.l3", "button.left", "button.options", "button.r1", "button.r2", "button.r3",
+      "button.right", "button.square", "button.touchpad", "button.triangle", "button.up", "controller",
+      "controller_preset", "cpu", "cpu_topology", "d3d12", "dll_overrides", "environment", "extra_arguments",
+      "frame_latency", "frame_limit", "framegen", "game_invites", "graphics", "invert_stick", "launch_option",
+      "launcher_controller_preset", "library_overrides", "locale", "logging", "microphone", "network_adapters",
+      "opengl_thread", "overlay_detail", "performance_overlay", "pixel_shader_waves", "pointer_speed",
+      "pointer_stick", "program", "program_arguments", "program_folder", "refresh", "registry_dll_overrides",
+      "reported_gpu", "reported_vram", "resolution", "rumble", "scaling", "start_check", "start_through_launcher",
+      "steam_features", "steam_input", "steam_library_path", "steam_network", "steam_sign_in", "stick_deadzone",
+      "system_locale", "text_scale", "touchpad_hold", "trigger_deadzone", "volume", "vsync", "wheel_stick",
+      "window_view", "windows_version"};
+  for (const auto& definition : SettingsCatalogue()) {
+    if (!before_since.count(definition.id) && definition.since.empty())
+      std::fprintf(stderr, "setting %s needs since (the release it ships in)\n", definition.id.c_str());
+    CHECK(before_since.count(definition.id) || !definition.since.empty());
+    // Empty, or a release's three numbers: "0.13.0".
+    int dots = 0;
+    bool plain = true;
+    for (char c : definition.since) dots += c == '.', plain = plain && ((c >= '0' && c <= '9') || c == '.');
+    CHECK(definition.since.empty() || (plain && dots == 2 && definition.since.front() != '.' &&
+                                       definition.since.back() != '.' && definition.since.find("..") == std::string::npos));
+  }
+  CHECK(SettingsSinceJson().find("\"opengl_thread\": \"\"") != std::string::npos);
 
   GameRecipe hl2;
   CHECK(ParseGameRecipe(ReadText(source / "runtime/recipes/steam-220-hl2-v1.json"), &hl2, &reason));

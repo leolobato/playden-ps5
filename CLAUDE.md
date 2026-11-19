@@ -111,7 +111,8 @@ the same call:
   sets, the rows the player changed, and the rows the controller preset brings. It does not carry a row that only has
   Playden's default value. An older Playden refuses a whole recipe that names a setting it doesn't know, so a new row
   must stay out of shares until a player or a recipe sets it. The `game_settings` and `settings_only_recipe` tests
-  check this.
+  check this. A new row also gets `since` (the release it ships in) and a regenerated `docs/settings-since.json`
+  (`community_recipe_check --settings-since`); see docs/community-recipes.md › Minimum Playden version.
 - Commit format: see CONTRIBUTING.md › Commits. A commit that resolves an issue says `Fixes #N` (`Refs #N`
   for partial work).
 - History is linear: rebase and fast-forward, no merge commits.

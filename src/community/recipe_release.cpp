@@ -7,6 +7,7 @@
 #include <cstring>
 #include <memory>
 #include <set>
+#include <tuple>
 
 #include "miniz.h"
 #include "runtime/artifact_hash.h"
@@ -66,6 +67,14 @@ struct ZipReader {
 };
 
 }  // namespace
+
+bool NeedsNewerPlayden(const IndexEntry& entry, const update::Version& playden) {
+  if (entry.min_playden.empty()) return false;
+  const auto needed = update::ParseVersion(entry.min_playden);
+  if (!needed) return true;
+  return std::make_tuple(playden.major, playden.minor, playden.patch) <
+         std::make_tuple(needed->major, needed->minor, needed->patch);
+}
 
 std::string Sha256Hex(std::string_view bytes) { return runtime::HashArtifactBytes(bytes).value_or(""); }
 bool IsRevision(std::string_view text) { return LowerHex(text, 64); }
@@ -151,6 +160,8 @@ std::optional<RecipeIndex> ParseRecipeIndex(std::string_view json, std::string* 
       entry.tested_date = Text(recipe, "tested_date");
       entry.made_on = Text(recipe, "made_on");
       if (!IsRecipeStore(entry.made_on)) entry.made_on.clear();
+      if (const auto* min_playden = recipe.Find("min_playden"))
+        entry.min_playden = min_playden->is_string() && min_playden->text().size() <= 64 ? min_playden->text() : "invalid";
       if (const auto* contributors = recipe.Find("contributors"); contributors && contributors->is_array())
         for (const auto& name : contributors->array())
           if (name.is_string() && name.text().size() <= 256) entry.contributors.push_back(name.text());

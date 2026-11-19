@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "library/game_ref.h"
+#include "update/version.h"
 
 namespace playden::community {
 
@@ -36,8 +37,16 @@ struct IndexEntry {
   std::string revision;  // sha256 hex of the file
   std::string title, status, author, tested_kit, min_kit, tested_firmware, tested_date;
   std::string made_on;   // the store of the copy it was made with, when not game.store
+  // The oldest Playden release that reads the recipe ("0.13.0"), or empty: the recipes release fills it in from the
+  // newest setting row the recipe names (settings-since.json). A field that isn't a string reads as "invalid", which
+  // no Playden meets. NeedsNewerPlayden decides; the entry stays in the index either way.
+  std::string min_playden;
   std::vector<std::string> contributors;
 };
+
+// Whether the recipe needs a newer Playden than `playden`: its min_playden is set and newer, or not a version. Only
+// the release numbers count, so every nightly and beta of 0.13.0 reads a recipe for 0.13.0.
+bool NeedsNewerPlayden(const IndexEntry& entry, const update::Version& playden);
 
 // A game index.json lists: its name (the newest recipe's game.name; empty when not a game name) and its recipes.
 struct IndexGame {

@@ -137,12 +137,18 @@ class CommunityRecipeService {
 
 // The summaries of a release: every index entry whose object is in the store and passes the
 // checks (its file's game the one it is listed under), in index order, with votes when totals has them. A recipe
-// that needs an experimental feature feature_enabled doesn't name (or with no feature_enabled) is left out. Used at
-// load and after a refresh.
+// that needs an experimental feature feature_enabled doesn't name (or with no feature_enabled) is left out, and so is one
+// that needs a newer Playden than `playden` (this build when not given; NeedsNewerPlayden), before its file is read.
+// Its file stays in the store, so the same release offers it once Playden is updated. Used at load and after a refresh.
 std::map<GameRef, std::vector<RecipeSummary>> BuildSummaries(
     const RecipeIndex& index, const RecipeStore& store, const VoteTotals* totals,
     const std::function<void(const std::string&)>& log,
-    const std::function<bool(const std::string& feature)>& feature_enabled = {});
+    const std::function<bool(const std::string& feature)>& feature_enabled = {},
+    std::optional<update::Version> playden = std::nullopt);
+
+// The games search finds, by name: each game the index names, except one whose recipes all need a newer Playden than
+// `playden` (this build when not given).
+std::map<GameRef, std::string> IndexGameNames(const RecipeIndex& index, std::optional<update::Version> playden = std::nullopt);
 
 // ParseCommunityRecipe and CommunityRecipeRefusals (console options) on bytes (the id made from the file's game);
 // the reason in *error. The caller compares the game with the path or index entry it came from.

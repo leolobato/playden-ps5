@@ -159,10 +159,19 @@ struct SettingDefinition {
   SettingKind kind = SettingKind::kChoice;
   std::vector<SettingChoice> choices;  // empty for text and for launch_option (from the recipe)
   std::string playden_default;         // empty means "not written"
+  // The first Playden release that reads the row ("0.13.0"), set on every row added from 0.12.0 on; empty for the
+  // rows older ones already read. An older Playden refuses a recipe that names a row it doesn't know, so the
+  // recipes release lists the newest `since` a recipe needs as its min_playden (SettingsSinceJson).
+  std::string since;
 };
 
 const std::vector<SettingDefinition>& SettingsCatalogue();
 const SettingDefinition* FindSetting(std::string_view id);
+
+// settings-since.json for the recipes repository: {"format_version": 1, "settings": {"<id>": "<since>", ...}}, every
+// row a recipe may name (the catalogue and the retired rows, which read as ""), sorted by id. docs/settings-since.json
+// holds a copy that a test keeps equal to it.
+std::string SettingsSinceJson();
 
 // Whether the sheet lists a setting at all. Every setting is listed, so players see what is
 // coming; one the kit, the game or Playden cannot apply yet is disabled with its reason

@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <strings.h>
 
+#include <algorithm>
 #include <ctime>
 #include <utility>
 
@@ -52,15 +53,17 @@ const std::vector<RecipeSummary>* RecipeSnapshot::For(const GameRef& game) const
   return found == games.end() ? nullptr : &found->second;
 }
 
-namespace {
 // What search will show for each game (plan Phase E4).
-std::map<GameRef, std::string> IndexGameNames(const RecipeIndex& index) {
+std::map<GameRef, std::string> IndexGameNames(const RecipeIndex& index, std::optional<update::Version> playden) {
+  const auto self = playden.value_or(update::CurrentVersion());
   std::map<GameRef, std::string> names;
-  for (const auto& [game, listed] : index.games)
-    if (!listed.name.empty()) names[game] = listed.name;
+  for (const auto& [game, listed] : index.games) {
+    const bool held_back = !listed.recipes.empty() && std::all_of(listed.recipes.begin(), listed.recipes.end(),
+                                                                   [&](const IndexEntry& entry) { return NeedsNewerPlayden(entry, self); });
+    if (!listed.name.empty() && !held_back) names[game] = listed.name;
+  }
   return names;
 }
-}  // namespace
 
 std::optional<runtime::CommunityRecipe> CheckRecipeFile(std::string_view bytes, std::string* error) {
   runtime::CommunityRecipe community;
@@ -85,10 +88,15 @@ std::optional<runtime::CommunityRecipe> CheckRecipeFile(std::string_view bytes, 
 std::map<GameRef, std::vector<RecipeSummary>> BuildSummaries(
     const RecipeIndex& index, const RecipeStore& store, const VoteTotals* totals,
     const std::function<void(const std::string&)>& log,
-    const std::function<bool(const std::string& feature)>& feature_enabled) {
+    const std::function<bool(const std::string& feature)>& feature_enabled, std::optional<update::Version> playden) {
+  const auto self = playden.value_or(update::CurrentVersion());
   std::map<GameRef, std::vector<RecipeSummary>> games;
   for (const auto& [game, listed] : index.games) {
     for (const auto& entry : listed.recipes) {
+      if (NeedsNewerPlayden(entry, self)) {
+        if (log) log("community recipes: " + entry.id + " not offered: needs Playden " + entry.min_playden + " or newer");
+        continue;
+      }
       const auto bytes = store.ReadObject(entry.revision);
       if (!bytes) continue;  // dropped when it was fetched (logged then)
       std::string error;

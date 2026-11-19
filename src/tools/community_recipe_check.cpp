@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 //   community_recipe_check [--json] <file>...
+//   community_recipe_check --settings-since
 //
 // For each file: Playden's parser, the strict community rules (CommunityRecipeRefusals, author
 // required), the file name (recipes/<store>/<key>/<slug>.json, when the path has a recipes folder),
@@ -13,7 +14,8 @@
 // how the game starts. A settings-only recipe (community.format_version 2) is filled as a console fills it, from a
 // stand-in for Playden's own recipe (one program, 64-bit, DXVK; the copy has every program it names), and its command
 // names "<Playden's program>" for that program. --json prints one JSON object instead. Exit status 1 when any file is
-// refused, 2 on a usage error.
+// refused, 2 on a usage error. --settings-since prints settings-since.json (every setting id a recipe may name, with
+// the first Playden release that reads it) for the recipes repository, which lists min_playden from it.
 #include "runtime/artifact_hash.h"
 #include "runtime/community_rules.h"
 #include "runtime/game_install.h"
@@ -226,16 +228,20 @@ std::string Json(const std::vector<Result>& results, bool ok) {
 int main(int argc, char** argv) {
   bool json = false;
   std::vector<std::string> paths;
+  if (argc == 2 && std::string(argv[1]) == "--settings-since") {
+    std::fputs(rt::SettingsSinceJson().c_str(), stdout);
+    return 0;
+  }
   for (int index = 1; index < argc; ++index) {
     const std::string argument = argv[index];
     if (argument == "--json") json = true;
     else if (argument == "--help" || argument == "-h" || (argument.size() > 1 && argument[0] == '-')) {
-      std::fprintf(stderr, "usage: community_recipe_check [--json] <recipe.json>...\n");
+      std::fprintf(stderr, "usage: community_recipe_check [--json] <recipe.json>... | --settings-since\n");
       return argument == "--help" || argument == "-h" ? 0 : 2;
     } else paths.push_back(argument);
   }
   if (paths.empty()) {
-    std::fprintf(stderr, "usage: community_recipe_check [--json] <recipe.json>...\n");
+    std::fprintf(stderr, "usage: community_recipe_check [--json] <recipe.json>... | --settings-since\n");
     return 2;
   }
   std::vector<Result> results;

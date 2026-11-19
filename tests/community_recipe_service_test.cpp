@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -371,6 +372,74 @@ void IndexFormat() {
   CHECK(ParseRecipeIndex(index(""), &error) && ParseRecipeIndex(index(""), &error)->count == 0);
 }
 
+// min_playden: the index keeps every entry; a recipe that needs a newer Playden is left out of the summaries (with the
+// reason logged) and search, while its file stays in the store, so the same release offers it after an update. Only the
+// release numbers count, so a nightly or beta of that release reads it.
+void MinPlayden(const std::string& good, const std::string& good_id, const std::string& second,
+                const std::string& other_app) {
+  CHECK(!NeedsNewerPlayden(IndexEntry{}, update::Version{0, 1, 0}));
+  IndexEntry needs;
+  needs.min_playden = "0.13.0";
+  for (const char* version : {"0.13.0", "0.13.0-nightly.20261201.1", "0.13.0-beta.1", "0.13.1", "1.0.0"})
+    CHECK(!NeedsNewerPlayden(needs, *update::ParseVersion(version)));
+  for (const char* version : {"0.12.9", "0.12.0", "0.9.99"}) CHECK(NeedsNewerPlayden(needs, *update::ParseVersion(version)));
+  needs.min_playden = "0.13.10";
+  CHECK(NeedsNewerPlayden(needs, *update::ParseVersion("0.13.9")));
+  needs.min_playden = "invalid";
+  CHECK(NeedsNewerPlayden(needs, *update::ParseVersion("99.0.0")));
+
+  const auto entry = [](const std::string& id, const std::string& bytes, const std::string& min_playden) {
+    return R"({"id":")" + id + R"(","title":"t","status":"works","revision":")" + Sha256Hex(bytes) + R"(")" +
+           min_playden + "}";
+  };
+  const std::string json =
+      R"({"format_version":2,"zip_sha256":")" + std::string(64, 'a') + R"(","games":[)"
+      R"({"store":"steam","key":"274520","name":"Darkwood","recipes":[)" + entry(good_id, good, "") + "," +
+      entry("community-steam-274520-second", second, R"(,"min_playden":"0.14.0")") + "]}," +
+      R"({"store":"steam","key":"10","name":"Counter-Strike","recipes":[)" +
+      entry("community-steam-10-other", other_app, R"(,"min_playden":14)") + "]}," +
+      R"({"store":"steam","key":"20","name":"Empty","recipes":[]}]})";
+  std::string error;
+  const auto index = ParseRecipeIndex(json, &error);
+  CHECK(index && index->count == 3);
+  if (!index) return;
+  const auto darkwood = GameRef::Steam(274520);
+  CHECK(index->Find(darkwood, "community-steam-274520-second") &&
+        index->Find(darkwood, "community-steam-274520-second")->min_playden == "0.14.0");
+  // A min_playden that isn't a string is not "no minimum".
+  CHECK(index->Find(GameRef::Steam(10), "community-steam-10-other")->min_playden == "invalid");
+
+  const std::string root = TempRoot("community-min-playden");
+  CHECK(!root.empty());
+  RecipeStore store{fs::path(root)};
+  CHECK(store.Prepare(&error) && store.WriteObjects({good, second, other_app}, &error));
+  std::vector<std::string> log;
+  const auto keep = [&](const std::string& line) { log.push_back(line); };
+  const auto ids = [](const std::map<GameRef, std::vector<RecipeSummary>>& games) {
+    std::set<std::string> out;
+    for (const auto& [game, list] : games)
+      for (const auto& summary : list) out.insert(summary.id);
+    return out;
+  };
+  for (const char* version : {"0.13.0", "0.13.5-nightly.20261201.1"}) {
+    log.clear();
+    const auto old = update::ParseVersion(version);
+    CHECK(ids(BuildSummaries(*index, store, nullptr, keep, {}, old)) == std::set<std::string>{good_id});
+    bool logged = false;
+    for (const auto& line : log)
+      logged = logged || line == "community recipes: community-steam-274520-second not offered: needs Playden 0.14.0 or newer";
+    CHECK(logged);
+    // Counter-Strike's only recipe needs a newer Playden: search doesn't find it. A game listed with none stays.
+    const auto names = IndexGameNames(*index, old);
+    CHECK(names.count(darkwood) && !names.count(GameRef::Steam(10)) && names.count(GameRef::Steam(20)));
+  }
+  // After the update, the same index and store offer it: nothing was dropped.
+  CHECK(ids(BuildSummaries(*index, store, nullptr, {}, {}, update::ParseVersion("0.14.0-beta.1"))) ==
+        (std::set<std::string>{good_id, "community-steam-274520-second"}));
+  CHECK(IndexGameNames(*index, update::ParseVersion("0.14.0")).count(darkwood));
+  CHECK(store.ReadObject(Sha256Hex(second)));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -388,6 +457,7 @@ int main(int argc, char** argv) {
   const std::string hostile = Replace(Slurp(fixtures + "/hostile/wildcard-override.json"), good_id,
                                       "community-steam-274520-hostile");
   const std::string other_app = Replace(Replace(good, good_id, "community-steam-10-other"), "274520", "10");
+  MinPlayden(good, good_id, second, other_app);
   const std::string imported = Slurp(fixtures + "/recipes/imported/tmnt-mutant-melee/arrow-keys.json");
   // Steam network needs online-steam in features.txt: not offered without it.
   const std::string network = Replace(Replace(good, good_id, "community-steam-274520-network"),

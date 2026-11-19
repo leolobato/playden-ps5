@@ -265,8 +265,31 @@ are mostly older nightlies.
   older builds may ignore safely doesn't need a new version.
 - `index.json` in a release keeps its own `format_version` 2. Changing it would make every older Playden refuse the
   whole release.
-- There is no minimum Playden version field: the parser knows what it can read. `min_kit` stays for what the runtime
-  kit must provide.
+- A recipe file has no minimum Playden version field: the parser knows what it can read. `min_kit` stays for what the
+  runtime kit must provide.
+
+### Minimum Playden version (min_playden)
+
+An older Playden refuses a recipe that names a setting it doesn't know. To keep that from showing up as a recipe that
+silently goes missing, each setting row records the first Playden release that reads it (`since` in
+`src/runtime/game_settings.cpp`), and the recipes release lists the newest one a recipe needs in `index.json`:
+
+- `docs/settings-since.json` lists every setting id a recipe may name with its `since`. An empty `since` means the row
+  was there when tracking began (0.12.0); a few of those are newer than some older builds (`microphone` came in
+  0.12.0-beta.2), which still refuse a recipe that names them. `community_recipe_check --settings-since` prints the
+  file, and the `game_settings` test fails when the file and the code differ, or when a row added since has no `since`.
+- The recipes repository keeps a copy. Its release script gives each `index.json` entry a `min_playden`: the newest
+  `since` among the rows in the recipe's `defaults`, or nothing. Authors never set it, and the recipe file doesn't
+  change, so its revision stays the same.
+- A Playden that knows the field doesn't offer a recipe whose `min_playden` is newer than itself (or isn't a version),
+  and logs `needs Playden <version> or newer`. It still downloads and keeps the file, so the same release offers the
+  recipe once Playden is updated. Only the release numbers count: every nightly and beta of 0.13.0 reads a recipe for
+  0.13.0. A game whose recipes all need a newer Playden is left out of search.
+- Builds from before the field ignore it and refuse the file when they read it, as they always did.
+
+A new setting row gets `since` set to the release it will ship in (the version in `CMakeLists.txt`), then
+`docs/settings-since.json` is regenerated and copied to the recipes repository. A new value for an existing row is
+not covered: an older Playden refuses it as well, so it needs the same care as before.
 
 ## Games
 
