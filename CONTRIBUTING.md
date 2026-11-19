@@ -30,7 +30,8 @@ To build Playden, run its tests or put it on a console, see [docs/building.md](d
 
 ## Report a game test
 
-1. Check the [compatibility list](COMPATIBILITY.md). If the game is there, report only what is new.
+1. Check the [compatibility list](COMPATIBILITY.md). If the game is there, report only what is new. If you know the
+   game already has a report for your copy, even a closed one, you can comment there instead.
 2. Play the game from Playden or from its tile on the Home screen.
 3. If the game did not work, start Playden once more. When it starts, Playden copies the game's newest log to
    `/data/playden/logs/title-<TITLE>.log`.
