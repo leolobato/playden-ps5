@@ -67,6 +67,7 @@ add_library(playden_steam_cm_codec STATIC
     "${CMAKE_SOURCE_DIR}/src/steam/backend/vdf.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/app_info.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/workshop_acf.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/controller_layout.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/prospero_profile.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/game_settings.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/my_presets.cpp"
@@ -636,7 +637,7 @@ if(BUILD_TESTING)
     target_compile_features(title_registry_test PRIVATE cxx_std_17)
     add_test(NAME title_registry COMMAND title_registry_test)
     foreach(test_name steam_gzip steam_binary_kv steam_vdf steam_app_info prospero_profile game_settings game_probe
-            settings_only_recipe)
+            settings_only_recipe controller_layout)
         add_executable(${test_name}_test "${CMAKE_SOURCE_DIR}/tests/${test_name}_test.cpp")
         target_link_libraries(${test_name}_test PRIVATE playden_steam_cm_codec)
         target_compile_features(${test_name}_test PRIVATE cxx_std_20)
@@ -648,6 +649,7 @@ if(BUILD_TESTING)
     add_test(NAME prospero_profile COMMAND prospero_profile_test "${CMAKE_SOURCE_DIR}/fixtures/prospero-win-profiles")
     add_test(NAME game_settings COMMAND game_settings_test "${CMAKE_SOURCE_DIR}")
     add_test(NAME settings_only_recipe COMMAND settings_only_recipe_test)
+    add_test(NAME controller_layout COMMAND controller_layout_test)
     add_executable(pe_architecture_test "${CMAKE_SOURCE_DIR}/tests/pe_architecture_test.cpp")
     target_include_directories(pe_architecture_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
     target_compile_features(pe_architecture_test PRIVATE cxx_std_17)
