@@ -45,6 +45,12 @@ struct CloudLocation {
   bool check_only = false;
 };
 
+// What one choice in a conflict does to a game's saves (every transfer of that sync).
+struct CloudChoice {
+  std::size_t downloads = 0, uploads = 0, local_deletes = 0, remote_deletes = 0;
+  bool operator==(const CloudChoice&) const = default;
+};
+
 // One check or sync, as the player sees it.
 struct CloudReport {
   CloudState state = CloudState::kFailed;
@@ -54,6 +60,11 @@ struct CloudReport {
   std::uint64_t local_bytes = 0, remote_bytes = 0, local_latest = 0, remote_latest = 0;
   bool first_sync = false;     // a conflict with no earlier sync on this device: both sides already had saves
   bool first_overwrite = false;  // a conflict because this console's first upload would replace Cloud saves
+  // A conflict's files by reason since the last sync, and what each choice does. choices is false for a report an
+  // older Playden saved: nothing is known about them.
+  std::size_t changed_both = 0, deleted_here = 0, deleted_in_cloud = 0;
+  CloudChoice use_local, use_cloud;
+  bool choices = false;
   bool canceled = false;  // failed only because the service canceled it (Playden quitting): never saved
   // Filled in by the service.
   std::int64_t last_sync = 0;  // Unix time saves were last in step (synced or found up to date)
@@ -155,6 +166,7 @@ class CloudService {
     CloudLocation location;
     CloudResolution resolution = CloudResolution::kAutomatic;
     bool confirm_account = false;
+    CloudReport shown;  // kResolve: the report the player chose from
     std::string saves_root;
     CloudJobKind job = CloudJobKind::kNone;
     std::vector<CloudLocation> locations;

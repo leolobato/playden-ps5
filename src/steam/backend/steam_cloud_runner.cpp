@@ -26,6 +26,17 @@ CloudReport Report(const cloud::CloudPlan& plan) {
   // No baseline for this account yet and both sides differ: the first sync on this device.
   report.first_sync = plan.status == cloud::PlanStatus::kConflict && plan.requires_account_confirmation;
   report.first_overwrite = plan.status == cloud::PlanStatus::kConflict && plan.first_overwrite;
+  if (plan.status == cloud::PlanStatus::kConflict) {
+    report.changed_both = plan.changed_both;
+    report.deleted_here = plan.deleted_here;
+    report.deleted_in_cloud = plan.deleted_in_cloud;
+    const auto choice = [](const cloud::ChoiceOutcome& outcome) {
+      return CloudChoice{outcome.downloads, outcome.uploads, outcome.local_deletes, outcome.remote_deletes};
+    };
+    report.use_local = choice(plan.use_local);
+    report.use_cloud = choice(plan.use_cloud);
+    report.choices = true;
+  }
   report.canceled = plan.status == cloud::PlanStatus::kFailed && plan.canceled;
   return report;
 }
@@ -123,6 +134,9 @@ CloudReport SteamCloudRunner::Apply(const StoredSession& session, const CloudLoc
          outcome.detail.empty() ? outcome.message : outcome.message + " (" + outcome.detail + ")");
   report.first_sync = false;
   report.first_overwrite = false;
+  report.changed_both = report.deleted_here = report.deleted_in_cloud = 0;
+  report.use_local = report.use_cloud = {};
+  report.choices = false;
   return report;
 }
 

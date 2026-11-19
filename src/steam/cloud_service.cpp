@@ -48,6 +48,15 @@ bool SaveStatus(const std::string& state_root, const CloudReport& report) {
                      "\nlocal_bytes=" + std::to_string(report.local_bytes) + "\nremote_bytes=" + std::to_string(report.remote_bytes) +
                      "\nlocal_latest=" + std::to_string(report.local_latest) +
                      "\nremote_latest=" + std::to_string(report.remote_latest) + "\n";
+  if (report.choices) {
+    const auto choice = [](const CloudChoice& value) {
+      return std::to_string(value.downloads) + "," + std::to_string(value.uploads) + "," + std::to_string(value.local_deletes) +
+             "," + std::to_string(value.remote_deletes);
+    };
+    text += "reasons=" + std::to_string(report.changed_both) + "," + std::to_string(report.deleted_here) + "," +
+            std::to_string(report.deleted_in_cloud) + "\nuse_local=" + choice(report.use_local) + "\nuse_cloud=" +
+            choice(report.use_cloud) + "\n";
+  }
   const auto path = state_root + "/" + kStatusFile;
   const auto temporary = path + ".playden-partial";
   FILE* file = std::fopen(temporary.c_str(), "wb");
@@ -66,6 +75,7 @@ std::optional<CloudReport> LoadStatus(const std::string& state_root) {
   std::vector<char> line(4096);
   CloudReport report;
   bool header = false, stated = false;
+  int choices = 0;  // bits: reasons, use_local, use_cloud read; 8: one was malformed
   while (std::fgets(line.data(), static_cast<int>(line.size()), file)) {
     std::string text(line.data(), std::strcspn(line.data(), "\r\n"));
     const auto equals = text.find('=');
@@ -89,6 +99,35 @@ std::optional<CloudReport> LoadStatus(const std::string& state_root) {
     else if (key == "remote_bytes") report.remote_bytes = number();
     else if (key == "local_latest") report.local_latest = number();
     else if (key == "remote_latest") report.remote_latest = number();
+    else if (key == "reasons" || key == "use_local" || key == "use_cloud") {
+      // Exactly 3 (reasons) or 4 counts, digits only, each well below anything a game holds.
+      std::vector<std::size_t> parts;
+      bool valid = true;
+      for (std::size_t start = 0; valid;) {
+        const auto comma = value.find(',', start);
+        const auto part = value.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        valid = !part.empty() && part.size() <= 9 && part.find_first_not_of("0123456789") == std::string::npos;
+        if (valid) parts.push_back(std::strtoull(part.c_str(), nullptr, 10));
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+      }
+      if (valid && key == "reasons" && parts.size() == 3) {
+        report.changed_both = parts[0];
+        report.deleted_here = parts[1];
+        report.deleted_in_cloud = parts[2];
+        choices |= 1;
+      } else if (valid && key != "reasons" && parts.size() == 4) {
+        (key == "use_local" ? report.use_local : report.use_cloud) = {parts[0], parts[1], parts[2], parts[3]};
+        choices |= key == "use_local" ? 2 : 4;
+      } else {
+        choices |= 8;  // a malformed line: nothing about the choices is trusted
+      }
+    }
+  }
+  report.choices = choices == 7;
+  if (!report.choices) {
+    report.changed_both = report.deleted_here = report.deleted_in_cloud = 0;
+    report.use_local = report.use_cloud = {};
   }
   std::fclose(file);
   if (!header || !stated) return std::nullopt;
@@ -200,11 +239,12 @@ std::uint64_t CloudService::Resolve(const CloudLocation& location, CloudResoluti
   if (current == games_.end() ||
       (current->second.state != CloudState::kConflict && current->second.state != CloudState::kNeedsAccount))
     return 0;
+  Request request;
+  request.shown = current->second;
   auto report = current->second;
   report.state = CloudState::kSyncing;
   report.message = "Syncing saves…";
   Set(location.id, std::move(report));
-  Request request;
   request.kind = Kind::kResolve;
   request.location = location;
   request.resolution = resolution;
@@ -472,13 +512,29 @@ void CloudService::Run() {
     } else {
       // A fresh plan: the choice applies to what Cloud and this console hold now.
       report = runner_.Check(*session.value(), request.location, cancel_);
+      // The player chose from buttons that said what they do (#1103). If that changed since (another device synced,
+      // a save was deleted), nothing the player didn't see happens: transfers that need no choice run, and anything
+      // else comes back as a new choice with its own words.
+      auto resolution = request.resolution;
+      const auto& shown = request.shown;
+      if (shown.choices && shown.state == CloudState::kConflict && resolution != CloudResolution::kAutomatic) {
+        const auto& promised = resolution == CloudResolution::kUseLocal ? shown.use_local : shown.use_cloud;
+        const auto& now = resolution == CloudResolution::kUseLocal ? report.use_local : report.use_cloud;
+        const bool same = report.state == CloudState::kConflict && report.choices && now == promised;
+        if (!same && report.state == CloudState::kSyncing) resolution = CloudResolution::kAutomatic;
+        else if (!same) {
+          std::lock_guard<std::mutex> lock(mutex_);
+          Finish(request.location, std::move(report));
+          continue;
+        }
+      }
       if (report.state == CloudState::kConflict || report.state == CloudState::kNeedsAccount ||
           report.state == CloudState::kSyncing) {
         {
           std::lock_guard<std::mutex> lock(mutex_);
           active_ = request.location.id;
         }
-        report = runner_.Apply(*session.value(), request.location, request.resolution, request.confirm_account, cancel_);
+        report = runner_.Apply(*session.value(), request.location, resolution, request.confirm_account, cancel_);
         std::lock_guard<std::mutex> lock(mutex_);
         active_ = {};
       }

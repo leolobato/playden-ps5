@@ -612,6 +612,75 @@ void SyncEndToEnd() {
   std::filesystem::remove_all(base);
 }
 
+// #1103: a conflict says why each file needs a choice (changed on both sides, deleted here, deleted in Steam Cloud),
+// and what each choice does. The counts the player reads must be what Apply then does, for either choice, including
+// the transfers that need no choice.
+void ConflictReasonsMatchWhatApplyDoes() {
+  const StoredSession session{kSteamId, "account", "refresh", "access", {}};
+  const std::atomic<bool> cancel{false};
+  for (const auto resolution : {Resolution::kUseCloud, Resolution::kUseLocal}) {
+    const auto base = std::filesystem::temp_directory_path() /
+                      ("playden-cloud-reasons-" + std::to_string(::getpid()) + (resolution == Resolution::kUseCloud ? "-cloud" : "-local"));
+    std::filesystem::remove_all(base);
+    GameSaveLocation location{kApp, (base / "game").string(), (base / "prefix").string(), (base / "state").string()};
+    std::filesystem::create_directories(location.game_root);
+    const auto docs = base / "prefix/drive_c/users/prospero/Documents/My Games/Cloud Game";
+    const auto name = [](int slot) { return "%WinMyDocuments%My Games/Cloud Game/slot" + std::to_string(slot) + ".sav"; };
+    FakeCloud cloud;
+    for (int slot = 1; slot <= 4; ++slot)
+      cloud.files[name(slot)] = {Bytes("cloud " + std::to_string(slot)), 1'000, false};
+    CloudSync sync(cloud.Hooks());
+    auto plan = sync.Check(session, location, cancel);
+    CHECK(sync.Apply(session, location, plan, Resolution::kAutomatic, false, cancel).ok);
+    // One upload, so a later one is no first overwrite.
+    WriteText(docs / "slot4.sav", "local 4");
+    plan = sync.Check(session, location, cancel);
+    CHECK(sync.Apply(session, location, plan, Resolution::kUseLocal, false, cancel).ok);
+    CHECK(sync.Check(session, location, cancel).status == PlanStatus::kUpToDate);
+
+    WriteText(docs / "slot1.sav", "local 1");  // changed on both sides
+    cloud.files[name(1)] = {Bytes("other device 1"), 2'000, false};
+    std::filesystem::remove(docs / "slot2.sav");  // deleted here
+    cloud.files.erase(name(3));                  // deleted in Steam Cloud
+    cloud.files[name(5)] = {Bytes("cloud 5"), 2'000, false};  // new in Steam Cloud: comes down either way
+    ++cloud.change;
+    plan = sync.Check(session, location, cancel);
+    CHECK(plan.status == PlanStatus::kConflict && plan.conflicts == 3 && !plan.first_overwrite);
+    CHECK(plan.changed_both == 1 && plan.deleted_here == 1 && plan.deleted_in_cloud == 1);
+    CHECK((plan.use_cloud == ChoiceOutcome{3, 0, 1, 0}));  // slots 1, 2, 5 down; slot 3 deleted here
+    CHECK((plan.use_local == ChoiceOutcome{1, 2, 0, 1}));  // slot 5 down; slots 1, 3 up; slot 2 deleted from Cloud
+    const auto& expected = resolution == Resolution::kUseCloud ? plan.use_cloud : plan.use_local;
+    const auto outcome = sync.Apply(session, location, plan, resolution, false, cancel);
+    CHECK(outcome.ok);
+    CHECK(outcome.downloaded == expected.downloads && outcome.uploaded == expected.uploads &&
+          outcome.removed_local == expected.local_deletes && outcome.removed_remote == expected.remote_deletes);
+    CHECK(sync.Check(session, location, cancel).status == PlanStatus::kUpToDate);
+    if (resolution == Resolution::kUseCloud) {
+      CHECK(ReadText(docs / "slot2.sav") == "cloud 2" && !std::filesystem::exists(docs / "slot3.sav"));
+    } else {
+      CHECK(!cloud.files.contains(name(2)) && cloud.files.at(name(3)).data == Bytes("cloud 3"));
+    }
+    // A slot made on two devices after a sync has no last-sync entry of its own, but this is no first sync: it
+    // changed on both sides.
+    WriteText(docs / "slot6.sav", "here 6");
+    cloud.files[name(6)] = {Bytes("there 6"), 3'000, false};
+    ++cloud.change;
+    plan = sync.Check(session, location, cancel);
+    CHECK(plan.status == PlanStatus::kConflict && plan.conflicts == 1 && plan.changed_both == 1 && !plan.requires_account_confirmation);
+
+    // A first sync has no last sync to compare with: no reason, but the choices still count.
+    {
+      GameSaveLocation fresh{kApp, (base / "fresh-game").string(), (base / "fresh-prefix").string(), (base / "fresh-state").string()};
+      WriteText(base / "fresh-prefix/drive_c/users/prospero/Documents/My Games/Cloud Game/slot1.sav", "offline");
+      const auto first = sync.Check(session, fresh, cancel);
+      CHECK(first.status == PlanStatus::kConflict && first.requires_account_confirmation);
+      CHECK(first.changed_both == 0 && first.deleted_here == 0 && first.deleted_in_cloud == 0);
+      CHECK(first.use_cloud.downloads >= 1 && first.use_local.uploads == 1);
+    }
+    std::filesystem::remove_all(base);
+  }
+}
+
 // #50: a Cloud copy Steam serves damaged (not the size and SHA-1 it lists) must not block the upload that replaces
 // it. Before, the backup of the Cloud copy failed and every later upload of the game stopped there.
 void DamagedCloudCopyDoesNotBlockUploads() {
@@ -1157,6 +1226,7 @@ int main() {
   ProfileSaveFoldersStayInUserFolder();
   SyncEndToEnd();
   DamagedCloudCopyDoesNotBlockUploads();
+  ConflictReasonsMatchWhatApplyDoes();
   QuickCheckAndIndex();
   MissingGameFolder();
   std::puts("steam cloud tests passed");

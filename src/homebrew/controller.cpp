@@ -998,6 +998,17 @@ void Controller::TickCloud() {
                        static_cast<std::int64_t>(report.remote_latest)};
     live.first_sync = report.first_sync;
     live.first_overwrite = report.first_overwrite;
+    if (report.choices) {
+      live.changed_both = report.changed_both;
+      live.deleted_here = report.deleted_here;
+      live.deleted_in_cloud = report.deleted_in_cloud;
+      const auto choice = [](const steam::CloudChoice& value) {
+        return SavesChoice{value.downloads, value.uploads, value.local_deletes, value.remote_deletes};
+      };
+      live.use_local = choice(report.use_local);
+      live.use_cloud = choice(report.use_cloud);
+      live.choices = true;
+    }
     live.last_sync = report.last_sync;
     live.queued = report.queued;
     live.moved_bytes = report.moved_bytes;

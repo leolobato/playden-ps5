@@ -1520,6 +1520,38 @@ void live_cloud_saves() {
     check(requests.size() == 1 && requests[0].kind == CloudRequestKind::UseLocal && model.state().navigation.modals.empty(),
           "choosing local saves goes to the service and closes the dialog");
 
+    // #1103: with what each choice does known, the dialog shows the Saves table and says it under each button;
+    // the choice that deletes a Cloud save says so in red.
+    {
+        playden::homebrew::LiveCloudGame deleted{SteamId(42), CloudStatus::Conflict, "Choose which to keep.", 0, 1, 0, 426'000, 0,
+                                                 10 * 86'400};
+        deleted.deleted_here = 1;
+        deleted.use_cloud = {1, 0, 0, 0};
+        deleted.use_local = {0, 0, 0, 1};
+        deleted.choices = true;
+        model.UpdateCloud({deleted});
+        activate(model, "details-cloud");
+        const auto& choice = model.state().navigation.modals.back();
+        check(choice.saves_game == SteamId(42) && choice.title == "Saved Game: which saves?" &&
+                  choice.body == playden::homebrew::kSavesBackupNote,
+              "the choice dialog names the game, draws the table and keeps one line of text");
+        const auto* cloud_choice = find_row(model, "cloud-use-cloud");
+        const auto* local_choice = find_row(model, "cloud-use-local");
+        check(cloud_choice && cloud_choice->value == "Downloads 1 save" && cloud_choice->tone.empty(), "Use Cloud saves says it downloads");
+        check(local_choice && local_choice->value == "Deletes 1 save from Cloud" && local_choice->tone == "problem",
+              "Use console saves says, in red, that it deletes the Cloud save");
+        // A check while it is open keeps it; settled without a choice (another device synced), it goes.
+        auto checking = deleted;
+        checking.status = CloudStatus::Checking;
+        model.UpdateCloud({checking});
+        check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().saves_game == SteamId(42),
+              "a check keeps the choice open");
+        playden::homebrew::LiveCloudGame done{SteamId(42), CloudStatus::NeedsAccount, "Confirm this Steam account."};
+        model.UpdateCloud({done});
+        check(model.state().navigation.modals.empty() || model.state().navigation.modals.back().saves_game != SteamId(42),
+              "a choice that is no longer one closes");
+    }
+
     // Uploads for an account Playden has not synced before need its confirmation.
     model.UpdateCloud({{SteamId(42), CloudStatus::NeedsAccount, "Confirm this Steam account."}});
     activate(model, "details-cloud");

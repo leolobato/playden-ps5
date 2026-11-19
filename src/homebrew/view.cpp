@@ -76,6 +76,7 @@ const gfx::Color kGreen = gfx::Color::rgb(0x7BBF6A);
 const gfx::Color kAmber = gfx::Color::rgb(0xE2B53C);
 const gfx::Color kRed = gfx::Color::rgb(0xE05A4F);
 const gfx::Color kBlue = gfx::Color::rgb(0x7AA7D9);
+const gfx::Color kSaveLabel = gfx::Color::rgb(0xD9D3CB);  // the Saves table's headings and row names
 
 ui::Theme playden_theme()
 {
@@ -3518,34 +3519,11 @@ class Render::Impl
         ui::text(scene_, fonts_.semibold, view.subtitle, kSafeX + 176.0F, 314.0F, 26.0F, kText);
 
         // The comparison.
-        const gfx::Color label = gfx::Color::rgb(0xD9D3CB);
-        const gfx::Color newer = gfx::Color::rgb(0xF2C94C);
+        const gfx::Color label = kSaveLabel;
         const gfx::Color absent = gfx::Color::rgb(0x9A938B);
         const float left = kSafeX, cloud_x = kSafeX + 300.0F, here_x = kSafeX + 680.0F, right = kSafeX + 1060.0F;
-        float y = 420.0F;
-        ui::text(scene_, fonts_.display, ui::upper("Steam Cloud"), cloud_x, y, 22.0F, label, gfx::Align::left, 2.6F);
-        ui::text(scene_, fonts_.display, ui::upper("This console"), here_x, y, 22.0F, label, gfx::Align::left, 2.6F);
         const bool has_cloud = cloud != nullptr && cloud->status != CloudStatus::Unsupported && cloud->status != CloudStatus::None;
-        const bool conflict = cloud != nullptr && cloud->status == CloudStatus::Conflict;
-        const auto when = [&](std::int64_t time) -> std::string {
-            if (time <= 0) return "—";
-            const std::time_t value = static_cast<std::time_t>(time);
-            char text[32]{};
-            const auto *found = std::localtime(&value);
-            if (found == nullptr) return "—";
-            const std::tm local = *found;  // localtime reuses one buffer
-            const std::time_t now = std::time(nullptr);
-            const auto *today = std::localtime(&now);
-            // Another year shows the year instead of the time: "31 Aug 2024" next to "770 days ago" (#50).
-            const char *format = today != nullptr && today->tm_year != local.tm_year ? "%d %b %Y" : "%d %b %H:%M";
-            return std::strftime(text, sizeof(text), format, &local) ? text : "—";
-        };
-        const auto size = [](std::uint64_t bytes) {
-            char text[32];
-            if (bytes >= 1000ull * 1000) std::snprintf(text, sizeof(text), "%.1f MB", static_cast<double>(bytes) / 1e6);
-            else std::snprintf(text, sizeof(text), "%.0f KB", static_cast<double>(bytes) / 1e3);
-            return std::string(text);
-        };
+        float y = 420.0F;
         const auto line = [&](const char *name, const std::string &remote, const std::string &local, gfx::Color remote_ink,
                               gfx::Color local_ink) {
             y += 58.0F;
@@ -3557,18 +3535,13 @@ class Render::Impl
         const std::uint64_t local_bytes = state.save_sizes.count(id) ? state.save_sizes.at(id) : 0;
         if (has_cloud)
         {
-            line("Files", std::to_string(cloud->remote_files), std::to_string(cloud->local_files), kText, kText);
-            line("Size", size(cloud->remote_bytes), size(cloud->local_bytes), kText, kText);
-            const bool cloud_newer = cloud->remote_latest > cloud->local_latest;
-            line("Newest change", when(static_cast<std::int64_t>(cloud->remote_latest)), when(static_cast<std::int64_t>(cloud->local_latest)),
-                 conflict && cloud_newer ? newer : kText, conflict && !cloud_newer ? newer : kText);
-            // Synced before Playden kept the time: unknown, not never.
-            line("Last sync", cloud->last_sync > 0 ? when(cloud->last_sync) : cloud->first_sync ? "Never" : "—", "",
-                 cloud->last_sync > 0 ? kText : absent, kText);
+            y = draw_save_comparison(scene_, *cloud, left, right, cloud_x, here_x, y);
         }
         else
         {
-            line("Size", "No Steam Cloud", local_bytes > 0 ? size(local_bytes) : "—", absent, kText);
+            ui::text(scene_, fonts_.display, ui::upper("Steam Cloud"), cloud_x, y, 22.0F, label, gfx::Align::left, 2.6F);
+            ui::text(scene_, fonts_.display, ui::upper("This console"), here_x, y, 22.0F, label, gfx::Align::left, 2.6F);
+            line("Size", "No Steam Cloud", local_bytes > 0 ? save_bytes(local_bytes) : "—", absent, kText);
         }
         if (!installed && kept != nullptr)
         {
@@ -3583,10 +3556,7 @@ class Render::Impl
         else if (cloud != nullptr && cloud->after_play)
             note = "The game may be running. Playden syncs its saves once it stops.";
         else if (status == CloudStatus::Conflict)
-            note = cloud->first_sync ? "Never synced on this PS5, and both sides already have saves. Pick which to keep; the other side is backed up first."
-                   : cloud->first_overwrite
-                       ? "Saves here would replace the ones in Steam Cloud, and this PS5 hasn't uploaded any for this game before. If the game didn't show your progress, keep the Cloud saves. Either side is backed up first."
-                       : "Both changed since the last sync. Pick which saves to keep; saves replaced here are backed up first.";
+            note = SavesConflictNote(*cloud);
         else if (status == CloudStatus::NeedsAccount)
             note = "Saves here were never synced with this Steam account. Confirm to upload them.";
         else if (status == CloudStatus::Failed)
@@ -3603,17 +3573,23 @@ class Render::Impl
         if (!installed)
             note = "The game was uninstalled; its saves and settings were kept. " + note;
         ui::text(scene_, fonts_.display, ui::upper("What's going on"), 1240.0F, 420.0F, 22.0F, label, gfx::Align::left, 2.6F);
-        ui::paragraph(scene_, fonts_.regular, note, 1240.0F, 470.0F, 25.0F, 584.0F, 36.0F, kText.with_alpha(0.9F), 6);
+        const float note_bottom =
+            ui::paragraph(scene_, fonts_.regular, note, 1240.0F, 470.0F, 25.0F, 584.0F, 36.0F, kText.with_alpha(0.9F), 6);
+        // A choice whose buttons say what they do also says that nothing is lost.
+        if (status == CloudStatus::Conflict && !cloud->queued)
+            ui::paragraph(scene_, fonts_.regular, kSavesBackupNote, 1240.0F, note_bottom + 44.0F, 22.0F, 584.0F, 32.0F, kSecondary, 2);
 
-        // Actions in a row.
+        // Actions in a row, all one width; what a button does is the line under it (red when it deletes).
         float x = kSafeX;
+        float width = 330.0F;
+        for (const ViewRow &row : view.rows)
+            if (row.kind == RowKind::Action)
+                width = std::max(width, fonts_.display.measure(row.title, 26.0F) + 56.0F);
         for (const ViewRow &row : view.rows)
         {
             if (row.kind != RowKind::Action)
                 continue;
             const float height = 60.0F;
-            const float width = fonts_.display.measure(row.title, 26.0F) +
-                                (row.value.empty() ? 0.0F : fonts_.semibold.measure(row.value, 22.0F) + 18.0F) + 56.0F;
             const bool focused = view.focused_row >= 0 && static_cast<std::size_t>(view.focused_row) < view.rows.size() &&
                                  view.rows[static_cast<std::size_t>(view.focused_row)].key == row.key;
             if (focused && route_focus_)
@@ -3628,22 +3604,84 @@ class Render::Impl
                 if (!row.enabled)
                     scene_.push_opacity(0.45F);
                 scene_.bordered_rect(button, 8.0F, kRed.with_alpha(0.08F), 2.0F, kRed.with_alpha(0.55F));
-                const float content = fonts_.display.measure(row.title, 26.0F) +
-                                      (row.value.empty() ? 0.0F : fonts_.semibold.measure(row.value, 22.0F) + 18.0F);
-                const float text_x = button.cx() - content * 0.5F;
-                ui::text(scene_, fonts_.display, row.title, text_x, button.cy() + 9.0F, 26.0F, gfx::Color::rgb(0xF1B0AA));
-                if (!row.value.empty())
-                    ui::text(scene_, fonts_.semibold, row.value, text_x + content, button.cy() + 8.0F, 22.0F, kSecondary,
-                             gfx::Align::right);
+                ui::text(scene_, fonts_.display, row.title, button.cx(), button.cy() + 9.0F, 26.0F, gfx::Color::rgb(0xF1B0AA),
+                         gfx::Align::center);
                 if (!row.enabled)
                     scene_.pop_opacity();
                 focus_ring(scene_, button, amount);
                 scene_.pop_transform();
             }
             else
-                mac_button(scene_, button, row.title, primary, amount, !row.enabled, row.value);
+                mac_button(scene_, button, row.title, primary, amount, !row.enabled);
+            choice_caption(scene_, button, row);
             x += width + 26.0F;
         }
+    }
+
+    // The line under a button that says what it does (Saves details, the Cloud saves choice); red when it deletes.
+    void choice_caption(gfx::DrawList &list, const gfx::Rect &button, const ViewRow &row)
+    {
+        if (row.value.empty())
+            return;
+        if (!row.enabled)
+            list.push_opacity(0.45F);
+        // Kept within its button's column: a long one wraps to a second line.
+        ui::paragraph(list, fonts_.semibold, row.value, button.cx(), button.y + button.h + 40.0F, 22.0F, button.w + 16.0F,
+                      30.0F, row.tone == "problem" ? gfx::Color::rgb(0xF1B0AA) : kSecondary, 2, gfx::Align::center);
+        if (!row.enabled)
+            list.pop_opacity();
+    }
+
+    // The Steam Cloud / This console table, the same on the Saves details page and in the Cloud saves choice:
+    // files, size and newest change for each side (the newer one marked in a conflict), then the last sync.
+    // `y` is the headings' baseline; returns the last row's.
+    float draw_save_comparison(gfx::DrawList &list, const LiveCloudGame &cloud, float left, float right, float cloud_x,
+                               float here_x, float y)
+    {
+        const gfx::Color newer = gfx::Color::rgb(0xF2C94C);
+        const gfx::Color absent = gfx::Color::rgb(0x9A938B);
+        ui::text(list, fonts_.display, ui::upper("Steam Cloud"), cloud_x, y, 22.0F, kSaveLabel, gfx::Align::left, 2.6F);
+        ui::text(list, fonts_.display, ui::upper("This console"), here_x, y, 22.0F, kSaveLabel, gfx::Align::left, 2.6F);
+        const bool conflict = cloud.status == CloudStatus::Conflict;
+        const auto when = [](std::int64_t time) -> std::string {
+            if (time <= 0) return "—";
+            const std::time_t value = static_cast<std::time_t>(time);
+            char text[32]{};
+            const auto *found = std::localtime(&value);
+            if (found == nullptr) return "—";
+            const std::tm local = *found;  // localtime reuses one buffer
+            const std::time_t now = std::time(nullptr);
+            const auto *today = std::localtime(&now);
+            // Another year shows the year instead of the time: "31 Aug 2024" next to "770 days ago" (#50).
+            const char *format = today != nullptr && today->tm_year != local.tm_year ? "%d %b %Y" : "%d %b %H:%M";
+            return std::strftime(text, sizeof(text), format, &local) ? text : "—";
+        };
+        const auto line = [&](const char *name, const std::string &remote, const std::string &local, gfx::Color remote_ink,
+                              gfx::Color local_ink) {
+            y += 58.0F;
+            list.rounded_rect({left, y - 40.0F, right - left, 1.5F}, 0.0F, kText.with_alpha(0.14F));
+            ui::text(list, fonts_.regular, name, left, y, 28.0F, kSaveLabel);
+            ui::text(list, fonts_.semibold, remote, cloud_x, y, 28.0F, remote_ink);
+            ui::text(list, fonts_.semibold, local, here_x, y, 28.0F, local_ink);
+        };
+        line("Files", std::to_string(cloud.remote_files), std::to_string(cloud.local_files), kText, kText);
+        line("Size", save_bytes(cloud.remote_bytes), save_bytes(cloud.local_bytes), kText, kText);
+        // The newer side is marked; the same time on both marks neither.
+        const bool cloud_newer = cloud.remote_latest > cloud.local_latest, here_newer = cloud.local_latest > cloud.remote_latest;
+        line("Newest change", when(static_cast<std::int64_t>(cloud.remote_latest)), when(static_cast<std::int64_t>(cloud.local_latest)),
+             conflict && cloud_newer ? newer : kText, conflict && here_newer ? newer : kText);
+        // Synced before Playden kept the time: unknown, not never.
+        line("Last sync", cloud.last_sync > 0 ? when(cloud.last_sync) : cloud.first_sync ? "Never" : "—", "",
+             cloud.last_sync > 0 ? kText : absent, kText);
+        return y;
+    }
+
+    static std::string save_bytes(std::uint64_t bytes)
+    {
+        char text[32];
+        if (bytes >= 1000ull * 1000) std::snprintf(text, sizeof(text), "%.1f MB", static_cast<double>(bytes) / 1e6);
+        else std::snprintf(text, sizeof(text), "%.0f KB", static_cast<double>(bytes) / 1e3);
+        return std::string(text);
     }
 
     void draw_details(ui::Canvas &, const ViewData &view, const State &state)
@@ -4219,7 +4257,7 @@ class Render::Impl
             const ModalEntry &modal = state.navigation.modals.back();
             // GOG's sign-in is a dialog too: its QR code needs the link strip.
             if (modal.destructive || modal.id == "confirmation" || modal.id == "gog-sign-in")
-                draw_modal_overlay(modal, view);
+                draw_modal_overlay(modal, view, state);
             else
                 draw_sheet_overlay(view);
             return;
@@ -4375,13 +4413,21 @@ class Render::Impl
         keyboard_.draw(canvas);
     }
 
-    void draw_modal_overlay(const ModalEntry &modal, const ViewData &view)
+    void draw_modal_overlay(const ModalEntry &modal, const ViewData &view, const State &state)
     {
         overlay_.rounded_rect({0.0F, 0.0F, kWidth, kHeight}, 0.0F, gfx::Color::rgb(0x000000, 0.72F));
         if (!modal.link.empty())
         {
             draw_link_modal(modal, view);
             return;
+        }
+        if (modal.saves_game.valid())
+        {
+            if (const auto found = state.cloud.find(modal.saves_game); found != state.cloud.end())
+            {
+                draw_saves_choice_modal(modal, view, found->second);
+                return;
+            }
         }
         // Three buttons need the wide panel or their labels are cut.
         const float width = modal.destructive && view.rows.size() < 3 ? 820.0F : 960.0F;
@@ -4422,6 +4468,38 @@ class Render::Impl
                        !view.rows[index].enabled, toggle ? (view.rows[index].selected ? "On" : "Off") : "", false,
                        kPanel);
         }
+    }
+
+    // The Cloud saves choice: the title, the Saves details table, buttons of one width with what each does
+    // underneath, and the backup line.
+    void draw_saves_choice_modal(const ModalEntry &modal, const ViewData &view, const LiveCloudGame &cloud)
+    {
+        constexpr float width = 1080.0F, pad = 56.0F;
+        // The line under the buttons: the backup note, with the first upload's warning before it (two lines).
+        const bool two_lines = fonts_.regular.measure(modal.body, 22.0F) > width - 2.0F * pad;
+        const float height = two_lines ? 690.0F : 656.0F;
+        const gfx::Rect panel{(kWidth - width) * 0.5F, (kHeight - height) * 0.5F - 20.0F, width, height};
+        overlay_.shadow(panel, 16.0F, 40.0F, gfx::Color::rgb(0x000000, 0.65F));
+        overlay_.rounded_rect(panel, 16.0F, kPanel);
+        // The title names the game: a font that has its letters, cut to one line.
+        const ui::FontRef &face = font_for(modal.title, fonts_.display);
+        ui::text(overlay_, face, face.font->fit(modal.title, 48.0F, panel.w - 2.0F * pad), panel.x + pad, panel.y + 80.0F, 48.0F,
+                 kText);
+        const float left = panel.x + pad, right = panel.x + panel.w - pad;
+        draw_save_comparison(overlay_, cloud, left, right, left + 290.0F, left + 620.0F, panel.y + 160.0F);
+        const std::size_t count = std::max<std::size_t>(1, view.rows.size());
+        const float button_width = (panel.w - 2.0F * pad - 24.0F * static_cast<float>(count - 1)) / static_cast<float>(count);
+        for (std::size_t index = 0; index < view.rows.size(); ++index)
+        {
+            const ViewRow &row = view.rows[index];
+            const gfx::Rect button{left + static_cast<float>(index) * (button_width + 24.0F), panel.y + 432.0F, button_width, 68.0F};
+            mac_button(overlay_, button, overlay_label(row), index == 0,
+                       control_focus("modal-" + row.key, static_cast<int>(index) == view.focused_row), !row.enabled, "", false,
+                       kPanel);
+            choice_caption(overlay_, button, row);
+        }
+        ui::paragraph(overlay_, fonts_.regular, modal.body, left, panel.y + 610.0F, 22.0F, panel.w - 2.0F * pad, 32.0F,
+                      kSecondary, 2);
     }
 
     // A dialog with a web page (release notes): the title, the text, then a strip with the page as a

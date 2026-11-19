@@ -52,6 +52,57 @@ std::string FormatDownloadRate(std::optional<std::uint64_t> rate, std::optional<
     return result + "~" + std::to_string((static_cast<std::int64_t>(*eta) + 3599) / 3600) + " hr left";
 }
 
+std::string SavesChoiceText(const SavesChoice& choice) {
+    std::vector<std::pair<std::size_t, std::string>> parts;  // count, then the words after it
+    if (choice.downloads > 0) parts.push_back({choice.downloads, "Downloads"});
+    if (choice.uploads > 0) parts.push_back({choice.uploads, "Uploads"});
+    if (choice.local_deletes > 0) parts.push_back({choice.local_deletes, "Deletes|here"});
+    if (choice.remote_deletes > 0) parts.push_back({choice.remote_deletes, "Deletes|from Cloud"});
+    std::string text;
+    for (std::size_t index = 0; index < parts.size(); ++index) {
+        const auto& [count, words] = parts[index];
+        const auto bar = words.find('|');
+        std::string verb = words.substr(0, bar);
+        if (index > 0) verb[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(verb[0])));
+        // One part names the saves ("Downloads 1 save"); a list stays short ("Uploads 2, deletes 1 from Cloud").
+        const std::string noun = parts.size() == 1 ? (count == 1 ? " save" : " saves") : "";
+        text += (index > 0 ? ", " : "") + verb + " " + std::to_string(count) + noun +
+                (bar == std::string::npos ? "" : " " + words.substr(bar + 1));
+    }
+    return text;
+}
+
+bool SavesChoiceDeletes(const SavesChoice& choice) { return choice.local_deletes > 0 || choice.remote_deletes > 0; }
+
+std::string SavesConflictNote(const LiveCloudGame& cloud) {
+    if (cloud.first_sync) return "Never synced on this PS5, and both sides already have saves.";
+    if (cloud.first_overwrite)
+        return "Saves here would replace the ones in Steam Cloud, and this PS5 hasn't uploaded any for this game before. "
+               "If the game didn't show your progress, use the Cloud saves.";
+    const auto saves = [](std::size_t count) { return std::to_string(count) + (count == 1 ? " save" : " saves"); };
+    const auto was = [](std::size_t count) { return count == 1 ? " was" : " were"; };
+    const std::size_t changed = cloud.changed_both, here = cloud.deleted_here, gone = cloud.deleted_in_cloud;
+    const int reasons = (changed > 0) + (here > 0) + (gone > 0);
+    if (!cloud.choices || reasons == 0)
+        return "Both changed since the last sync. Pick which saves to keep; saves replaced here are backed up first.";
+    if (reasons == 1) {
+        if (changed > 0) return saves(changed) + " changed here and in Steam Cloud since the last sync.";
+        if (here > 0)
+            return saves(here) + was(here) + " deleted on this console since the last sync. Steam Cloud still has " +
+                   (here == 1 ? "it." : "them.");
+        return saves(gone) + was(gone) + " deleted from Steam Cloud since the last sync. This console still has " +
+               (gone == 1 ? "it." : "them.");
+    }
+    std::vector<std::string> parts;
+    if (changed > 0) parts.push_back(saves(changed) + " changed on both sides");
+    if (here > 0) parts.push_back(std::to_string(here) + was(here) + " deleted on this console");
+    if (gone > 0) parts.push_back(std::to_string(gone) + was(gone) + " deleted from Steam Cloud");
+    std::string text = "Since the last sync, ";
+    for (std::size_t index = 0; index < parts.size(); ++index)
+        text += (index == 0 ? "" : index + 1 == parts.size() ? " and " : ", ") + parts[index];
+    return text + ".";
+}
+
 namespace {
 
 // Steam features = Online on a game the store lists with Valve Anti-Cheat: VAC can ban the account from that game (not
@@ -726,12 +777,30 @@ SaveFacts save_facts(const LiveCloudGame* cloud, bool installed) {
         switch (status) {
         case CloudStatus::Synced:
         case CloudStatus::UpToDate: facts = {"In sync", "good", ""}; facts.in_sync = true; break;
-        case CloudStatus::Conflict:
-            facts = cloud->first_sync        ? SaveFacts{"Choose saves", "attention", "First sync · both sides already have saves"}
-                    : cloud->first_overwrite ? SaveFacts{"Choose saves", "attention", "First upload would replace Cloud saves"}
-                                             : SaveFacts{"Conflict", "problem", "Both changed since the last sync"};
+        case CloudStatus::Conflict: {
+            // Deleted on one side only is a choice, not a clash: it says so. Changes on both sides, or deletions on
+            // both, stay a conflict.
+            const bool changed = cloud->changed_both > 0, here = cloud->deleted_here > 0, gone = cloud->deleted_in_cloud > 0;
+            if (cloud->first_sync) facts = {"Choose saves", "attention", "First sync · both sides already have saves"};
+            else if (cloud->first_overwrite) facts = {"Choose saves", "attention", "First upload would replace Cloud saves"};
+            else if (!cloud->choices || (!changed && !here && !gone)) facts = {"Conflict", "problem", "Both changed since the last sync"};
+            else if (!changed && here && !gone)
+                facts = {"Deleted here", "attention",
+                         std::string("Deleted here · Steam Cloud still has ") + (cloud->deleted_here == 1 ? "it" : "them")};
+            else if (!changed && !here && gone)
+                facts = {"Deleted in Cloud", "attention",
+                         std::string("Deleted in Steam Cloud · this console still has ") + (cloud->deleted_in_cloud == 1 ? "it" : "them")};
+            else {
+                std::string reason;
+                for (const auto& [on, words] : {std::pair{changed, "changed on both sides"}, std::pair{here, "deleted here"},
+                                                std::pair{gone, "deleted in Cloud"}})
+                    if (on) reason += (reason.empty() ? "" : " · ") + std::string(words);
+                reason[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(reason[0])));
+                facts = {"Conflict", "problem", reason};
+            }
             facts.needs_you = true;
             break;
+        }
         case CloudStatus::NeedsAccount:
             facts = {"Not in Cloud yet", "attention", "Saves here were never uploaded to this Steam account"};
             facts.needs_you = true;
@@ -3754,6 +3823,12 @@ void Simulation::UpdateCloud(const std::vector<LiveCloudGame>& games) {
     for (const auto& game : games) {
         const auto previous = state_.cloud.find(game.game_id);
         const auto before = previous == state_.cloud.end() ? CloudStatus::None : previous->second.status;
+        // A Cloud saves choice open for a game that settled without needing one goes: its buttons would act on a
+        // state the player isn't looking at. While a check runs it stays (the service refuses a choice then), and a
+        // conflict found again shows its new words when the view is rebuilt.
+        if (!state_.navigation.modals.empty() && state_.navigation.modals.back().saves_game == game.game_id &&
+            game.status != CloudStatus::Conflict && game.status != CloudStatus::Checking && game.status != CloudStatus::Syncing)
+            close_modal();
         // The game Play is waiting for speaks through its own dialog.
         if (before != game.status && game.game_id != quit_sync_game_) {
             const auto* known = find_game(state_, game.game_id);
@@ -6587,6 +6662,72 @@ bool Simulation::scenario(const std::string& name) {
             state_.cloud[state_.games[6 % state_.games.size()].id].queued = true;
             state_.navigation.focus_key = "saves-sync-all";
         }
+    } else if (name == "saves-choices" || name.rfind("saves-choice-", 0) == 0) {
+        // One game in each state that needs a Cloud saves choice (#1103): changed on both sides, deleted here,
+        // deleted in Cloud, several reasons, first sync, first upload. "saves-choice-<1..6>" opens that game's
+        // Saves details page, "saves-choice-dialog-<1..6>" its game page with the Cloud saves choice.
+        const bool dialog = name.rfind("saves-choice-dialog-", 0) == 0;
+        const int pick = name == "saves-choices" ? 0 : std::atoi(name.c_str() + (dialog ? 20 : 13));
+        if (state_.games.size() < 6 || pick < 0 || pick > 6) return false;
+        state_.account().authentication = AuthState::SignedIn;
+        state_.navigation.modals.clear();
+        state_.navigation.route = Route::Saves;
+        state_.navigation.focus_key = "saves-filter-0";
+        state_.clock_ticks = 1'800'000'000;
+        state_.installations.clear();
+        state_.cloud.clear();
+        state_.kept_bottles.clear();
+        const std::int64_t now = state_.clock_ticks, hour = 3600;
+        struct Seed {
+            std::size_t cloud_files, local_files;
+            std::uint64_t cloud_bytes, local_bytes;
+            std::int64_t cloud_latest, local_latest, last;
+            bool first_sync, first_overwrite;
+            std::size_t changed, here, gone;
+            SavesChoice use_cloud, use_local;
+        };
+        const std::vector<Seed> seeds = {
+            {2, 2, 84'000, 86'000, now - 14 * hour, now - 2 * hour, now - 2 * 86'400, false, false, 1, 0, 0, {1, 0, 0, 0}, {0, 1, 0, 0}},
+            {1, 0, 426'000, 0, now - 30 * hour, 0, now - 3 * hour, false, false, 0, 1, 0, {1, 0, 0, 0}, {0, 0, 0, 1}},
+            {3, 4, 1'100'000, 1'200'000, now - 4 * hour, now - 20 * hour, now - 22 * hour, false, false, 0, 0, 1, {0, 0, 1, 0}, {0, 1, 0, 0}},
+            {5, 4, 3'400'000, 3'300'000, now - 5 * hour, now - 1 * hour, now - 3 * 86'400, false, false, 2, 1, 0, {3, 0, 0, 0}, {0, 2, 0, 1}},
+            {2, 2, 900'000, 640'000, now - 7 * 86'400, now - 1 * hour, 0, true, false, 0, 0, 0, {2, 0, 0, 0}, {0, 2, 0, 0}},
+            {2, 2, 48'000, 12'000, now - 17 * 86'400, now - 1 * hour, now - 2 * hour, false, true, 0, 0, 0, {2, 0, 0, 0}, {0, 2, 0, 0}},
+        };
+        for (std::size_t index = 0; index < seeds.size(); ++index) {
+            const auto id = state_.games[index].id;
+            const auto& seed = seeds[index];
+            state_.installations.push_back({id, "internal", 4'000'000'000, true, true, true});
+            LiveCloudGame cloud{id, CloudStatus::Conflict, "", seed.local_files, seed.cloud_files, seed.local_bytes, seed.cloud_bytes,
+                                seed.local_latest, seed.cloud_latest};
+            cloud.first_sync = seed.first_sync;
+            cloud.first_overwrite = seed.first_overwrite;
+            cloud.last_sync = seed.last;
+            cloud.changed_both = seed.changed;
+            cloud.deleted_here = seed.here;
+            cloud.deleted_in_cloud = seed.gone;
+            cloud.use_cloud = seed.use_cloud;
+            cloud.use_local = seed.use_local;
+            cloud.choices = true;
+            state_.cloud[id] = cloud;
+        }
+        if (pick > 0 && !dialog) {
+            state_.navigation.route = Route::SaveDetails;
+            state_.navigation.save_id = state_.games[static_cast<std::size_t>(pick - 1)].id;
+            state_.navigation.focus_key = "saves-use-cloud";
+        } else if (pick > 0) {
+            const auto id = state_.games[static_cast<std::size_t>(pick - 1)].id;
+            state_.navigation.route = Route::Details;
+            state_.navigation.detail_id = id;
+            state_.navigation.selected_game_id = id;
+            state_.navigation.focus_key = "details-cloud";
+            ModalEntry choice{"confirmation", state_.games[static_cast<std::size_t>(pick - 1)].title + ": which saves?",
+                              "details-cloud", {"cloud-use-cloud", "cloud-use-local", "cancel"}, 0, false};
+            choice.saves_game = id;
+            choice.body = std::string(pick == 6 ? "If the game didn't show your progress, use the Cloud saves. " : "") + kSavesBackupNote;
+            state_.navigation.modals.push_back(std::move(choice));
+            state_.navigation.focus_key = "cloud-use-cloud";
+        }
     } else if (name.rfind("manage-", 0) == 0) {
         // Manage installed games as in its mockup: Updates found, checking, or empty (up to date, never checked,
         // Steam unreachable), the updates without room on the console's drive, the Move tab to the USB drive
@@ -7789,6 +7930,14 @@ void Simulation::rebuild_view() {
         for (const auto& action_key : modal.action_keys) {
             auto& item = row(action_key, RowKind::Action, action_label(action_key), action_key);
             item.dangerous = modal.destructive && action_key != "cancel";
+            // The Cloud saves choice: under each button, what it does.
+            if (modal.saves_game.valid() && (action_key == "cloud-use-cloud" || action_key == "cloud-use-local")) {
+                if (const auto found = state_.cloud.find(modal.saves_game); found != state_.cloud.end() && found->second.choices) {
+                    const auto& outcome = action_key == "cloud-use-cloud" ? found->second.use_cloud : found->second.use_local;
+                    item.value = SavesChoiceText(outcome);
+                    if (SavesChoiceDeletes(outcome)) item.tone = "problem";
+                }
+            }
             // Game actions: the row that takes the game off the console is set apart in red, below its divider.
             if (modal.id == "context" && (action_key == "uninstall" || action_key == "import-remove")) item.dangerous = true;
             if (action_key == "gog-stay") {
@@ -10116,8 +10265,15 @@ void Simulation::rebuild_view() {
             return added;
         };
         if (status == CloudStatus::Conflict) {
-            add("saves-use-cloud", "Use Cloud saves", cloud->remote_latest > 0 ? "newest " + day(cloud->remote_latest) : "");
-            add("saves-use-local", "Use this console's", cloud->local_latest > 0 ? "newest " + day(cloud->local_latest) : "");
+            // Each choice says what it does; one that deletes says it in red. A state an older Playden saved
+            // doesn't know: the side's newest change, as before.
+            const auto choice = [&](std::string key, std::string title, const SavesChoice& outcome, std::int64_t latest) {
+                auto& added = add(std::move(key), std::move(title),
+                                  cloud->choices ? SavesChoiceText(outcome) : latest > 0 ? "newest " + day(latest) : "");
+                if (cloud->choices && SavesChoiceDeletes(outcome)) added.tone = "problem";
+            };
+            choice("saves-use-cloud", "Use Cloud saves", cloud->use_cloud, cloud->remote_latest);
+            choice("saves-use-local", "Use this console's", cloud->use_local, cloud->local_latest);
         } else if (status == CloudStatus::NeedsAccount) {
             add("saves-confirm-account", "Use this account");
         } else if (status != CloudStatus::Unsupported) {
@@ -12478,9 +12634,18 @@ void Simulation::activate() {
             };
             ModalEntry choice{"confirmation", "Which saves should Playden keep?", state_.navigation.focus_key,
                               {"cloud-use-cloud", "cloud-use-local", "cancel"}, 0, false};
-            choice.body = "Steam Cloud: " + side(facts.remote_files, facts.remote_bytes, facts.remote_latest) +
-                          ". This console: " + side(facts.local_files, facts.local_bytes, facts.local_latest) +
-                          ". Saves that get replaced here are backed up first.";
+            if (facts.choices) {
+                // The same table as the Saves details page, and buttons that say what they do.
+                const auto* game = find_game(state_, id);
+                choice.title = (game ? game->title : std::string("This game")) + ": which saves?";
+                choice.saves_game = id;
+                choice.body = std::string(facts.first_overwrite ? "If the game didn't show your progress, use the Cloud saves. " : "") +
+                              kSavesBackupNote;
+            } else {
+                choice.body = "Steam Cloud: " + side(facts.remote_files, facts.remote_bytes, facts.remote_latest) +
+                              ". This console: " + side(facts.local_files, facts.local_bytes, facts.local_latest) +
+                              ". Saves that get replaced here are backed up first.";
+            }
             open_modal(std::move(choice));
         } else if (cloud != state_.cloud.end() && cloud->second.status == CloudStatus::NeedsAccount) {
             ModalEntry confirm{"confirmation", "Upload saves to this Steam account?", state_.navigation.focus_key,

@@ -454,6 +454,12 @@ std::vector<LocalSavePath> Paths(const LocalFiles& files) {
 
 }  // namespace
 
+Action ResolvedAction(const Decision& decision, Resolution resolution) {
+  if (decision.action != Action::kConflict || resolution == Resolution::kAutomatic) return decision.action;
+  if (resolution == Resolution::kUseLocal) return decision.local_fact.present ? Action::kUpload : Action::kDeleteRemote;
+  return decision.remote_fact.present ? Action::kDownload : Action::kDeleteLocal;
+}
+
 std::string AccountKey(std::uint64_t steam_id) {
   const std::string input = "steam:" + std::to_string(steam_id);
   std::uint8_t digest[32] = {};
@@ -647,14 +653,23 @@ CloudPlan CloudSync::Check(const StoredSession& session, const GameSaveLocation&
     const FileFact* base = base_it == baseline.files.end() ? nullptr : &base_it->second;
     if (!local.present && !cloud.present) continue;
     if (SameContent(local, cloud)) slot.action = reupload ? Action::kUpload : Action::kUnchanged;
-    else if (cloud.present && !local.present)
+    else if (cloud.present && !local.present) {
       // Missing here but unchanged in the Cloud since the last sync: deleted on purpose? Ask.
-      slot.action = base && SameContent(*base, cloud) ? Action::kConflict : Action::kDownload;
-    else if (local.present && !cloud.present)
-      slot.action = base && SameContent(*base, local) ? Action::kConflict : Action::kUpload;
-    else if (base && SameContent(*base, local)) slot.action = Action::kDownload;
+      const bool deleted = base && SameContent(*base, cloud);
+      slot.action = deleted ? Action::kConflict : Action::kDownload;
+      if (deleted) slot.reason = ConflictReason::kDeletedHere;
+    } else if (local.present && !cloud.present) {
+      const bool deleted = base && SameContent(*base, local);
+      slot.action = deleted ? Action::kConflict : Action::kUpload;
+      if (deleted) slot.reason = ConflictReason::kDeletedInCloud;
+    } else if (base && SameContent(*base, local)) slot.action = Action::kDownload;
     else if (base && SameContent(*base, cloud)) slot.action = Action::kUpload;
-    else slot.action = Action::kConflict;
+    else {
+      slot.action = Action::kConflict;
+      // With a trusted last sync, a file new on both sides (a slot made on two devices) changed on both; without
+      // one this is the first sync and nothing is known.
+      slot.reason = base || trusted ? ConflictReason::kChangedBoth : ConflictReason::kNone;
+    }
     plan.decisions.push_back(slot);
   }
   // The first time this console would replace Cloud saves, it asks: right after Cloud saves were
@@ -679,6 +694,21 @@ CloudPlan CloudSync::Check(const StoredSession& session, const GameSaveLocation&
       case Action::kConflict: ++plan.conflicts; break;
       default: break;
     }
+    if (decision.action == Action::kConflict) {
+      if (decision.reason == ConflictReason::kChangedBoth) ++plan.changed_both;
+      if (decision.reason == ConflictReason::kDeletedHere) ++plan.deleted_here;
+      if (decision.reason == ConflictReason::kDeletedInCloud) ++plan.deleted_in_cloud;
+    }
+    for (const auto resolution : {Resolution::kUseLocal, Resolution::kUseCloud}) {
+      auto& outcome = resolution == Resolution::kUseLocal ? plan.use_local : plan.use_cloud;
+      switch (ResolvedAction(decision, resolution)) {
+        case Action::kDownload: ++outcome.downloads; break;
+        case Action::kUpload: ++outcome.uploads; break;
+        case Action::kDeleteLocal: ++outcome.local_deletes; break;
+        case Action::kDeleteRemote: ++outcome.remote_deletes; break;
+        default: break;
+      }
+    }
     if (decision.local_fact.present) {
       ++plan.local_files;
       plan.local_bytes += decision.local_fact.size;
@@ -692,9 +722,14 @@ CloudPlan CloudSync::Check(const StoredSession& session, const GameSaveLocation&
   }
   if (plan.conflicts > 0) {
     plan.status = PlanStatus::kConflict;
+    // Deleted on one side only says so (#1103); anything else is a change on both sides.
+    const bool only_here = plan.changed_both == 0 && plan.deleted_here > 0 && plan.deleted_in_cloud == 0;
+    const bool only_cloud = plan.changed_both == 0 && plan.deleted_in_cloud > 0 && plan.deleted_here == 0;
     plan.message = plan.first_overwrite
                        ? "Saves here would replace the ones in Steam Cloud, and this console hasn't uploaded any for this game before. Choose which to keep."
-                       : "Saves here and in Steam Cloud both changed. Choose which to keep.";
+                   : only_here  ? "Saves were deleted here since the last sync; Steam Cloud still has them. Choose which to keep."
+                   : only_cloud ? "Saves were deleted from Steam Cloud since the last sync; this console still has them. Choose which to keep."
+                                : "Saves here and in Steam Cloud both changed. Choose which to keep.";
   } else if (plan.uploads > 0 && plan.requires_account_confirmation) {
     plan.status = PlanStatus::kNeedsAccount;
     plan.message = "Confirm this Steam account before Playden changes its Cloud saves.";
@@ -743,14 +778,9 @@ CloudOutcome CloudSync::Apply(const StoredSession& session, const GameSaveLocati
   // Settle conflicts with the player's choice.
   std::vector<Decision> downloads, uploads, local_deletes, remote_deletes;
   for (const auto& decision : plan.decisions) {
-    auto action = decision.action;
-    if (action == Action::kConflict) {
-      if (resolution == Resolution::kAutomatic) return fail("Choose which saves to keep first.");
-      if (resolution == Resolution::kUseLocal)
-        action = decision.local_fact.present ? Action::kUpload : Action::kDeleteRemote;
-      else
-        action = decision.remote_fact.present ? Action::kDownload : Action::kDeleteLocal;
-    }
+    if (decision.action == Action::kConflict && resolution == Resolution::kAutomatic)
+      return fail("Choose which saves to keep first.");
+    const auto action = ResolvedAction(decision, resolution);
     switch (action) {
       case Action::kDownload: downloads.push_back(decision); break;
       case Action::kUpload: uploads.push_back(decision); break;

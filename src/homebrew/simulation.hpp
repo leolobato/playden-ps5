@@ -518,6 +518,10 @@ struct ImportRequest {
 // Waiting: transfers that need no choice wait for the player (an uninstalled game's saves, or
 // saves deleted here that Cloud still has).
 enum class CloudStatus { None, Checking, Syncing, Synced, UpToDate, Conflict, NeedsAccount, Unsupported, Failed, Waiting };
+// What one Cloud saves choice does (download, upload, delete here, delete from Steam Cloud).
+struct SavesChoice {
+    std::size_t downloads = 0, uploads = 0, local_deletes = 0, remote_deletes = 0;
+};
 struct LiveCloudGame {
     GameId game_id;
     CloudStatus status = CloudStatus::None;
@@ -530,6 +534,11 @@ struct LiveCloudGame {
     std::int64_t remote_latest = 0;
     bool first_sync = false;      // a conflict before any sync on this console: both sides already had saves
     bool first_overwrite = false; // a conflict because this console's first upload would replace Cloud saves
+    // A conflict's files by reason since the last sync, and what each choice does; choices is false when not
+    // known (a state an older Playden saved).
+    std::size_t changed_both = 0, deleted_here = 0, deleted_in_cloud = 0;
+    SavesChoice use_local, use_cloud;
+    bool choices = false;
     std::int64_t last_sync = 0;   // Unix time saves were last in step
     bool queued = false;          // waiting in the running check or Sync all
     std::uint64_t moved_bytes = 0, total_bytes = 0;  // the transfer in progress
@@ -537,6 +546,14 @@ struct LiveCloudGame {
     bool after_play = false;      // the game may be running: its saves sync once it stops
     bool background = false;      // the result of a check the player did not start: no dialogs
 };
+// The words for a Cloud saves choice, shared by the Saves tab, its details page and the game page's dialog.
+// "Downloads 1 save", "Uploads 2, deletes 1 from Cloud"; empty when nothing is known or nothing happens.
+std::string SavesChoiceText(const SavesChoice& choice);
+// The choice deletes saves on one side (its words are shown in red).
+bool SavesChoiceDeletes(const SavesChoice& choice);
+// Why a conflict needs a choice, in one or two sentences ("What's going on").
+std::string SavesConflictNote(const LiveCloudGame& cloud);
+inline constexpr const char* kSavesBackupNote = "Saves that get replaced or deleted are backed up first.";
 // The Saves tab's check or Sync all, projected from the cloud service.
 // A Steam friend, as the controller projects FriendsService's snapshot (no Steam backend types or credentials).
 struct Friend {
@@ -920,6 +937,7 @@ struct ModalEntry {
     std::string setting_id;  // Game settings picker: the catalogue setting being chosen
     std::string link;  // a web page the dialog shows as a QR code with its address (release notes)
     std::string link_caption;  // the line beside the code; empty: the release notes' wording
+    GameId saves_game;  // the Cloud saves choice: draws this game's Steam Cloud / This console table above the buttons
 };
 
 struct Navigation {

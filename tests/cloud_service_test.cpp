@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <unistd.h>
 #include <vector>
 #include <mutex>
@@ -58,6 +59,7 @@ class Runner final : public CloudRunner {
   bool fail_as_canceled = false;
   std::atomic<bool> waiting{false};
   std::function<void(std::uint64_t, std::uint64_t)> progress;
+  std::optional<CloudReport> report_override;  // set: every check returns it
   CloudReport Check(const StoredSession&, const CloudLocation& location, const std::atomic<bool>& cancel) override {
     if (check_delay_ms) std::this_thread::sleep_for(std::chrono::milliseconds(check_delay_ms));
     if (wait_for_cancel) {
@@ -76,6 +78,7 @@ class Runner final : public CloudRunner {
     std::lock_guard<std::mutex> lock(mutex);
     ++checks;
     checked.push_back(location.id);
+    if (report_override) return *report_override;
     if (const auto found = states.find(location.id); found != states.end()) {
       CloudReport report;
       report.state = found->second;
@@ -155,7 +158,8 @@ void Jobs() {
   service.Restore(base.string());
   AwaitAt(__LINE__, service, [](const CloudSnapshot& s) {
     auto* r = Of(s, SteamId(7));
-    return r && r->state == CloudState::kConflict && r->first_sync && r->remote_files == 3 && r->checked == 1'700'000'000;
+    return r && r->state == CloudState::kConflict && r->first_sync && r->remote_files == 3 && r->checked == 1'700'000'000 &&
+           !r->choices;
   });
 
   // Settle three games: 1 and 2 in step, 3 unknown to Steam Cloud.
@@ -325,9 +329,133 @@ void CanceledCheckIsNotSaved() {
   std::filesystem::remove_all(base);
 }
 
+// #1103: a conflict's reasons and what each choice does come back after a restart; a state an older Playden saved
+// (or a partial one) reads as not known.
+void ChoicesSurviveRestart() {
+  const auto base = std::filesystem::temp_directory_path() / ("playden-cloud-choices-" + std::to_string(getpid()));
+  std::filesystem::remove_all(base);
+  std::filesystem::create_directories(base);
+  const CloudLocation game{SteamId(8), "/games/8", (base / "8").string(), "/bottle"};
+  Sessions sessions;
+  CloudReport conflict;
+  conflict.state = CloudState::kConflict;
+  conflict.message = "Saves here and in Steam Cloud both changed. Choose which to keep.";
+  conflict.changed_both = 2;
+  conflict.deleted_here = 1;
+  conflict.use_cloud = {3, 0, 0, 0};
+  conflict.use_local = {0, 2, 0, 1};
+  conflict.choices = true;
+  {
+    Runner runner;
+    runner.report_override = conflict;
+    CloudService service(runner, sessions);
+    service.Sync(game);
+    AwaitAt(__LINE__, service, [](const CloudSnapshot& s) { auto* r = Of(s, SteamId(8)); return r && r->state == CloudState::kConflict; });
+    service.Shutdown();
+  }
+  {
+    Runner runner;
+    CloudService service(runner, sessions);
+    service.Restore(base.string());
+    AwaitAt(__LINE__, service, [](const CloudSnapshot& s) {
+      auto* r = Of(s, SteamId(8));
+      return r && r->state == CloudState::kConflict && r->choices && r->changed_both == 2 && r->deleted_here == 1 &&
+             r->deleted_in_cloud == 0 && r->use_cloud == CloudChoice{3, 0, 0, 0} && r->use_local == CloudChoice{0, 2, 0, 1};
+    });
+    service.Shutdown();
+  }
+  // Only part of it, a malformed count, or one key twice instead of another: nothing about the choices is trusted.
+  for (const char* lines : {"reasons=1,0,0\nuse_cloud=1,0,0,0\n", "reasons=1,0,0\nuse_cloud=1,0,0,0\nuse_local=0,0,0,x\n",
+                            "reasons=1,0,0\nuse_local=1,0,0,0\nuse_local=1,0,0,0\n",
+                            "reasons=1,0,0\nuse_cloud=1,0,0,0\nuse_local=0,1,0,0,9\n",
+                            "reasons=1,0,0\nuse_cloud=1,0,0,0\nuse_local=0,99999999999999999999,0,0\n"}) {
+    std::ofstream(base / "8/cloud-status.txt") << "version=1\nstate=conflict\nmessage=Both changed\n" << lines;
+    Runner runner;
+    CloudService service(runner, sessions);
+    service.Restore(base.string());
+    AwaitAt(__LINE__, service, [](const CloudSnapshot& s) {
+      auto* r = Of(s, SteamId(8));
+      return r && r->state == CloudState::kConflict && !r->choices && r->changed_both == 0 && r->use_cloud == CloudChoice{};
+    });
+    service.Shutdown();
+  }
+  std::filesystem::remove_all(base);
+}
+
+// #1103: a choice runs only while it still does what its button said. Another device can change the saves between
+// the check the player read and the fresh one the choice runs on.
+void ChoiceRunsOnlyAsShown() {
+  const auto base = std::filesystem::temp_directory_path() / ("playden-cloud-shown-" + std::to_string(getpid()));
+  std::filesystem::remove_all(base);
+  std::filesystem::create_directories(base);
+  const CloudLocation game{SteamId(6), "/games/6", (base / "6").string(), "/bottle"};
+  Sessions sessions;
+  Runner runner;
+  CloudService service(runner, sessions);
+  CloudReport conflict;
+  conflict.state = CloudState::kConflict;
+  conflict.message = "Choose which to keep.";
+  conflict.deleted_here = 1;
+  conflict.use_cloud = {1, 0, 0, 0};
+  conflict.use_local = {0, 0, 0, 1};
+  conflict.choices = true;
+  const auto settled = [&](int line, CloudState state, CloudChoice use_cloud = {}) {
+    AwaitAt(line, service, [state, use_cloud](const CloudSnapshot& s) {
+      auto* r = Of(s, SteamId(6));
+      return r && r->state == state && (state != CloudState::kConflict || r->use_cloud == use_cloud);
+    });
+  };
+  runner.report_override = conflict;
+  service.Sync(game);
+  settled(__LINE__, CloudState::kConflict, {1, 0, 0, 0});
+
+  // Since then a second save went from the console: Use Cloud saves would now download two. Nothing runs; the
+  // new choice is shown.
+  auto changed = conflict;
+  changed.deleted_here = 2;
+  changed.use_cloud = {2, 0, 0, 0};
+  runner.report_override = changed;
+  service.Resolve(game, CloudResolution::kUseCloud, true);
+  settled(__LINE__, CloudState::kConflict, {2, 0, 0, 0});
+  CHECK(runner.applies == 0);
+
+  // The same choice again, on what is now shown: it runs.
+  service.Resolve(game, CloudResolution::kUseCloud, true);
+  settled(__LINE__, CloudState::kSynced);
+  CHECK(runner.applies == 1 && runner.last_resolution == CloudResolution::kUseCloud);
+
+  // A conflict that became an upload waiting for the account: the conflict's button never confirms the account.
+  runner.report_override = conflict;
+  service.Sync(game);
+  settled(__LINE__, CloudState::kConflict, {1, 0, 0, 0});
+  CloudReport account;
+  account.state = CloudState::kNeedsAccount;
+  account.message = "Confirm this Steam account.";
+  runner.report_override = account;
+  service.Resolve(game, CloudResolution::kUseCloud, true);
+  settled(__LINE__, CloudState::kNeedsAccount);
+  CHECK(runner.applies == 1);
+
+  // A conflict another device settled: the transfers that need no choice run, as Sync now would.
+  runner.report_override = conflict;
+  service.Sync(game);
+  settled(__LINE__, CloudState::kConflict, {1, 0, 0, 0});
+  CloudReport ready;
+  ready.state = CloudState::kSyncing;
+  ready.message = "1 save to download";
+  runner.report_override = ready;
+  service.Resolve(game, CloudResolution::kUseLocal, true);
+  settled(__LINE__, CloudState::kSynced);
+  CHECK(runner.applies == 2 && runner.last_resolution == CloudResolution::kAutomatic);
+  service.Shutdown();
+  std::filesystem::remove_all(base);
+}
+
 int main() {
   Jobs();
   CanceledCheckIsNotSaved();
+  ChoicesSurviveRestart();
+  ChoiceRunsOnlyAsShown();
   Sessions sessions;
   Runner runner;
   CloudService service(runner, sessions);

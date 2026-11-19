@@ -49,12 +49,23 @@ struct FileFact {
 
 enum class Action { kUnchanged, kDownload, kUpload, kDeleteLocal, kDeleteRemote, kConflict, kUnavailable };
 
+// Why a file needs the player's choice, against the last sync: changed on both sides, or deleted on one side and
+// unchanged on the other. kNone for a conflict with no last sync to compare with (the first sync on this device).
+enum class ConflictReason { kNone, kChangedBoth, kDeletedHere, kDeletedInCloud };
+
 struct Decision {
   std::string remote_name;
   LocalSavePath local;
   FileFact local_fact;
   FileFact remote_fact;
   Action action = Action::kUnchanged;
+  ConflictReason reason = ConflictReason::kNone;  // set with kConflict
+};
+
+// What one choice does to a game's saves: every transfer of the plan, the conflicts settled that way.
+struct ChoiceOutcome {
+  std::size_t downloads = 0, uploads = 0, local_deletes = 0, remote_deletes = 0;
+  bool operator==(const ChoiceOutcome&) const = default;
 };
 
 enum class PlanStatus {
@@ -81,9 +92,16 @@ struct CloudPlan {
   std::uint64_t local_bytes = 0, remote_bytes = 0, local_latest = 0, remote_latest = 0;
   // This console would replace Cloud saves before it ever uploaded any for this game: asked first.
   bool first_overwrite = false;
+  // For a conflict: how many files have each reason, and what each choice would do.
+  std::size_t changed_both = 0, deleted_here = 0, deleted_in_cloud = 0;
+  ChoiceOutcome use_local, use_cloud;
 };
 
 enum class Resolution { kAutomatic, kUseLocal, kUseCloud };
+
+// The action a decision takes under a choice: a conflict goes the chosen side's way, which can mean deleting the
+// other side's copy. Apply and the plan's ChoiceOutcome both use it, so what the player is told is what happens.
+Action ResolvedAction(const Decision& decision, Resolution resolution);
 
 // What the quick check found for one game since its last full check: which side changed, or
 // kUnknown when there is nothing to compare with (no index yet, another account, Steam unreachable).
