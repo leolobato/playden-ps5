@@ -117,7 +117,7 @@ int main(int argc, char** argv) {
         "resolution", "refresh", "frame_limit", "framegen", "vsync", "performance_overlay", "overlay_detail", "scaling",
         "window_view",
         "controller", "controller_preset", "touchpad_hold",
-        "pointer_stick", "pointer_speed", "stick_deadzone", "rumble", "invert_stick", "trigger_deadzone", "wheel_stick",
+        "pointer_stick", "pointer_speed", "rumble",
         "volume", "microphone",
         "start_check",
         "graphics", "d3d12", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
@@ -988,6 +988,19 @@ int main(int argc, char** argv) {
     CHECK(!ParseGameRecipe(R"({"recipe_id":"old","recipe_version":1,"app_id":70,
         "launch_entries":[{"id":"game","label":"Game","executable":"hl.exe"}],"locked":["opengl_threads"]})",
         &old_recipe, &reason));
+    // The same for the dead zone, invert and wheel rows, which no runtime kit ever applied.
+    CHECK(ParseGameRecipe(R"({"recipe_id":"old","recipe_version":1,"app_id":70,
+        "launch_entries":[{"id":"game","label":"Game","executable":"hl.exe"}],
+        "defaults":{"stick_deadzone":"10","wheel_stick":"left_stick","refresh":"60"},
+        "locked":["trigger_deadzone","invert_stick"]})", &old_recipe, &reason));
+    CHECK(old_recipe.defaults == (std::map<std::string, std::string>{{"refresh", "60"}}) && old_recipe.locked.empty());
+    CHECK(ParseSettingsPresets(R"({"presets":[{"id":"x","name":"X","settings":{"trigger_deadzone":"5","rumble":"50"}}]})",
+                               &old_presets, &reason));
+    CHECK(old_presets.size() == 1 && old_presets[0].settings == (std::map<std::string, std::string>{{"rumble", "50"}}));
+    GameSettingsRecord tuned;
+    CHECK(ParseGameSettingsRecord(R"({"overrides":{"stick_deadzone":"15","invert_stick":"right_y","rumble":"50"}})",
+                                  &tuned, &reason));
+    CHECK(tuned.overrides == (std::map<std::string, std::string>{{"rumble", "50"}}));
   }
   {
     GameSettingsRecord old_record;
@@ -1365,13 +1378,19 @@ int main(int argc, char** argv) {
     CHECK(render(stray, {}, stale_version) == base + "\n[environment]\nRADV_PERFTEST = pswave32\n");
     CHECK(settings.profile_version == 1);
   }
-  // Stick dead zone and rumble need a runtime with controller tuning and the Xbox controller;
-  // only values that differ from the runtime's defaults are written.
-  const std::map<std::string, std::string> tuning = {{"stick_deadzone", "15"}, {"rumble", "50"}};
+  // Rumble needs a runtime with controller tuning and a controller; only a value that differs from the runtime's
+  // default is written.
+  const std::map<std::string, std::string> tuning = {{"rumble", "50"}};
   CHECK(BuildEffectiveSettings(hl2, nullptr, tuning, KitCapabilities{}, &settings, &error));
-  CHECK(!settings.values.at("stick_deadzone").available && !settings.values.at("rumble").available);
+  CHECK(!settings.values.at("rumble").available);
   CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
-  CHECK(profile.text.find("stick_deadzone") == std::string::npos && profile.text.find("rumble") == std::string::npos);
+  CHECK(profile.text.find("rumble") == std::string::npos);
+  // The dead zone, invert and wheel rows are gone: the controller layout does their work. A saved value for one is
+  // dropped, never applied.
+  for (const char* gone : {"stick_deadzone", "trigger_deadzone", "invert_stick", "wheel_stick"}) {
+    CHECK(!FindSetting(gone) && RetiredSetting(gone) && !settings.values.count(gone));
+    CHECK(!ValidateSettingValue(hl2, gone, "10", &reason));
+  }
   KitCapabilities tuning_kit;
   tuning_kit.input_tuning = true;
   // Every setting is listed whatever the kit; what the kit lacks is disabled with its reason.
@@ -1380,8 +1399,7 @@ int main(int argc, char** argv) {
   // Rows nothing can apply yet are listed but never take effect, even with every capability.
   {
     const auto every = KitCapabilitiesFromManifest(SettingsKitCapabilityNames(), true);
-    const std::map<std::string, std::string> unbuilt = {{"invert_stick", "right_y"},
-        {"registry_dll_overrides", "dinput8=n,b"}};
+    const std::map<std::string, std::string> unbuilt = {{"registry_dll_overrides", "dinput8=n,b"}};
     CHECK(BuildEffectiveSettings(hl2, nullptr, unbuilt, every, &settings, &error));
     for (const auto& [id, value] : unbuilt) {
       CHECK(SettingShown(*FindSetting(id), every));
@@ -1551,23 +1569,23 @@ int main(int argc, char** argv) {
   }
   CHECK(BuildEffectiveSettings(hl2, nullptr, tuning, tuning_kit, &settings, &error));
   CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
-  CHECK(profile.text.find("\nstick_deadzone = 15\nrumble = 50\n") != std::string::npos);
+  CHECK(profile.text.find("\nmouse = none\nrumble = 50\n") != std::string::npos);
   CHECK(!CheckProsperoProfile(profile.text, &reason));                // a released runtime refuses it
-  CHECK(CheckProsperoProfile(profile.text, &reason, {.input_tuning = true}));
+  CHECK(CheckProsperoProfile(profile.text, &reason, {.input_rumble = true}));
   CHECK(BuildEffectiveSettings(hl2, nullptr, {}, tuning_kit, &settings, &error));
   CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
-  CHECK(profile.text.find("stick_deadzone") == std::string::npos && profile.text.find("rumble") == std::string::npos);
+  CHECK(profile.text.find("rumble") == std::string::npos);
   CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller", "keyboard"}, {"rumble", "0"}}, tuning_kit, &settings, &error));
   CHECK(!settings.values.at("rumble").available && settings.values.at("rumble").reason == "Only with a controller.");
-  CHECK(!ValidateSettingValue(hl2, "stick_deadzone", "60", &reason) && ValidateSettingValue(hl2, "rumble", "25", &reason));
-  // A kit with rumble alone (input-rumble) applies Rumble but not the dead zones, once the title runs its runtime.
+  CHECK(ValidateSettingValue(hl2, "rumble", "25", &reason));
+  // A kit with rumble alone (input-rumble) applies Rumble, once the title runs its runtime.
   {
     const auto rumble_kit = KitCapabilitiesFromManifest({kKitInputRumble}, false);
     CHECK(rumble_kit.input_rumble && !rumble_kit.input_tuning);
     CHECK(BuildEffectiveSettings(hl2, nullptr, tuning, rumble_kit, &settings, &error));
-    CHECK(settings.values.at("rumble").available && !settings.values.at("stick_deadzone").available);
+    CHECK(settings.values.at("rumble").available);
     CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
-    CHECK(profile.text.find("\nrumble = 50\n") != std::string::npos && profile.text.find("stick_deadzone") == std::string::npos);
+    CHECK(profile.text.find("\nrumble = 50\n") != std::string::npos);
     CHECK(!CheckProsperoProfile(profile.text, &reason));
     CHECK(CheckProsperoProfile(profile.text, &reason, {.input_rumble = true}));
     CHECK(BuildEffectiveSettings(hl2, nullptr, {{"rumble", "0"}}, rumble_kit, &settings, &error));
@@ -1587,8 +1605,7 @@ int main(int argc, char** argv) {
     CHECK(settings.values.at("rumble").reason == "Only with a controller.");
   }
   // The PlayStation controller (input-playstation): offered with the capability, waiting for the title's update on an
-  // older runtime, and Xbox controller (no new mode in the profile) until it counts. Rumble applies to it; the dead
-  // zones stay the Xbox controller's.
+  // older runtime, and Xbox controller (no new mode in the profile) until it counts. Rumble applies to it.
   {
     const auto playstation_kit = KitCapabilitiesFromManifest({kKitInputPlaystation, kKitInputRumble, kKitInputTuning}, false);
     CHECK(playstation_kit.input_playstation && !KitCapabilitiesFromManifest({kKitInputRumble}, false).input_playstation);
@@ -1596,19 +1613,17 @@ int main(int argc, char** argv) {
     CHECK(FindSetting("controller")->choices[1].label == "PlayStation controller");
     CHECK(ValidateSettingValue(hl2, "controller", "playstation", &reason));
     const std::map<std::string, std::string> chosen = {
-        {"controller", "playstation"}, {"rumble", "50"}, {"stick_deadzone", "10"}};
+        {"controller", "playstation"}, {"rumble", "50"}};
     CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, playstation_kit, &settings, &error));
     CHECK(Value(settings, "controller") == "playstation" && settings.values.at("controller").available);
     CHECK(SettingChoiceUnavailable(settings, "controller", "playstation").empty());
     CHECK(!SettingChoiceWaitsForUpdate(settings, "controller", "playstation"));
     CHECK(settings.values.at("rumble").available);
-    CHECK(!settings.values.at("stick_deadzone").available &&
-          settings.values.at("stick_deadzone").reason == "Only with the Xbox controller.");
     CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
     CHECK(profile.text.find("\nmode = playstation\n") != std::string::npos);
-    CHECK(profile.text.find("\nrumble = 50\n") != std::string::npos && profile.text.find("stick_deadzone") == std::string::npos);
-    CHECK(!CheckProsperoProfile(profile.text, &reason, {.input_tuning = true}));  // an older runtime refuses the mode
-    CHECK(CheckProsperoProfile(profile.text, &reason, {.input_tuning = true, .input_playstation = true}));
+    CHECK(profile.text.find("\nrumble = 50\n") != std::string::npos);
+    CHECK(!CheckProsperoProfile(profile.text, &reason, {.input_rumble = true}));  // an older runtime refuses the mode
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.input_rumble = true, .input_playstation = true}));
     // Without the capability the choice is unavailable: the Xbox controller applies, the record keeps the choice.
     const auto rumble_kit = KitCapabilitiesFromManifest({kKitInputRumble}, false);
     CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, rumble_kit, &settings, &error));
@@ -1622,10 +1637,6 @@ int main(int argc, char** argv) {
     CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
     CHECK(profile.text.find("\nmode = xinput\n") != std::string::npos);
     CHECK(CheckProsperoProfile(profile.text, &reason, {.input_rumble = true}));
-    // With controller tuning, the dead zones follow the Xbox controller that applies.
-    const auto tuning_only = KitCapabilitiesFromManifest({kKitInputTuning}, false);
-    CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, tuning_only, &settings, &error));
-    CHECK(Value(settings, "controller") == "xinput" && settings.values.at("stick_deadzone").available);
     // A title on an older runtime keeps the choice for its update; until then it is the Xbox controller.
     const auto stale = KitForTitleRuntime(playstation_kit, false);
     CHECK(!stale.input_playstation && stale.input_playstation_needs_update);
@@ -1743,27 +1754,22 @@ int main(int argc, char** argv) {
     CHECK(profile.text.find("framegen") == std::string::npos);
   }
 
-  // Trigger dead zone rides with controller tuning; the wheel and volume have their own gates.
-  const std::map<std::string, std::string> more_tuning = {
-      {"trigger_deadzone", "10"}, {"wheel_stick", "right_stick"}, {"volume", "50"}};
+  // Volume has its own gate.
+  const std::map<std::string, std::string> more_tuning = {{"volume", "50"}};
   CHECK(BuildEffectiveSettings(hl2, nullptr, more_tuning, tuning_kit, &settings, &error));
-  CHECK(settings.values.at("trigger_deadzone").available && !settings.values.at("wheel_stick").available &&
-        !settings.values.at("volume").available);
+  CHECK(!settings.values.at("volume").available);
   CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
-  CHECK(profile.text.find("\ntrigger_deadzone = 10\n") != std::string::npos &&
-        profile.text.find("wheel") == std::string::npos && profile.text.find("[audio]") == std::string::npos);
+  CHECK(profile.text.find("[audio]") == std::string::npos);
   const auto all_kit = KitCapabilitiesFromManifest(SettingsKitCapabilityNames(), false);
   CHECK(BuildEffectiveSettings(hl2, nullptr, more_tuning, all_kit, &settings, &error));
   CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
-  CHECK(profile.text.find("\nwheel = right_stick\n") != std::string::npos);
   CHECK(profile.text.find("\n[audio]\nvolume = 50\n") != std::string::npos);
-  CHECK(!CheckProsperoProfile(profile.text, &reason));                // a released runtime refuses both
+  CHECK(!CheckProsperoProfile(profile.text, &reason));                // a released runtime refuses it
   CHECK(CheckProsperoProfile(profile.text, &reason,
-                             {.environment_section = true, .input_tuning = true, .input_wheel = true, .audio_section = true,
-                              .debug_env = true}));
-  CHECK(BuildEffectiveSettings(hl2, nullptr, {{"volume", "100"}, {"wheel_stick", "none"}}, all_kit, &settings, &error));
+                             {.environment_section = true, .audio_section = true, .debug_env = true}));
+  CHECK(BuildEffectiveSettings(hl2, nullptr, {{"volume", "100"}}, all_kit, &settings, &error));
   CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
-  CHECK(profile.text.find("[audio]") == std::string::npos && profile.text.find("wheel") == std::string::npos);
+  CHECK(profile.text.find("[audio]") == std::string::npos);
   // An older title refuses [audio]: Volume waits for the title's update, and the profile has no [audio] meanwhile.
   {
     const auto volume_kit = KitCapabilitiesFromManifest({kKitAudioVolume}, false);
@@ -2484,7 +2490,7 @@ int main(int argc, char** argv) {
     own.launch_entries = {{"game", "Game", "game.exe", "", ""}};
     own.defaults = {{"resolution", "1280x720"}, {"performance_overlay", "on"}, {"window_view", "desktop"},
                     {"steam_features", "emulate"}};
-    own.locked = {"vsync", "trigger_deadzone"};
+    own.locked = {"vsync", "steam_input"};
     SettingsPreset preset{"keyboard-on-controller", "Keyboard", "", "", {{"controller_preset", "gamepad"}, {"refresh", "60"}}};
     const std::map<std::string, std::string> overrides = {
         {"rumble", "50"},                    // a player change
@@ -2492,8 +2498,8 @@ int main(int argc, char** argv) {
         {"button.cross", "space"},           // a button binding: free text a preset may hold
         {"extra_arguments", "-windowed"},    // free text a preset may not hold
         {"graphics", "dxvk"},                // never in a preset
-        {"trigger_deadzone", "10"},          // a locked row, changed anyway
-        {"unlock.trigger_deadzone", "on"},
+        {"steam_input", "off"},              // a locked row, changed anyway
+        {"unlock.steam_input", "on"},
         {"vsync", "off"},                    // a locked row: the player's value doesn't apply
         {"volume", "50"},                    // unavailable: the kit has no volume
     };
@@ -2506,8 +2512,8 @@ int main(int argc, char** argv) {
     CHECK(settings.values.at("refresh").source == ValueSource::kPreset && Value(settings, "refresh") == "60" &&
           settings.values.at("refresh").available);
     CHECK(settings.values.at("rumble").source == ValueSource::kUser && settings.values.at("rumble").available);
-    CHECK(settings.values.at("trigger_deadzone").locked && settings.values.at("trigger_deadzone").unlocked &&
-          settings.values.at("trigger_deadzone").available && Value(settings, "trigger_deadzone") == "10");
+    CHECK(settings.values.at("steam_input").locked && settings.values.at("steam_input").unlocked &&
+          settings.values.at("steam_input").available && Value(settings, "steam_input") == "off");
     CHECK(settings.values.at("vsync").locked && settings.values.at("vsync").source == ValueSource::kPlayden);
     CHECK(settings.values.at("volume").source == ValueSource::kUser && !settings.values.at("volume").available &&
           !settings.values.at("volume").waits_for_update);
@@ -2520,8 +2526,8 @@ int main(int argc, char** argv) {
         {"rumble", "50"}, {"performance_overlay", "off"}, {"button.cross", "space"}};
     for (const auto& [id, value] : chosen) CHECK(kept.count(id) && kept.at(id) == value);
     // Everything else is left out: the recipe's values, Playden's, locked and unavailable rows, what a preset can't set.
-    for (const char* left : {"resolution", "window_view", "steam_features", "extra_arguments", "graphics", "trigger_deadzone",
-                             "unlock.trigger_deadzone", "vsync", "volume", "launch_option", "architecture"})
+    for (const char* left : {"resolution", "window_view", "steam_features", "extra_arguments", "graphics", "steam_input",
+                             "unlock.steam_input", "vsync", "volume", "launch_option", "architecture"})
       CHECK(!kept.count(left));
     for (const auto& [id, value] : kept) {
       CHECK(ValidatePresetSetting(id, value, &reason));

@@ -14,7 +14,7 @@ KitAdmissionConfig DevelopmentKitAdmission() {
                                 kKitTitleAnyId, kKitGameRootUnowned, kKitBottleProfileShared, kKitPublicationOpenModes,
                                 kKitOpenGLZink,
                                 kKitAudioVolume, kKitAudioMicrophone, kKitAudioCapture, kKitDxvkConfig, kKitDxvkPresent, kKitInputTuning,
-                                kKitInputWheel, kKitEnvironment, kKitWineMono, kKitVkd3dProton,
+                                kKitEnvironment, kKitWineMono, kKitVkd3dProton,
                                 kKitDisplay120Hz, kKitProfileVersion2, kKitInputRumble,
                                 kKitDisplayFramegen, kKitDisplayFpsCounter, kKitLauncherMode,
                                 kKitInputPlaystation, kKitDriverThreads, kKitGameRootUsbSearch,

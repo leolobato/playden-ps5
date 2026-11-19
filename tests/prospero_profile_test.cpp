@@ -188,17 +188,12 @@ int main(int argc, char** argv) {
   CHECK(!CheckProsperoProfile(base + "[input]\nmode = dualshock4\n", &reason, {.input_playstation = true}));
   CHECK(!CheckProsperoProfile(base + "[input]\nmouse_speed = 0\n", &reason));
   CHECK(!CheckProsperoProfile(base + "[input]\nrumble = 50\n", &reason));                 // released runtimes refuse it
-  CHECK(CheckProsperoProfile(base + "[input]\nstick_deadzone = 50\nrumble = 0\n", &reason, {.input_tuning = true}));
-  CHECK(!CheckProsperoProfile(base + "[input]\nstick_deadzone = 51\n", &reason, {.input_tuning = true}));
-  CHECK(!CheckProsperoProfile(base + "[input]\nrumble = 101\n", &reason, {.input_tuning = true}));
   CHECK(CheckProsperoProfile(base + "[input]\nrumble = 0\n", &reason, {.input_rumble = true}));  // input-rumble alone
   CHECK(!CheckProsperoProfile(base + "[input]\nrumble = 101\n", &reason, {.input_rumble = true}));
-  CHECK(!CheckProsperoProfile(base + "[input]\nstick_deadzone = 5\n", &reason, {.input_rumble = true}));
-  CHECK(!CheckProsperoProfile(base + "[input]\nrumble = -1\n", &reason, {.input_tuning = true}));
-  CHECK(CheckProsperoProfile(base + "[input]\ntrigger_deadzone = 50\n", &reason, {.input_tuning = true}));
-  CHECK(!CheckProsperoProfile(base + "[input]\nwheel = left_stick\n", &reason, {.input_tuning = true}));
-  CHECK(CheckProsperoProfile(base + "[input]\nwheel = left_stick\n", &reason, {.input_wheel = true}));
-  CHECK(!CheckProsperoProfile(base + "[input]\nwheel = dpad\n", &reason, {.input_wheel = true}));
+  CHECK(!CheckProsperoProfile(base + "[input]\nrumble = -1\n", &reason, {.input_rumble = true}));
+  // The dead zone and wheel keys were never in a runtime: Playden doesn't write them.
+  for (const char* line : {"stick_deadzone = 5\n", "trigger_deadzone = 50\n", "wheel = left_stick\n"})
+    CHECK(!CheckProsperoProfile(base + "[input]\n" + line, &reason, {.input_rumble = true}));
   CHECK(!CheckProsperoProfile(base + "[audio]\nvolume = 50\n", &reason));
   CHECK(CheckProsperoProfile(base + "[audio]\nvolume = 0\n", &reason, {.audio_section = true}));
   CHECK(!CheckProsperoProfile(base + "[audio]\nvolume = 101\n", &reason, {.audio_section = true}));

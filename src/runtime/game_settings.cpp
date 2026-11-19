@@ -224,30 +224,11 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"600", "600", ""}, {"900", "900", ""}, {"1200", "1200", ""}, {"1800", "1800", ""},
                          {"2400", "2400", ""}},
                         "1200"));
-  list.push_back(Choice("stick_deadzone", "Stick dead zone",
-                        "How far a stick moves before the game sees it. Raise it if the camera drifts.",
-                        "", G::kControllerTuning,
-                        {{"0", "Off", "The game's own dead zone only."}, {"5", "5%", ""}, {"10", "10%", ""},
-                         {"15", "15%", ""}, {"20", "20%", ""}, {"30", "30%", "For a badly drifting stick."}},
-                        "0", 4));
   list.push_back(Choice("rumble", "Rumble", "How strongly the controller vibrates.", "",
                         G::kControllerTuning,
                         {{"100", "Full", ""}, {"75", "75%", ""}, {"50", "50%", ""}, {"25", "25%", ""},
                          {"0", "Off", ""}},
                         "100", 4));
-  list.push_back(Choice("invert_stick", "Invert stick", "Flip a stick's up and down for this game.",
-                        "", G::kControllerTuning,
-                        {{"none", "None", ""}, {"left_y", "Left stick up/down", ""}, {"right_y", "Right stick up/down", ""}},
-                        "none", 4));
-  list.push_back(Choice("trigger_deadzone", "Trigger dead zone",
-                        "How far L2 and R2 travel before the game sees them. Raise it for worn triggers.",
-                        "", G::kControllerTuning,
-                        {{"0", "Off", ""}, {"5", "5%", ""}, {"10", "10%", ""}, {"20", "20%", ""}, {"30", "30%", ""}},
-                        "0", 4));
-  list.push_back(Choice("wheel_stick", "Mouse wheel stick", "Scroll the mouse wheel by pushing a stick up or down.",
-                        "", G::kControllerTuning,
-                        {{"none", "None", ""}, {"left_stick", "Left stick", ""}, {"right_stick", "Right stick", ""}},
-                        "none", 4));
   // Sound.
   list.push_back(Choice("volume", "Volume", "How loud this game plays, without changing the console's volume.",
                         "", G::kSound,
@@ -653,7 +634,6 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   // Pixel shaders is an environment variable for the driver, so it goes where Environment variables go.
   if ((id == "environment" || id == "pixel_shader_waves") && !kit.environment && !kit.opengl_zink)
     return "Needs a newer runtime kit that reads [environment].";
-  if (id == "wheel_stick" && !kit.input_wheel) return "Needs a newer runtime kit that turns the mouse wheel.";
   if (id == "volume" && !kit.audio_volume) {
     if (kit.audio_volume_needs_update) return kAppliesAfterKitUpdate;
     return "Needs a newer runtime kit with per-game volume.";
@@ -667,16 +647,12 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
     if (kit.input_rumble_needs_update) return kAppliesAfterKitUpdate;
     return "Needs a runtime kit with rumble control.";
   }
-  if (id == "stick_deadzone" || id == "rumble" || id == "trigger_deadzone") {
-    if (!kit.input_tuning && id != "rumble") return "Needs a newer runtime kit with controller tuning.";
+  if (id == "rumble") {
     const auto controller = values.find("controller");
     const std::string mode = controller == values.end() ? std::string() : controller->second.value;
-    // The title scales the game's rumble the same way for both controllers; the dead zones are XInput's.
-    if (id == "rumble" && mode != "xinput" && mode != "playstation") return "Only with a controller.";
-    if (id != "rumble" && mode != "xinput") return "Only with the Xbox controller.";
+    // The title scales the game's rumble the same way for both controllers.
+    if (mode != "xinput" && mode != "playstation") return "Only with a controller.";
   }
-  // Rows whose runtime or Playden side is not built yet: listed so players see what is coming.
-  if (id == "invert_stick") return "Needs a newer runtime kit that inverts sticks.";
   // Wine sets both locales from the Unix locale at start and only mirrors them into the registry, so the title sets
   // them ([runtime] user_locale and system_locale).
   if ((id == "locale" || id == "system_locale") && !kit.windows_locale)
@@ -819,7 +795,10 @@ const SettingDefinition* FindSetting(std::string_view id) {
 
 // Rows this build no longer has (RetiredSetting), with the `since` they had: a recipe may still name one, and an older
 // Playden still needs to know the row to read it.
-constexpr std::pair<const char*, const char*> kRetiredSettings[] = {{"opengl_thread", ""}};
+// The dead zone, invert and wheel rows were never in a runtime kit: the controller layout (controller_layout) does
+// their work.
+constexpr std::pair<const char*, const char*> kRetiredSettings[] = {
+    {"invert_stick", ""}, {"opengl_thread", ""}, {"stick_deadzone", ""}, {"trigger_deadzone", ""}, {"wheel_stick", ""}};
 
 std::string SettingsSinceJson() {
   std::map<std::string, std::string> rows;
@@ -1136,7 +1115,7 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
 
   // The PlayStation controller needs a kit with it, and a title on that kit's runtime: an older runtime refuses the
   // profile's mode. Until then the controller preset's mode applies, or the Xbox controller, and a choice that waits
-  // for the update is kept for it. This runs before the rows that depend on the controller (Rumble, the dead zones).
+  // for the update is kept for it. This runs before the rows that depend on the controller (Rumble).
   {
     auto& value = out.values["controller"];
     std::string fallback = FindSetting("controller")->playden_default;
@@ -1547,15 +1526,9 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   if (chosen("pointer_stick")) text += "mouse = " + value("pointer_stick") + "\n";
   if (settings.values.at("pointer_speed").available && chosen("pointer_speed"))
     text += "mouse_speed = " + value("pointer_speed") + "\n";
-  // Written only when they differ from the runtime's defaults (no dead zone, full rumble).
-  const bool tuned_deadzone = settings.values.at("stick_deadzone").available && value("stick_deadzone") != "0";
+  // Written only when it differs from the runtime's default (full rumble).
   const bool tuned_rumble = settings.values.at("rumble").available && value("rumble") != "100";
-  const bool tuned_triggers = settings.values.at("trigger_deadzone").available && value("trigger_deadzone") != "0";
-  const bool wheel = settings.values.at("wheel_stick").available && value("wheel_stick") != "none";
-  if (tuned_deadzone) text += "stick_deadzone = " + value("stick_deadzone") + "\n";
   if (tuned_rumble) text += "rumble = " + value("rumble") + "\n";
-  if (tuned_triggers) text += "trigger_deadzone = " + value("trigger_deadzone") + "\n";
-  if (wheel) text += "wheel = " + value("wheel_stick") + "\n";
   for (const auto& button : ProsperoButtons()) {
     const auto& binding = settings.values.at("button." + button).value;
     if (!binding.empty()) text += button + " = " + binding + "\n";
@@ -1760,9 +1733,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   ProsperoProfileFeatures features;
   features.environment_section = environment_section;
   features.debug_env = debug_env;
-  features.input_tuning = tuned_deadzone || tuned_triggers;
   features.input_rumble = tuned_rumble;
-  features.input_wheel = wheel;
   features.audio_section = audio_section;
   features.audio_microphone = microphone_off;
   features.display_frame_rate = frame_rate;
@@ -4184,7 +4155,7 @@ const std::vector<std::string>& SettingsKitCapabilityNames() {
                                                  kKitDisplayFramegen,
                                                  kKitHelperProcess, kKitInputPlaystation, kKitInputRumble,
                                                  kKitLauncherMode, kKitAudioVolume, kKitDxvkConfig, kKitDxvkPresent,
-                                                 kKitInputTuning, kKitInputWheel, kKitEnvironment,
+                                                 kKitInputTuning, kKitEnvironment,
                                                  kKitTitleNotify, kKitTouchpadSwitch};
   return names;
 }
@@ -4200,7 +4171,6 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.dxvk_present = has(kKitDxvkPresent);
   kit.environment = has(kKitEnvironment);
   kit.input_tuning = has(kKitInputTuning);
-  kit.input_wheel = has(kKitInputWheel);
   kit.audio_volume = has(kKitAudioVolume);
   kit.audio_microphone = has(kKitAudioMicrophone);
   kit.shared_sections = has(kKitSharedSections);
@@ -4699,7 +4669,6 @@ bool CommunityPresetSupported(const CommunityPreset& community, const KitCapabil
   for (const auto& feature : community.requires_prospero_win) {
     if (feature == "profile-environment") { if (!kit.environment) return false; }
     else if (feature == "input-tuning") { if (!kit.input_tuning) return false; }
-    else if (feature == "input-wheel") { if (!kit.input_wheel) return false; }
     // Like the rows they set, these apply once the game's title runs the kit's runtime.
     else if (feature == "audio-volume") { if (!kit.audio_volume && !kit.audio_volume_needs_update) return false; }
     else if (feature == "audio-microphone") {

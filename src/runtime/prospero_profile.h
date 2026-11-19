@@ -78,9 +78,7 @@ bool IsProsperoEnvironmentEntry(std::string_view name, std::string_view value);
 // Profile features newer than the released runtime; released runtimes refuse them.
 struct ProsperoProfileFeatures {
   bool environment_section = false;  // [environment] (prospero-win 25abec9, kit H r5)
-  bool input_tuning = false;         // [input] stick_deadzone, rumble, trigger_deadzone
-  bool input_rumble = false;         // [input] rumble alone (kit capability input-rumble)
-  bool input_wheel = false;          // [input] wheel
+  bool input_rumble = false;         // [input] rumble (kit capability input-rumble or settings-input-tuning)
   bool audio_section = false;        // [audio] volume (kit capability settings-audio-volume)
   bool audio_microphone = false;     // [audio] microphone = on|off (kit capability audio-microphone)
   bool debug_env = false;            // [debug] env = NAME=value (upstream prospero-win)

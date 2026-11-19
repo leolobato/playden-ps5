@@ -137,7 +137,7 @@ void Check(Result* result) {
 
   // What a console with every capability would start, and the profile it would write.
   rt::KitCapabilities kit;
-  kit.dxvk_config = kit.dxvk_present = kit.environment = kit.registry = kit.input_tuning = kit.input_wheel = true;
+  kit.dxvk_config = kit.dxvk_present = kit.environment = kit.registry = kit.input_tuning = true;
   kit.audio_volume = kit.shared_sections = kit.title_any_id = kit.game_root_unowned = kit.bottle_profile_shared = true;
   kit.opengl_zink = kit.wine_mono = kit.vkd3d_proton = kit.display_120hz = true;
   rt::EffectiveSettings settings;

@@ -8989,7 +8989,7 @@ void Simulation::rebuild_view() {
             } else if (settings_ready && action_key == "controller-tuning") {
                 item.kind = RowKind::Choice;
                 item.title = "Controller tuning";
-                item.subtitle = "Pointer stick, dead zones, rumble and invert.";
+                item.subtitle = "Pointer stick and rumble.";
                 int changed = 0;
                 for (const auto& definition : rt::SettingsCatalogue())
                     if (definition.group == rt::SettingGroup::kControllerTuning &&

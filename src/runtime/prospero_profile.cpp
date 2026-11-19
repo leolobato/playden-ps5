@@ -411,13 +411,8 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
       } else if (key == "mouse_speed") {
         const long speed = IsDigits(value, 9) ? std::atol(std::string(value).c_str()) : 0;
         if (speed < 1 || speed > 20000) return bad("not 1-20000");
-      } else if (features.input_wheel && key == "wheel") {
-        if (!OneOf(value, {"none", "left_stick", "right_stick"})) return bad("unknown wheel stick");
-      } else if ((features.input_tuning && (key == "stick_deadzone" || key == "trigger_deadzone")) ||
-                 ((features.input_tuning || features.input_rumble) && key == "rumble")) {
-        const long maximum = key == "rumble" ? 100 : 50;
-        if (!IsDigits(value, 3) || std::atol(std::string(value).c_str()) > maximum)
-          return bad(key == "rumble" ? "not 0-100" : "not 0-50");
+      } else if (features.input_rumble && key == "rumble") {
+        if (!IsDigits(value, 3) || std::atol(std::string(value).c_str()) > 100) return bad("not 0-100");
       } else if (std::find(std::begin(kButtons), std::end(kButtons), key) != std::end(kButtons)) {
         if (!IsProsperoBinding(value)) return bad("not a key, mouse button or none");
       } else {

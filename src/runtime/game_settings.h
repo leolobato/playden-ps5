@@ -55,8 +55,7 @@ struct KitCapabilities {
   bool dxvk_present = false;  // the display honors DXVK's present interval (VSync off)
   bool environment = false;  // prospero-win [environment] section (upstream U1, not released)
   bool registry = false;     // Playden can edit the stopped bottle's user.reg (decision D2)
-  bool input_tuning = false;  // prospero-win [input] stick_deadzone, rumble, trigger_deadzone (U4, not released)
-  bool input_wheel = false;   // prospero-win [input] wheel, with Wine patch 0745 (U4, not built yet)
+  bool input_tuning = false;  // prospero-win [input] rumble (U4's controller tuning; only rumble is left)
   // prospero-win [audio] volume and [audio] microphone. Count only for a title that runs this kit's runtime, like
   // display_120hz: an older title refuses a profile with [audio].
   bool audio_volume = false;
@@ -845,7 +844,7 @@ inline bool IsSettingsOnlyRecipe(const CommunityRecipe& community) {
 
 // Whether the kit's runtime has every newer profile feature the sidecar declares in
 // requires.prospero_win: the kit capability names without "settings-" (profile-environment,
-// input-tuning, input-wheel, audio-volume; see prospero-win-profiles SIDECARS.md), audio-microphone, and display-120hz, input-rumble,
+// input-tuning, audio-volume; see prospero-win-profiles SIDECARS.md), audio-microphone, and display-120hz, input-rumble,
 // display-framegen and input-playstation, which need the game's own title on such a runtime: pass the kit as KitForTitleRuntime gives it
 // for the game. Other entries (pull requests, versions) are not checked.
 bool CommunityPresetSupported(const CommunityPreset& community, const KitCapabilities& kit);
@@ -859,8 +858,7 @@ inline constexpr const char* kKitDxvkConfig = "settings-dxvk-config";        // 
 inline constexpr const char* kKitDxvk = "dxvk";
 inline constexpr const char* kKitDxvkPresent = "settings-dxvk-present";      // VSync off honored
 inline constexpr const char* kKitEnvironment = "settings-profile-environment";  // [environment]
-inline constexpr const char* kKitInputTuning = "settings-input-tuning";      // stick/trigger dead zones, rumble
-inline constexpr const char* kKitInputWheel = "settings-input-wheel";        // [input] wheel
+inline constexpr const char* kKitInputTuning = "settings-input-tuning";      // rumble
 inline constexpr const char* kKitAudioVolume = "settings-audio-volume";      // [audio] volume
 // The title reads [audio] microphone = on|off: off lists no capture device for the game. Runtimes without it refuse the
 // key.

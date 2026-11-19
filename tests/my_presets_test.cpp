@@ -400,8 +400,8 @@ void Summary() {
   CHECK(MyPresetSummary({{"button.cross", "space"}, {"button.circle", "escape"}, {"rumble", "50"}}) ==
         "Rumble 50% \u00b7 2 buttons");
   CHECK(MyPresetSummary({{"button.cross", "space"}}) == "1 button");
-  CHECK(MyPresetSummary({{"refresh", "60"}, {"rumble", "0"}, {"volume", "50"}, {"stick_deadzone", "10"}}) ==
-        "60 Hz \u00b7 Stick dead zone 10% \u00b7 Rumble off \u00b7 +1 more");
+  CHECK(MyPresetSummary({{"refresh", "60"}, {"rumble", "0"}, {"volume", "50"}, {"microphone", "off"}}) ==
+        "60 Hz \u00b7 Rumble off \u00b7 Volume 50% \u00b7 +1 more");
   CHECK(MyPresetSummary({{"controller_preset", "none"}}) == "No controller preset");
 }
 
