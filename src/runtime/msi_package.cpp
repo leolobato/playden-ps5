@@ -1000,8 +1000,8 @@ std::optional<bool> EvaluateMsiCondition(std::string_view condition, const std::
   return ConditionParser(condition, properties).Parse();
 }
 
-bool ExtractCabinet(std::string_view cabinet, const std::function<bool(const std::string&, std::string_view)>& sink,
-                    std::string* reason) {
+bool ExtractCabinet(std::string_view cabinet, const std::function<bool(const std::string&, std::string&)>& sink,
+                    std::string* reason, const std::function<bool(const std::string&)>& wants) {
   const auto fail = [&](const char* why) {
     if (reason) *reason = why;
     return false;
@@ -1059,7 +1059,8 @@ bool ExtractCabinet(std::string_view cabinet, const std::function<bool(const std
     if (kind != 0 && kind != 1 && kind != 3) return fail("Quantum cabinets are not supported");
     std::vector<const Member*> wanted;
     for (const auto& member : members)
-      if (member.folder == folder_index) wanted.push_back(&member);
+      if (member.folder == folder_index && (!wants || wants(member.name))) wanted.push_back(&member);
+    if (wanted.empty()) continue;
     std::sort(wanted.begin(), wanted.end(), [](const Member* a, const Member* b) { return a->offset < b->offset; });
     for (std::size_t index = 0; index < wanted.size(); ++index) {
       if (wanted[index]->size > kMaxStreamBytes) return fail("a cabinet member is too large");
@@ -1067,15 +1068,28 @@ bool ExtractCabinet(std::string_view cabinet, const std::function<bool(const std
           static_cast<std::uint64_t>(wanted[index]->offset) + wanted[index]->size > wanted[index + 1]->offset)
         return fail("damaged cabinet: members overlap");
     }
+    // What the folder decodes to, by its blocks' headers: a member listed past its end is refused before any
+    // of it is collected, so its size is never reserved.
+    std::uint64_t folder_bytes = 0;
+    for (std::size_t block = 0, header = folder.data_offset; block < folder.blocks; ++block) {
+      if (header + 8 + data_reserve > cabinet.size()) return fail("damaged cabinet");
+      folder_bytes += U16(cabinet, header + 6);
+      header += 8 + data_reserve + U16(cabinet, header + 4);
+    }
+    for (const auto* member : wanted)
+      if (static_cast<std::uint64_t>(member->offset) + member->size > folder_bytes)
+        return fail("damaged cabinet: files run past their folder");
     std::size_t next = 0;
     std::string current;  // the member being collected
+    std::string empty;
     std::uint64_t position = 0;  // bytes of the folder produced so far
     std::size_t history = 0;
     std::size_t block_at = folder.data_offset;
     const auto deliver = [&](const unsigned char* bytes, std::size_t length) {
       for (std::size_t used = 0; used < length;) {
         while (next < wanted.size() && wanted[next]->size == 0 && wanted[next]->offset <= position) {
-          if (!sink(wanted[next]->name, std::string_view())) return false;
+          empty.clear();
+          if (!sink(wanted[next]->name, empty)) return false;
           ++next;
         }
         if (next >= wanted.size()) return true;
@@ -1089,6 +1103,9 @@ bool ExtractCabinet(std::string_view cabinet, const std::function<bool(const std
           used += skip;
           position += skip;
         }
+        // Its exact size up front: grown a piece at a time, a large member would briefly be held twice
+        // (Microsoft's VC_redist carries an 11 MB one).
+        if (current.empty()) current.reserve(member->size);
         const auto want = static_cast<std::size_t>(member->size - current.size());
         const auto take = std::min(want, length - used);
         current.append(reinterpret_cast<const char*>(bytes + used), take);
@@ -1096,7 +1113,7 @@ bool ExtractCabinet(std::string_view cabinet, const std::function<bool(const std
         position += take;
         if (current.size() == member->size) {
           if (!sink(member->name, current)) return false;
-          current.clear();
+          current = std::string();  // its memory goes back now, not when the next member is as large
           ++next;
         }
       }
@@ -1124,6 +1141,7 @@ bool ExtractCabinet(std::string_view cabinet, const std::function<bool(const std
           return false;
         }
         if (!deliver(buffer.get(), unpacked)) return fail("extraction stopped");
+        if (next >= wanted.size()) break;  // the rest of the folder holds nothing wanted
       }
     }
     for (std::size_t block = 0; kind != 3 && block < folder.blocks; ++block) {
@@ -1150,10 +1168,13 @@ bool ExtractCabinet(std::string_view cabinet, const std::function<bool(const std
       history = std::min(total, kWindow);
       std::memmove(buffer.get(), buffer.get() + total - history, history);
       block_at = data_at + packed;
+      if (next >= wanted.size()) break;  // the rest of the folder holds nothing wanted
     }
     // Empty members at the folder's end.
-    for (; next < wanted.size() && wanted[next]->size == 0 && wanted[next]->offset <= position; ++next)
-      if (!sink(wanted[next]->name, std::string_view())) return fail("extraction stopped");
+    for (; next < wanted.size() && wanted[next]->size == 0 && wanted[next]->offset <= position; ++next) {
+      empty.clear();
+      if (!sink(wanted[next]->name, empty)) return fail("extraction stopped");
+    }
     if (next < wanted.size()) return fail("damaged cabinet: files run past their folder");
   }
   return true;

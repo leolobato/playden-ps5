@@ -17,6 +17,7 @@
 #include <functional>
 #include <map>
 #include <set>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -81,6 +82,41 @@ bool ReadFile(const std::filesystem::path& path, std::size_t maximum, std::strin
   ::close(file);
   return ok;
 }
+
+// A file mapped read-only, outside the heap: on the console the app's heap is a 128 MiB pool that the rest of
+// Playden shares, and a large package read into it can fill it.
+class MappedFile {
+ public:
+  MappedFile() = default;
+  MappedFile(const MappedFile&) = delete;
+  MappedFile& operator=(const MappedFile&) = delete;
+  ~MappedFile() { Close(); }
+  // false when the file can't be opened or mapped, or isn't size bytes long.
+  bool Open(const std::filesystem::path& path, std::size_t size) {
+    Close();
+    const int file = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (file < 0) return false;
+    struct stat info {};
+    void* address = MAP_FAILED;
+    if (size > 0 && ::fstat(file, &info) == 0 && S_ISREG(info.st_mode) && static_cast<std::uint64_t>(info.st_size) == size)
+      address = ::mmap(nullptr, size, PROT_READ, MAP_PRIVATE, file, 0);
+    ::close(file);
+    if (address == MAP_FAILED) return false;
+    address_ = address;
+    size_ = size;
+    return true;
+  }
+  void Close() {
+    if (address_) ::munmap(address_, size_);
+    address_ = nullptr;
+    size_ = 0;
+  }
+  std::string_view View() const { return {static_cast<const char*>(address_), size_}; }
+
+ private:
+  void* address_ = nullptr;
+  std::size_t size_ = 0;
+};
 
 bool ScriptName(const std::string& name) {
   const auto lower = Lower(name);
@@ -342,7 +378,7 @@ bool InstallPlan(std::string_view package, const CabinetSource& beside, const st
         if (progress) progress(*files, plan.files.size());
       }
       return true;
-    }, reason);
+    }, reason, [&](const std::string& member) { return wanted.count(member) != 0; });
     if (!ok) {
       if (!failure.empty()) *reason = failure;
       return false;
@@ -549,12 +585,22 @@ MfcInstallResult InstallMfcRuntime(const VcRedist& redist, const std::string& ca
     return fail("the redistributable's download is not one Playden can use");
   const auto folder = std::filesystem::path(cache_root) / ("vc-" + redist.version) / redist.architecture;
   const auto cached = folder / file_name;
-  // The kept copy, when it is still the pinned one.
+  const auto pinned = [&](std::string_view bytes) {
+    return bytes.size() == redist.bytes && HashArtifactBytes(bytes).value_or("") == redist.sha256;
+  };
+  // The kept copy, when it is still the pinned one: mapped, or read whole where it can't be.
+  MappedFile mapped;
   std::string bundle;
-  if (ReadFile(cached, redist.bytes + 1, &bundle) && bundle.size() == redist.bytes &&
-      HashArtifactBytes(bundle).value_or("") == redist.sha256) {
+  std::string_view bundle_bytes;
+  if (mapped.Open(cached, redist.bytes)) {
+    if (pinned(mapped.View())) bundle_bytes = mapped.View();
+  } else if (ReadFile(cached, redist.bytes + 1, &bundle) && pinned(bundle)) {
+    bundle_bytes = bundle;
+  }
+  if (!bundle_bytes.empty()) {
     out.source = "cache";
   } else {
+    mapped.Close();
     bundle.clear();
     std::error_code ignored;
     std::filesystem::remove(cached, ignored);
@@ -608,6 +654,10 @@ MfcInstallResult InstallMfcRuntime(const VcRedist& redist, const std::string& ca
       if (written != bundle.size() || !synced || !closed || ::rename(temporary.c_str(), cached.c_str()) != 0) {
         out.cache_problem = "could not write " + cached.string() + " (errno " + std::to_string(errno) + ")";
         ::unlink(temporary.c_str());
+      } else if (mapped.Open(cached, bundle.size()) && mapped.View() == bundle) {
+        bundle = std::string();  // read from the kept copy instead, outside the heap
+      } else {
+        mapped.Close();
       }
     } else {
       out.cache_problem = "could not create " + folder.string() + (error ? ": " + error.message() : " (errno " + std::to_string(errno) + ")");
@@ -615,8 +665,12 @@ MfcInstallResult InstallMfcRuntime(const VcRedist& redist, const std::string& ca
   }
   BurnMsiPackage package;
   std::string reason;
-  if (!ReadBurnMsiPackage(bundle, redist.package_id, &package, &reason)) return fail(reason);
-  bundle = std::string();  // its packages are copied out; the console's memory is better spent elsewhere
+  bundle_bytes = bundle.empty() ? mapped.View() : std::string_view(bundle);
+  if (!ReadBurnMsiPackage(bundle_bytes, redist.package_id, &package, &reason)) return fail(reason);
+  // Its packages are copied out; the console's memory is better spent elsewhere.
+  bundle_bytes = {};
+  mapped.Close();
+  bundle = std::string();
   const auto beside = [&](const std::string& name, std::string* bytes) {
     for (auto& [candidate, data] : package.beside)
       if (Lower(candidate) == Lower(name)) {

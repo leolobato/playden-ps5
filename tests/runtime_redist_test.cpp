@@ -7,6 +7,7 @@
 #include "msi_fixture.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -14,6 +15,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <new>
 #include <string>
 #include <sys/resource.h>
 #include <unistd.h>
@@ -26,6 +28,47 @@
       std::exit(1);                                                                     \
     }                                                                                   \
   } while (0)
+
+// Bytes this program holds through operator new, and the most it held since the last reset: what an install
+// costs the console's heap, which is a 128 MiB pool shared with the rest of Playden.
+namespace heap {
+std::atomic<std::size_t> live{0}, peak{0};
+constexpr std::size_t kHeader = alignof(std::max_align_t);
+void* Allocate(std::size_t size) {
+  auto* block = static_cast<unsigned char*>(std::malloc(size + kHeader));
+  if (!block) throw std::bad_alloc();
+  *reinterpret_cast<std::size_t*>(block) = size;
+  const auto now = live += size;
+  for (auto seen = peak.load(); now > seen && !peak.compare_exchange_weak(seen, now);) {}
+  return block + kHeader;
+}
+void Release(void* address) noexcept {
+  if (!address) return;
+  auto* block = static_cast<unsigned char*>(address) - kHeader;
+  live -= *reinterpret_cast<std::size_t*>(block);
+  std::free(block);
+}
+// The most held above what was held when it was called, since then.
+struct Watch {
+  std::size_t base = (peak = live.load(), live.load());
+  std::size_t Above() const { return peak.load() - base; }
+};
+}  // namespace heap
+
+void* operator new(std::size_t size) { return heap::Allocate(size); }
+void* operator new[](std::size_t size) { return heap::Allocate(size); }
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+  try { return heap::Allocate(size); } catch (...) { return nullptr; }
+}
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+  try { return heap::Allocate(size); } catch (...) { return nullptr; }
+}
+void operator delete(void* address) noexcept { heap::Release(address); }
+void operator delete[](void* address) noexcept { heap::Release(address); }
+void operator delete(void* address, std::size_t) noexcept { heap::Release(address); }
+void operator delete[](void* address, std::size_t) noexcept { heap::Release(address); }
+void operator delete(void* address, const std::nothrow_t&) noexcept { heap::Release(address); }
+void operator delete[](void* address, const std::nothrow_t&) noexcept { heap::Release(address); }
 
 using namespace playden::runtime;
 using namespace playden::test::msi;
@@ -163,6 +206,21 @@ void TestCabinet() {
   CHECK(!ExtractCabinet(quantum, [](const std::string&, std::string_view) { return true; }, &reason));
   CHECK(reason == "Quantum cabinets are not supported");
   CHECK(!ExtractCabinet(TwoBlockCabinet(), [](const std::string&, std::string_view) { return false; }, &reason));
+  // Only the members asked for are collected; a skipped one still feeds the next block's history.
+  members.clear();
+  CHECK(ExtractCabinet(TwoBlockCabinet(), [&](const std::string& name, std::string_view data) {
+    members[name] = std::string(data);
+    return true;
+  }, &reason, [](const std::string& name) { return name == "second"; }));
+  CHECK(members.size() == 1 && members["second"] == "0123456789");
+  // A member listed past the end of its folder is refused before its size is set aside.
+  auto inflated = StoredCabinet({{"one", "x"}});
+  inflated.replace(44, 4, std::string("\0\0\0\x10", 4));  // 256 MiB, with one byte in the folder
+  {
+    const heap::Watch watch;
+    CHECK(!ExtractCabinet(inflated, [](const std::string&, std::string_view) { return true; }, &reason));
+    CHECK(reason == "damaged cabinet: files run past their folder" && watch.Above() < (1u << 20));
+  }
   CHECK(!ExtractCabinet("MSCF", [](const std::string&, std::string_view) { return true; }, &reason));
   // LZX: an uncompressed block over two frames, an odd length, and the x86 call translation undone.
   std::string big(40001, '\0');
@@ -173,6 +231,12 @@ void TestCabinet() {
     return true;
   }, &reason));
   CHECK(members["big"] == big && members["small"] == "hello");
+  members.clear();
+  CHECK(ExtractCabinet(LzxCabinet({{"big", big}, {"small", "hello"}}), [&](const std::string& name, std::string_view data) {
+    members[name] = std::string(data);
+    return true;
+  }, &reason, [](const std::string& name) { return name == "small"; }));
+  CHECK(members.size() == 1 && members["small"] == "hello");
   // At output position 2 an encoder turned the call's relative target 98 into the absolute 100.
   std::string call = "ab\xe8";
   Put32(&call, 100);
@@ -996,6 +1060,36 @@ void TestMfcInstall() {
   std::filesystem::remove_all(base);
 }
 
+// Microsoft's x64 bundle is 25 MB and carries an 11 MB package Playden doesn't use: neither may land on the heap
+// (a full pool closes Playden on the console). Without the fix this held the whole bundle, and the unused member
+// on top of it, twice over while it grew.
+void TestMfcInstallMemory() {
+  constexpr std::size_t kFiller = 8u << 20, kLimit = 1u << 20;
+  const auto bundle = MfcBundle(true, true, true, kFiller);
+  std::string reason;
+  {
+    BurnMsiPackage package;
+    const heap::Watch watch;
+    CHECK(ReadBurnMsiPackage(bundle, "vcRuntimeAdditional_x64", &package, &reason));
+    std::fprintf(stderr, "burn package read: %zu bytes above the bundle\n", watch.Above());
+    CHECK(watch.Above() < kLimit);
+    CHECK(package.msi == MfcPackage(true) && package.beside.at("cab1.cab") == MfcCabinet(true));
+  }
+  char pattern[] = "/tmp/playden-mfc-memory-XXXXXX";
+  CHECK(::mkdtemp(pattern));
+  const auto base = std::filesystem::canonical(pattern);
+  const auto redist = SyntheticRedist(true, bundle);
+  WriteText(base / "cache/vc-14.44.35211/x64/VC_redist.x64.exe", bundle);
+  const auto prefix = MakeBottle(base / "prefix");
+  const heap::Watch watch;
+  const auto result = InstallMfcRuntime(redist, (base / "cache").string(), prefix.string(), nullptr, 1700000000);
+  std::fprintf(stderr, "mfc install from the kept copy: %zu bytes held at most\n", watch.Above());
+  CHECK(result.result == "installed" && result.source == "cache" && result.files == 2);
+  CHECK(watch.Above() < kLimit);
+  CHECK(ReadText(prefix / "drive_c/windows/system32/mfc140u.dll") == "MFC64U");
+  std::filesystem::remove_all(base);
+}
+
 void TestMfcScanRecord() {
   char pattern[] = "/tmp/playden-mfc-scan-XXXXXX";
   CHECK(::mkdtemp(pattern));
@@ -1135,6 +1229,7 @@ int main() {
   TestPhysxSetupProgram();
   TestMfcFilter();
   TestMfcInstall();
+  TestMfcInstallMemory();
   TestMfcScanRecord();
   TestMicrosoftVcRedist();
   return 0;

@@ -90,14 +90,15 @@ std::optional<std::vector<std::string_view>> SectionContainers(std::string_view 
   return std::nullopt;
 }
 
-// Members of a cabinet by name; false when one is missing or the cabinet can't be read.
+// Members of a cabinet by name; false when one is missing or the cabinet can't be read. Only those are
+// collected, each moved out as it is done: a bundle's container also holds packages that aren't wanted.
 bool Members(std::string_view cabinet, const std::set<std::string>& names, std::map<std::string, std::string>* out,
              std::string* reason) {
   std::string why;
-  const bool read = ExtractCabinet(cabinet, [&](const std::string& name, std::string_view data) {
-    if (names.count(name) && !out->count(name)) (*out)[name] = std::string(data);
+  const bool read = ExtractCabinet(cabinet, [&](const std::string& name, std::string& data) {
+    if (!out->count(name)) (*out)[name] = std::move(data);
     return out->size() < names.size();  // stop once everything is in
-  }, &why);
+  }, &why, [&](const std::string& name) { return names.count(name) != 0; });
   if (out->size() == names.size()) return true;
   *reason = read ? "a file is missing from the bundle's container" : "the bundle's container could not be read: " + why;
   return false;

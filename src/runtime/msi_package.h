@@ -61,11 +61,13 @@ std::optional<std::string> ReadMsiStream(std::string_view package, const std::st
 // large cabinet's usually do); nullopt otherwise, and the caller reads it with ReadMsiStream.
 std::optional<std::string_view> ViewMsiStream(std::string_view package, const std::string& name);
 
-// Extracts every file of a cabinet (MSZIP, LZX or stored folders; Quantum is refused),
-// calling sink with each member's name and contents in cabinet order. Stops at the first sink
-// that returns false. Cabinets that continue into another one are refused.
-bool ExtractCabinet(std::string_view cabinet, const std::function<bool(const std::string&, std::string_view)>& sink,
-                    std::string* reason);
+// Extracts the files of a cabinet (MSZIP, LZX or stored folders; Quantum is refused), calling sink
+// with each member's name and contents in cabinet order; the sink may move the contents away. With
+// wants, only the members it accepts are collected: the others are decoded past without being kept,
+// and a folder holding none of them isn't decoded. Stops at the first sink that returns false.
+// Cabinets that continue into another one are refused.
+bool ExtractCabinet(std::string_view cabinet, const std::function<bool(const std::string&, std::string&)>& sink,
+                    std::string* reason, const std::function<bool(const std::string&)>& wants = {});
 
 // Evaluates a Windows Installer condition ("VersionNT64", "NOT Installed AND (A = 1)") against
 // properties; missing properties are empty. nullopt when the text can't be parsed.

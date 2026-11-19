@@ -536,8 +536,9 @@ inline std::string MfcPackage(bool x64) {
 }
 
 // A bundle like Microsoft's VC_redist.<arch>.exe: a Minimum package and the Additional one (MFC), listed
-// out of order in the attached container, with an InstallCondition that holds an escaped quote.
-inline std::string MfcBundle(bool x64, bool signed_form = true, bool with_section = true) {
+// out of order in the attached container, with an InstallCondition that holds an escaped quote. filler_bytes:
+// a member of that size no package uses, before the MFC ones (Microsoft's x64 bundle has an 11 MB one).
+inline std::string MfcBundle(bool x64, bool signed_form = true, bool with_section = true, std::size_t filler_bytes = 0) {
   const std::string arch = x64 ? "x64" : "x86", folder = x64 ? "amd64" : "x86";
   const auto msi = MfcPackage(x64), cab = MfcCabinet(x64);
   const std::string minimum = "minimum-msi", minimum_cab = StoredCabinet({{"vcruntime140.dll", "CRT"}});
@@ -564,8 +565,10 @@ inline std::string MfcBundle(bool x64, bool signed_form = true, bool with_sectio
       "<MsiProperty Id=\"ARPSYSTEMCOMPONENT\" Value=\"1\" />"
       "<PayloadRef Id=\"vcRuntimeAdditional_" + arch + "\" /><PayloadRef Id=\"cabAdditional\" /></MsiPackage>\r\n"
       "</Chain></BurnManifest>\r\n";
-  const auto attached = StoredCabinet({{"a0", minimum}, {"a1", cab}, {"a2", minimum_cab}, {"a3", msi}});
-  return BurnBundle(manifest, attached, signed_form, with_section);
+  std::vector<std::pair<std::string, std::string>> members{{"a0", minimum}};
+  if (filler_bytes) members.emplace_back("a9", std::string(filler_bytes, 'f'));
+  members.insert(members.end(), {{"a1", cab}, {"a2", minimum_cab}, {"a3", msi}});
+  return BurnBundle(manifest, StoredCabinet(members), signed_form, with_section);
 }
 
 // A small package like XNA's or a runtime's: files in Program Files\<folder> from its own stored cabinet, and one
