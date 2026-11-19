@@ -618,7 +618,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Trine 4: The Nightmare Prince](https://store.steampowered.com/app/690640) | ✅ Works | 0.25 | — | With changed Game settings; see the reports. (player reports, firmware 13.40) | 1 |
 | [True Fear: Forsaken Souls Part 1](https://store.steampowered.com/app/440420) | ✅ Works | 0.18 | — | Default settings, DualSense. ([#504](https://github.com/leolobato/playden-ps5/pull/504), firmware 12.40) |
 | [TUNIC](https://store.steampowered.com/app/553420) | ✅ Works | 0.11 | Unity (IL2CPP) · D3D11 · DXVK · 64-bit | Default settings. |
-| [Turbo Overkill](https://store.steampowered.com/app/1328350) | ✅ Works | 0.31 | Unity · D3D11 · DXVK · 64-bit | Default settings. Reaches the menu; gameplay not tested. ([#1142](https://github.com/leolobato/playden-ps5/issues/1142)) |
+| [Turbo Overkill](https://store.steampowered.com/app/1328350) | ✅ Works | 0.32 | Unity · D3D11 · DXVK · 64-bit | Default settings. Reaches the menu; gameplay not tested. ([#1142](https://github.com/leolobato/playden-ps5/issues/1142)) |
 | [Turmoil](https://store.steampowered.com/app/361280) | ✅ Works | 0.25 | — | Default settings. (player reports, firmware 13.60) | 1 |
 | [Two Strikes](https://store.steampowered.com/app/1586750) | ✅ Works | 0.13 | — | Default settings, DualSense. ([#189](https://github.com/leolobato/playden-ps5/issues/189), firmware 13.00) | 1 |
 | [Ultimate Marvel vs. Capcom 3](https://store.steampowered.com/app/357190) | ✅ Works | 0.28 | — | Default settings. (player reports, firmware 11.00) | 1 |
