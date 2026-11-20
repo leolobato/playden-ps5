@@ -117,6 +117,10 @@ check(named_run.returncode == 0 and f"command {named}: Bin/Darkwood.exe -windowe
       f"flag {named}: program: Bin/Darkwood.exe\n" in named_run.stdout and
       f"flag {named}: arguments of Bin/Darkwood.exe: -windowed\n" in named_run.stdout,
       "a settings-only recipe that names a program starts it and flags it: " + named_run.stdout)
+# A controller layout is checked as a console with input-map plays it: its profile has map = 1 and the layout's lines.
+layout = run(FIXTURES / "accepted" / "settings-only-layout.json")
+check(layout.returncode == 0 and "ok " in layout.stdout and "refused" not in layout.stdout,
+      "a recipe with a controller layout passes: " + layout.stdout)
 report = json.loads(run("--json", FIXTURES / "accepted" / "settings-only.json", GOOD).stdout)
 check([item["format_version"] for item in report["files"]] == [2, 1], f"json says each file's format: {report}")
 

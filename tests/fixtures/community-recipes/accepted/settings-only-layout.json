@@ -1,0 +1,26 @@
+{
+  "recipe_id": "community-steam-274520-wasd-mouse",
+  "recipe_version": 1,
+  "game": {
+    "store": "steam",
+    "key": "274520",
+    "name": "Darkwood"
+  },
+  "name": "Darkwood",
+  "defaults": {
+    "controller": "keyboard",
+    "controller_layout": "cross = key:space;circle = key:ctrl;square = key:r;triangle = key:e;l1 = key:q;r1 = key:f;l2 = mouse:right;r2 = mouse:left;l3 = key:shift;r3 = key:v;up = mouse:wheel_up;down = mouse:wheel_down;left = key:1;right = key:2;options = key:escape;create = key:tab;touchpad_left = key:m;touchpad_right = key:i;left_stick = keys;left_stick_keys = w,s,a,d;right_stick = mouse"
+  },
+  "locked": [],
+  "community": {
+    "format_version": 2,
+    "title": "WASD and mouse",
+    "tested_kit": "0.19",
+    "tested_firmware": "13.60",
+    "tested_date": "2026-11-20",
+    "status": "works",
+    "notes": "",
+    "author": "",
+    "contributors": []
+  }
+}

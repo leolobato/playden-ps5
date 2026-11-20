@@ -139,13 +139,17 @@ void Check(Result* result) {
   rt::KitCapabilities kit;
   kit.dxvk_config = kit.dxvk_present = kit.environment = kit.registry = kit.input_tuning = true;
   kit.audio_volume = kit.shared_sections = kit.title_any_id = kit.game_root_unowned = kit.bottle_profile_shared = true;
-  kit.opengl_zink = kit.wine_mono = kit.vkd3d_proton = kit.display_120hz = true;
+  kit.opengl_zink = kit.wine_mono = kit.vkd3d_proton = kit.display_120hz = kit.input_map = true;
   rt::EffectiveSettings settings;
   rt::SettingsError error;
   if (!rt::BuildEffectiveSettings(community.recipe, nullptr, {}, kit, &settings, &error)) {
     result->refusals.push_back("Its settings don't apply: " + error.setting_id + ": " + error.message + ".");
     return;
   }
+  // A layout is checked in the profile that plays it, not in the old rows' a console without input-map falls back to.
+  if (const auto layout = community.recipe.defaults.find("controller_layout");
+      layout != community.recipe.defaults.end() && !layout->second.empty() && !rt::ControllerLayoutInEffect(settings))
+    result->refusals.push_back("Its controller layout doesn't apply: " + settings.values.at("controller_layout").reason);
   if (settings.launch) {
     result->command = settings_only && settings.launch->executable == kStandInProgram ? std::string("<Playden's program>")
                                                                                        : settings.launch->executable;
