@@ -792,6 +792,11 @@ void controller_layout_editor(const std::filesystem::path& fixtures, const std::
     check(saved("controller_layout") == "<none>", "layout editor: opening it saves nothing");
     check(find_row(simulation, "layout-input-cross")->value == "Controller \u00b7 A", "layout editor: Cross starts as the pad's A");
     check(simulation.view().input_panel && simulation.view().input_panel->title == "Cross", "layout editor: the panel shows the focused input");
+    {
+        const auto& actions = simulation.state().navigation.modals.back().action_keys;
+        check(!actions.empty() && actions.front() == "layout-templates", "layout editor: Templates is the first row");
+        check(simulation.state().navigation.focus_key == "layout-input-cross", "layout editor: it opens on Cross, not Templates");
+    }
     const auto* reserved = find_row(simulation, "layout-reserved-ps");
     check(reserved && !reserved->enabled && reserved->value == "Reserved", "layout editor: PS is reserved and greyed");
     check(find_row(simulation, "layout-input-create")->subtitle.find("capture menu") != std::string::npos,
@@ -905,8 +910,28 @@ void controller_layout_editor(const std::filesystem::path& fixtures, const std::
           "layout editor: the analog trigger drops the threshold");
 
     // E6: a template replaces every input, after a confirmation, with its mode.
+    const auto cross_now = find_row(simulation, "layout-input-cross")->value;
     simulation.action("triangle");
     check(top() == "layout-templates", "layout editor: Triangle opens Templates");
+    simulation.action("focus:layout-template-wasd-mouse");
+    {
+        const auto& comparison = simulation.view().comparison;
+        check(comparison && comparison->title == "WASD and mouse" && comparison->first == "Input" &&
+                  comparison->column == "This template" && comparison->compact,
+              "layout editor: a focused template shows its preview");
+        check(comparison && comparison->rows.size() == 1 + static_cast<std::size_t>(rt::kLayoutInputCount) &&
+                  comparison->rows.front()[0] == "Controller" && comparison->rows.front()[1] == "Xbox controller" &&
+                  comparison->rows.front()[2] == "Keyboard and mouse",
+              "layout editor: the preview lists the controller and every input");
+        const auto cross = comparison ? std::find_if(comparison->rows.begin(), comparison->rows.end(),
+                                                     [](const auto& row) { return row[0] == "Cross"; })
+                                      : decltype(comparison->rows.begin()){};
+        check(comparison && cross != comparison->rows.end() && (*cross)[1] == cross_now &&
+                  (*cross)[2] == "Key \u00b7 Space",
+              "layout editor: the preview compares an input with the template");
+        check(comparison && comparison->note.rfind("The controller changes, and ", 0) == 0,
+              "layout editor: the preview counts the inputs and names the controller apart");
+    }
     activate(simulation, "layout-template-wasd-mouse");
     check(top() == "confirmation" && simulation.state().navigation.focus_key == "cancel",
           "layout editor: a template asks first, on Cancel");
@@ -916,6 +941,35 @@ void controller_layout_editor(const std::filesystem::path& fixtures, const std::
     check(saved("controller_layout") == rt::FindControllerLayoutTemplate("wasd-mouse")->text && saved("controller") == "keyboard",
           "layout editor: the template and its mode are saved");
     check(find_row(simulation, "layout-input-cross")->value == "Key \u00b7 Space", "layout editor: the list follows the template");
+
+    // The preview tells a stick's tuning apart: the right stick's speed is the only difference from the template.
+    activate(simulation, "layout-input-right_stick");
+    activate(simulation, "layout-tuning-speed");
+    activate(simulation, "layout-value-1500");
+    simulation.action("circle");
+    check(top() == "controller-layout", "layout editor: back on the list after the speed");
+    // From Cross, Up reaches Templates over the divider; Cross opens it and Circle comes back to it.
+    simulation.action("focus:layout-input-cross");
+    simulation.action("up");
+    check(simulation.state().navigation.focus_key == "layout-templates", "layout editor: Up from Cross reaches Templates");
+    simulation.action("cross");
+    check(top() == "layout-templates", "layout editor: Cross on Templates opens the sheet");
+    simulation.action("focus:layout-template-wasd-mouse");
+    {
+        const auto& comparison = simulation.view().comparison;
+        const auto stick = comparison ? std::find_if(comparison->rows.begin(), comparison->rows.end(),
+                                                     [](const auto& row) { return row[0] == "Right stick"; })
+                                      : decltype(comparison->rows.begin()){};
+        check(comparison && stick != comparison->rows.end() && (*stick)[1].find("speed 1500") != std::string::npos &&
+                  (*stick)[2] != (*stick)[1],
+              "layout editor: a tuning-only difference shows in the preview");
+        check(comparison && comparison->note == "1 input changes.", "layout editor: the tuning counts as one change");
+    }
+    simulation.action("focus:cancel");
+    check(!simulation.view().comparison, "layout editor: Cancel shows no preview");
+    simulation.action("circle");
+    check(top() == "controller-layout" && simulation.state().navigation.focus_key == "layout-templates",
+          "layout editor: Circle comes back to Templates");
 
     // Reset removes the layout; the editor shows what the game uses again.
     activate(simulation, "layout-remove");
@@ -1013,6 +1067,13 @@ void controller_layout_editor(const std::filesystem::path& fixtures, const std::
         activate(recipe_game, "layout-template-arrows");
         activate(recipe_game, "layout-template-confirm");
         recipe_game.action("triangle");
+        recipe_game.action("focus:layout-template-gamepad");
+        {
+            const auto& comparison = recipe_game.view().comparison;
+            check(comparison && comparison->rows.front()[2] == "Keyboard and mouse" &&
+                      comparison->note.find("this game requires it") != std::string::npos,
+                  "layout editor: the preview keeps the required Controller");
+        }
         activate(recipe_game, "layout-template-gamepad");
         const auto& confirmation = recipe_game.state().navigation.modals.back();
         check(confirmation.id == "confirmation" && confirmation.body.find("stays Keyboard") != std::string::npos,

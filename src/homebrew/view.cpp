@@ -4909,7 +4909,7 @@ class Render::Impl
             draw_overlay_rows(view, {panel.x + 40.0F, rows_top + drop, panel.w - 80.0F, 942.0F - rows_top - drop});
         }
         if (view.comparison)
-            draw_preset_comparison(*view.comparison, {72.0F, 150.0F, panel.x - 144.0F, 760.0F}, ease);
+            draw_preset_comparison(*view.comparison, view.comparison->compact ? gfx::Rect{72.0F, 60.0F, panel.x - 144.0F, 880.0F} : gfx::Rect{72.0F, 150.0F, panel.x - 144.0F, 760.0F}, ease);
         else if (view.input_panel)
             draw_input_panel(*view.input_panel, {72.0F, 150.0F, panel.x - 144.0F, 760.0F});
         if (layout_sheet(view.surface) && !(current_state_ && current_state_->key_picker.active))
@@ -5028,7 +5028,7 @@ class Render::Impl
         const float current_x = card.x + 48.0F + name_w;
         const float arrow_x = current_x + column_w + 20.0F;
         const float preset_x = arrow_x + 20.0F;
-        ui::text(overlay_, fonts_.semibold, "SETTING", card.x + 48.0F, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
+        ui::text(overlay_, fonts_.semibold, ui::upper(comparison.first), card.x + 48.0F, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
         ui::text(overlay_, fonts_.semibold, "CURRENT", current_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
         ui::text(overlay_, fonts_.semibold, ui::upper(comparison.column), preset_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
         y += 16.0F;
@@ -5042,7 +5042,12 @@ class Render::Impl
         std::vector<const std::array<std::string, 3> *> shown;
         for (const auto &row : comparison.rows)
             shown.push_back(&row);
-        const auto capacity = static_cast<std::size_t>(std::max(0.0F, (table_bottom - y - 52.0F) / 56.0F + 1.0F));
+        const float pitch = comparison.compact ? 29.0F : 56.0F;
+        const float row_h = comparison.compact ? 27.0F : 52.0F;
+        const float text_y = comparison.compact ? 25.0F : 40.0F;
+        const float name_size = comparison.compact ? 18.0F : 21.0F;
+        const float value_size = comparison.compact ? 17.0F : 20.0F;
+        const auto capacity = static_cast<std::size_t>(std::max(0.0F, (table_bottom - y - row_h) / pitch + 1.0F));
         for (auto it = shown.end(); shown.size() > capacity && it != shown.begin();)
         {
             --it;
@@ -5052,25 +5057,25 @@ class Render::Impl
         for (const auto *shown_row : shown)
         {
             const auto &row = *shown_row;
-            if (y + 52.0F > table_bottom)
+            if (y + row_h > table_bottom)
                 break;
             overlay_.rounded_rect({card.x + 40.0F, y + 6.0F, card.w - 80.0F, 1.0F}, 0.0F, kText.with_alpha(0.10F));
             const bool changes = row[1] != row[2];
-            ui::text(overlay_, fonts_.semibold, fit(fonts_.semibold, row[0], 21.0F, name_w - 16.0F), card.x + 48.0F,
-                     y + 40.0F, 21.0F, kText);
-            ui::text(overlay_, fonts_.regular, fit(fonts_.regular, row[1], 20.0F, column_w), current_x, y + 40.0F, 20.0F,
+            ui::text(overlay_, fonts_.semibold, fit(fonts_.semibold, row[0], name_size, name_w - 16.0F), card.x + 48.0F,
+                     y + text_y, name_size, kText);
+            ui::text(overlay_, fonts_.regular, fit(fonts_.regular, row[1], value_size, column_w), current_x, y + text_y, value_size,
                      kSecondary);
             if (changes)
             {
                 // The UI fonts have no arrow glyph: draw one.
-                const float cy = y + 33.0F;
+                const float cy = y + text_y - 7.0F;
                 overlay_.line(arrow_x - 8.0F, cy, arrow_x + 7.0F, cy, 2.0F, kAccent);
                 overlay_.line(arrow_x + 2.0F, cy - 5.0F, arrow_x + 8.0F, cy, 2.0F, kAccent);
                 overlay_.line(arrow_x + 2.0F, cy + 5.0F, arrow_x + 8.0F, cy, 2.0F, kAccent);
             }
-            ui::text(overlay_, fonts_.regular, fit(fonts_.regular, row[2], 20.0F, column_w), preset_x, y + 40.0F, 20.0F,
+            ui::text(overlay_, fonts_.regular, fit(fonts_.regular, row[2], value_size, column_w), preset_x, y + text_y, value_size,
                      changes ? kAccent : kSecondary);
-            y += 56.0F;
+            y += pitch;
         }
         if (start_lines > 0)
         {

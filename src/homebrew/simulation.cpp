@@ -18151,6 +18151,23 @@ std::string StickModeHint(rt::StickMode mode) {
     return "The game gets nothing from it.";
 }
 
+// A stick's tuning where it differs from another's, for a preview whose summaries ("Mouse · Pointer") match:
+// "speed 1500", "dead zone 20%", "Squared", "inverted". Empty when the tuning is the same.
+std::string StickTuningDifference(const rt::LayoutStick& stick, const rt::LayoutStick& other) {
+    if (stick.mode != other.mode) return {};
+    const auto a = rt::ResolvedStick(stick), b = rt::ResolvedStick(other);
+    std::vector<std::string> parts;
+    if (a.speed != b.speed) parts.push_back("speed " + std::to_string(a.speed));
+    if (a.deadzone != b.deadzone) parts.push_back("dead zone " + std::to_string(a.deadzone) + "%");
+    if (a.outer != b.outer) parts.push_back("outer " + std::to_string(a.outer) + "%");
+    if (a.curve != b.curve) parts.push_back(layout::TuningLabel(layout::Tuning::kCurve, stick.mode, static_cast<int>(a.curve)));
+    if (a.invert_x != b.invert_x || a.invert_y != b.invert_y)
+        parts.push_back(a.invert_x || a.invert_y ? "inverted" : "not inverted");
+    std::string text;
+    for (const auto& part : parts) text += (text.empty() ? "" : ", ") + part;
+    return text;
+}
+
 }  // namespace
 
 // Whether the game has a layout, the player's or one its recipe or preset sets (in effect, or waiting for the title's
@@ -18176,18 +18193,22 @@ void Simulation::open_layout_editor() {
     rt::FillControllerLayout(&edit.layout, edit.mode);
     layout_edit_ = std::move(edit);
     state_.key_picker = {};
-    open_modal({"controller-layout", "Controller layout", state_.navigation.focus_key, layout_editor_actions(), 0, false});
+    // Templates sits at the top; the editor opens on the first input, so its panel shows.
+    auto actions = layout_editor_actions();
+    const auto first = std::find_if(actions.begin(), actions.end(), [](const std::string& key) { return key.rfind("layout-input-", 0) == 0; });
+    const int focus = first == actions.end() ? 0 : static_cast<int>(first - actions.begin());
+    open_modal({"controller-layout", "Controller layout", state_.navigation.focus_key, std::move(actions), focus, false});
 }
 
 std::vector<std::string> Simulation::layout_editor_actions() const {
-    std::vector<std::string> actions;
+    std::vector<std::string> actions = {"layout-templates", "divider"};
     for (const auto& section : layout::Sections()) {
         actions.push_back("heading-layout-" + section.key);
         for (const auto input : section.inputs) actions.push_back("layout-input-" + std::string(rt::LayoutInputName(input)));
         if (section.key == "centre")
             for (const auto& reserved : layout::ReservedInputs()) actions.push_back("layout-reserved-" + reserved.key);
     }
-    actions.insert(actions.end(), {"divider", "layout-templates", "layout-remove", "cancel"});
+    actions.insert(actions.end(), {"divider", "layout-remove", "cancel"});
     return actions;
 }
 
@@ -18761,6 +18782,49 @@ void Simulation::build_layout_view(const ModalEntry& modal) {
         view_.legends = {"Cross Choose", "L1/R1 Jump", "Circle Back"};
         if (modal.id == "layout-templates") {
             view_.subtitle = "A template replaces every input. Gamepad, Mouse and Arrow keys send what the presets of the same name send.";
+            // What the focused template sends beside the sheet, input by input against the layout now.
+            if (focused.rfind("layout-template-", 0) == 0)
+                if (const auto* chosen = rt::FindControllerLayoutTemplate(focused.substr(16))) {
+                    // A Controller the recipe locks stays as it is, as the confirmation says: the preview uses that mode.
+                    rt::EffectiveSettings values;
+                    const bool required = EffectiveSettingsFor(edit.game, &values) && controller_required(values);
+                    const std::string mode = required ? edit.mode : chosen->mode;
+                    rt::ControllerLayout after;
+                    if (!rt::ParseControllerLayout(chosen->text, &after, nullptr)) after = {};
+                    rt::FillControllerLayout(&after, mode);
+                    ViewData::Comparison comparison;
+                    comparison.title = chosen->name;
+                    comparison.hint = TemplateDescription(chosen->id);
+                    comparison.first = "Input";
+                    comparison.column = "This template";
+                    comparison.compact = true;
+                    comparison.rows.push_back({"Controller", layout::ModeLabel(edit.mode), layout::ModeLabel(mode)});
+                    int changes = 0;
+                    for (const auto& section : layout::Sections())
+                        for (const auto input : section.inputs) {
+                            auto now = layout::InputSummary(edit.layout, input, edit.mode);
+                            auto then = layout::InputSummary(after, input, mode);
+                            // Sticks that send the same thing with different tuning: the tuning tells them apart.
+                            if (now == then && IsStickInput(input)) {
+                                const auto stick_now = layout::EffectiveStick(edit.layout, input);
+                                const auto stick_then = layout::EffectiveStick(after, input);
+                                if (const auto tuned = StickTuningDifference(stick_now, stick_then); !tuned.empty()) {
+                                    now += " · " + tuned;
+                                    then += " · " + StickTuningDifference(stick_then, stick_now);
+                                }
+                            }
+                            if (now != then) ++changes;
+                            comparison.rows.push_back({layout::InputLabel(input), std::move(now), std::move(then)});
+                        }
+                    const std::string inputs = std::to_string(changes) + (changes == 1 ? " input" : " inputs");
+                    if (edit.mode != mode)
+                        comparison.note = changes == 0 ? "Only the controller changes." : "The controller changes, and " + inputs + ".";
+                    else
+                        comparison.note = changes == 0 ? "The layout already sends this." : inputs + (changes == 1 ? " changes." : " change.");
+                    if (required && chosen->mode != edit.mode)
+                        comparison.note += " Controller stays " + layout::ModeLabel(edit.mode) + ": this game requires it.";
+                    view_.comparison = std::move(comparison);
+                }
         } else {
             panel(layout::DescribeInput(edit.layout, edit.input, edit.mode));
             if (modal.id == "layout-action") view_.subtitle = "What " + layout::InputLabel(edit.input) + " sends to the game.";

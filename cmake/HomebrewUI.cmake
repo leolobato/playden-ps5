@@ -665,6 +665,14 @@ if(BUILD_TESTING)
     add_dependencies(homebrew_my_presets_graphical_test playden_homebrew_assets)
     add_test(NAME homebrew_my_presets_graphical COMMAND homebrew_my_presets_graphical_test
         "${CMAKE_SOURCE_DIR}/fixtures/ui-comparison" "${CMAKE_BINARY_DIR}/my-presets-graphical")
+    # The controller screens on screen: the layout editor, Templates with its preview.
+    add_executable(homebrew_controller_graphical_test "${CMAKE_SOURCE_DIR}/tests/homebrew_controller_graphical_test.cpp")
+    target_compile_features(homebrew_controller_graphical_test PRIVATE cxx_std_20)
+    target_compile_definitions(homebrew_controller_graphical_test PRIVATE PLAYDEN_HOMEBREW_ASSETS_DIR="${playden_homebrew_assets}")
+    target_link_libraries(homebrew_controller_graphical_test PRIVATE playden_homebrew_ui PkgConfig::SDL2 OpenGL::GL)
+    add_dependencies(homebrew_controller_graphical_test playden_homebrew_assets)
+    add_test(NAME homebrew_controller_graphical COMMAND homebrew_controller_graphical_test
+        "${CMAKE_SOURCE_DIR}/fixtures/ui-comparison" "${CMAKE_BINARY_DIR}/controller-graphical")
     add_executable(homebrew_glyph_fallback_graphical_test "${CMAKE_SOURCE_DIR}/tests/homebrew_glyph_fallback_graphical_test.cpp")
     target_compile_features(homebrew_glyph_fallback_graphical_test PRIVATE cxx_std_20)
     target_compile_definitions(homebrew_glyph_fallback_graphical_test PRIVATE PLAYDEN_HOMEBREW_ASSETS_DIR="${playden_homebrew_assets}")

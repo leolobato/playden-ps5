@@ -1344,6 +1344,8 @@ struct ViewData {
         std::vector<std::array<std::string, 3>> rows;
         std::string note;
         std::string column = "This preset";  // the right column's heading
+        std::string first = "Setting";       // the left column's heading
+        bool compact = false;                 // tighter rows, for a long list (a controller layout's inputs)
         std::vector<std::string> starts;      // a community recipe's "Changes how the game starts" items
     };
     std::optional<Comparison> comparison;
