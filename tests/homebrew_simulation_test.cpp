@@ -1440,12 +1440,18 @@ void publisher_sign_in_scenarios(const std::filesystem::path& fixtures, const st
               row("settings-publisher-rockstar") && row("settings-publisher-rockstar")->value == "Not signed in",
           "publisher: signed out");
     {
-        // Accounts section order: Steam's account, then the publisher accounts, before any other row.
+        // Accounts section order: the stores first, then a Publishers heading and the publisher accounts, then Community.
         std::vector<std::string> keys;
         for (const auto& item : simulation.view().rows)
-            if (item.section == "Accounts" && item.kind != playden::homebrew::RowKind::Heading) keys.push_back(item.key);
-        check(keys.size() >= 2 && keys[0] == "settings-account" && keys[1] == "settings-publisher-rockstar",
-              "publisher: its row follows Steam's account");
+            if (item.section == "Accounts") keys.push_back(item.key);
+        const auto at = [&](const std::string& key) {
+            return std::find(keys.begin(), keys.end(), key) - keys.begin();
+        };
+        const auto stores = at("settings-heading-stores"), publishers = at("settings-heading-publishers"),
+                   rockstar = at("settings-publisher-rockstar"), community = at("settings-heading-community");
+        check(stores < at("settings-account") && at("settings-account") < publishers && publishers + 1 == rockstar &&
+                  rockstar < community && community < static_cast<long>(keys.size()),
+              "publisher: its row is under Publishers, after the stores");
     }
     check(simulation.scenario("publisher-account-signed-in") &&
               row("settings-publisher-rockstar")->value == "Signed in as FixturePlayer" &&

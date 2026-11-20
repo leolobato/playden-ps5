@@ -10962,23 +10962,6 @@ void Simulation::rebuild_view() {
             : state_.account().authentication == AuthState::SignedIn
                 ? (!live() || state_.account().last_sync > 0 ? "Steam connected · Synced" : "Steam connected")
                 : "Connect Steam";
-        // Publisher accounts (Rockstar Games), signed in with the phone, for games that start through them.
-        for (const auto& publisher : state_.publishers.publishers) {
-            if (!publisher.shown) continue;
-            auto& item = add("settings-publisher-" + publisher.slug, RowKind::Action, publisher.name,
-                             "publisher-account:" + publisher.slug);
-            if (publisher.account == PublisherAccountState::SignedIn) {
-                item.value = publisher.display.empty() ? "Signed in" : "Signed in as " + publisher.display;
-                if (publisher.obtained_at > 0)
-                    item.subtitle = "Since " + playden::app::FormatLogTimestamp(publisher.obtained_at).substr(0, 10);
-            } else if (publisher.account == PublisherAccountState::Expired) {
-                item.value = "Sign-in expired";
-                item.subtitle = "Sign in again with your phone to play its games";
-            } else {
-                item.value = "Not signed in";
-                item.subtitle = "Sign in with your phone to play its games";
-            }
-        }
         // With GOG listed (gog-store), each store's Sign out is in its own row's sheet, as GOG's is: a separate
         // row between the stores would not say which store it signs out of. Steam's sign-out stays last here.
         if (!gog_store_enabled_ && state_.account().authentication != AuthState::SignedOut)
@@ -11002,6 +10985,25 @@ void Simulation::rebuild_view() {
             auto& suffix = add("settings-title-store", RowKind::Toggle, "Store name in PS5 titles", "toggle-title-store");
             suffix.selected = state_.title_store_suffix;
             suffix.subtitle = "Name game titles like \"Half-Life 2 (Steam)\". Prepared games change with their next Update.";
+        }
+        // Publisher accounts (Rockstar Games), signed in with the phone, for games that start through them: their own
+        // group, as on Playden for macOS, since they are not stores.
+        heading("Publishers");
+        for (const auto& publisher : state_.publishers.publishers) {
+            if (!publisher.shown) continue;
+            auto& item = add("settings-publisher-" + publisher.slug, RowKind::Action, publisher.name,
+                             "publisher-account:" + publisher.slug);
+            if (publisher.account == PublisherAccountState::SignedIn) {
+                item.value = publisher.display.empty() ? "Signed in" : "Signed in as " + publisher.display;
+                if (publisher.obtained_at > 0)
+                    item.subtitle = "Since " + playden::app::FormatLogTimestamp(publisher.obtained_at).substr(0, 10);
+            } else if (publisher.account == PublisherAccountState::Expired) {
+                item.value = "Sign-in expired";
+                item.subtitle = "Sign in again with your phone to play its games";
+            } else {
+                item.value = "Not signed in";
+                item.subtitle = "Sign in with your phone to play its games";
+            }
         }
         heading("Community");
         // The Playden account shares and reports credit (plan 2026-11-06 Phase D).
