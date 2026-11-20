@@ -898,6 +898,23 @@ rt::SettingGroup SheetGroup(const rt::SettingDefinition& definition) {
                                                                                       : definition.group;
 }
 
+// A layout's name as the Controller panel shows it: the built-in template with this text and mode, else "Custom";
+// "None" for no layout. A template's layout in another mode is the player's own.
+std::string LayoutNameFor(const std::string& text, const std::string& mode) {
+    if (text.empty()) return "None";
+    std::string canonical;
+    if (!rt::CanonicalControllerLayout(text, &canonical, nullptr)) return "Custom";
+    for (const auto& item : rt::ControllerLayoutTemplates())
+        if (item.text == canonical && item.mode == mode) return item.name;
+    return "Custom";
+}
+
+// The setting ids the Controller panel holds, shown or not: what Reset on its row puts back.
+bool ControllerPanelSetting(const rt::SettingDefinition& definition) {
+    return definition.group == rt::SettingGroup::kControls || definition.group == rt::SettingGroup::kButtonMapping ||
+           definition.group == rt::SettingGroup::kControllerTuning;
+}
+
 // Game settings › Controller layout and its sheets.
 bool IsLayoutModal(const std::string& id) { return id == "controller-layout" || id.rfind("layout-", 0) == 0; }
 
@@ -935,7 +952,7 @@ std::string action_label(const std::string& key) {
         {"my-preset-rename", "Rename…"}, {"my-preset-update", "Update from this game"}, {"my-preset-delete", "Delete…"},
         {"my-preset-delete-confirm", "Delete"}, {"clear-shader-cache", "Clear shader cache"},
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
-        {"heading-online", "Online"}, {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-sound", "Sound"},
+        {"heading-online", "Online"}, {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-until-kit-update", "Until the runtime kit update"}, {"controller-reset-confirm", "Reset"}, {"heading-sound", "Sound"},
         {"heading-graphics", "Graphics"}, {"heading-steam", "Steam"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"}, {"heading-store", "Store"},
         {"heading-compat", "Compatibility"}, {"compat-filter-any", "Any"}, {"compat-filter-works", "Works"},
         {"compat-filter-partial", "Partial"}, {"compat-filter-broken", "Broken"}, {"compat-filter-refused", "Refused"},
@@ -3874,6 +3891,10 @@ void Simulation::UpdateRuntime(RuntimeState runtime, const std::vector<LiveRunti
     show_update_ready_prompt();
     show_runtime_prompt();
     refresh_manage_games();
+    // A runtime kit update changes which rows the Controller panel holds (the older rows go once layouts play).
+    if (std::any_of(state_.navigation.modals.begin(), state_.navigation.modals.end(),
+                    [](const ModalEntry& modal) { return modal.id == "controller-panel"; }))
+        refresh_game_settings();
     rebuild_view();
 }
 
@@ -7640,6 +7661,35 @@ bool Simulation::scenario(const std::string& name) {
         open_game_settings();
         open_settings_list();
         open_setting("controller_layout");
+    } else if (name == "controller-panel" || name == "controller-panel-old-kit") {
+        // Game settings › Controller: on a runtime kit that reads layouts, with the WASD and mouse layout; or on one that
+        // doesn't yet, where that layout waits for the update and the Mouse preset with a button of the player's plays.
+        const auto id = GameId::Steam(900002);
+        state_.account().authentication = AuthState::SignedIn;
+        state_.navigation.modals.clear();
+        state_.navigation.route = Route::Details;
+        state_.navigation.detail_id = id;
+        state_.navigation.selected_game_id = id;
+        state_.navigation.focus_key = "details-play";
+        const bool old_kit = name == "controller-panel-old-kit";
+        kit_.input_map = !old_kit;
+        kit_.input_map_needs_update = old_kit;
+        kit_.touchpad_switch = true;
+        state_.game_settings.erase(id);
+        auto& record = state_.game_settings[id];
+        record.overrides["controller"] = "keyboard";
+        record.overrides["controller_layout"] = rt::FindControllerLayoutTemplate("wasd-mouse")->text;
+        if (old_kit) {
+            record.overrides["controller_preset"] = "mouse";
+            record.overrides["button.triangle"] = "Escape";
+        }
+        open_game_settings();
+        open_settings_list();
+        state_.navigation.focus_key = "controller-panel";
+        if (auto& list = state_.navigation.modals.back(); list.id == "game-settings-list") {
+            const auto found = std::find(list.action_keys.begin(), list.action_keys.end(), "controller-panel");
+            if (found != list.action_keys.end()) list.focused_action = static_cast<int>(found - list.action_keys.begin());
+        }
     } else if (name.rfind("recipes-", 0) == 0) {
         // Community recipes: the chooser, the Install sheet's Settings row, a switch and Game settings.
         seed_community_scenario(name == "recipes-offline");
@@ -8170,7 +8220,7 @@ void Simulation::rebuild_view() {
                                                                                          : state_.navigation.selected_game_id;
         const bool settings_modal = modal.id == "game-settings" || modal.id == "game-settings-list" ||
                                     modal.id == "preset-picker" || modal.id == "button-mapping" ||
-                                    modal.id == "controller-tuning" ||
+                                    modal.id == "controller-panel" ||
                                     modal.id == "game-maintenance" || !modal.setting_id.empty();
         rt::EffectiveSettings settings_values;
         const bool settings_ready = settings_modal && EffectiveSettingsFor(settings_game, &settings_values);
@@ -8193,6 +8243,9 @@ void Simulation::rebuild_view() {
                 : "For a game's launcher, settings or installer: pick it from the game folder. It runs one time with the Mouse preset; Play and Game settings stay as they are.";
         if (modal.id == "game-settings" || modal.id == "game-maintenance") {
             if (const auto* game = find_game(state_, settings_game)) view_.subtitle = game->title;
+        } else if (modal.id == "controller-panel") {
+            if (const auto* game = find_game(state_, settings_game)) view_.subtitle = game->title + " \u00b7 ";
+            view_.subtitle += "Changes apply the next time the game starts.";
         } else if (modal.id == "game-settings-list") {
             // The count follows each change, so the list says how far it is from the preset.
             if (const auto* game = find_game(state_, settings_game)) view_.subtitle = game->title;
@@ -8571,7 +8624,7 @@ void Simulation::rebuild_view() {
                 item.title = "Update " + std::to_string(runtime_prompt_games_) + (runtime_prompt_games_ == 1 ? " game" : " games");
             // The preparation sheet's own Cancel takes the game out of the queue; its last row only closes it.
             if ((modal.id == "prep-actions" || modal.id == "game-settings") && action_key == "cancel") item.title = "Close";
-            if (modal.id == "game-settings-list" && action_key == "cancel") item.title = "Back";
+            if ((modal.id == "game-settings-list" || modal.id == "controller-panel") && action_key == "cancel") item.title = "Back";
             if (modal.id == "job-actions")
                 if (const auto label = move_action_label(action_key); !label.empty())
                     if (const auto* job = find_job(state_, action_key.substr(action_key.find('-', 4) + 1)); job && job->move)
@@ -9240,6 +9293,7 @@ void Simulation::rebuild_view() {
                 const auto& value = settings_values.values.at(id);
                 item.kind = definition->kind == rt::SettingKind::kText ? RowKind::Text : RowKind::Choice;
                 item.title = definition->label;
+                if (modal.id == "controller-panel" && id == "controller") item.title = "Game sees";
                 item.subtitle = value.available ? definition->effect : value.reason;
                 // A saved choice that cannot apply now (Frame limit 120 at 60 Hz) fell back; the row says why.
                 if (value.available && !value.locked && !value.reason.empty()) item.subtitle = value.reason;
@@ -9257,7 +9311,15 @@ void Simulation::rebuild_view() {
                     else if (!settings_values.launch) item.subtitle = "Pick the game's program from its folder.";
                 }
                 else if (id.rfind("button.", 0) == 0) item.value = binding_label(value.value);
-                else if (id == "controller_layout") item.value = layout_label(rt::ChosenValue(value));
+                else if (id == "controller_layout") {
+                    const auto mode = rt::ChosenValue(settings_values.values.at("controller"));
+                    item.value = LayoutNameFor(rt::ChosenValue(value), mode);
+                    // No layout yet on a runtime kit that reads them: the preset and buttons as the layout they make.
+                    if (rt::ChosenValue(value).empty() && kit_for(settings_game).input_map) {
+                        const auto seed = rt::SeedControllerLayout(settings_values);
+                        item.value = LayoutNameFor(seed.text, seed.mode);
+                    }
+                }
                 else if (id == "program_folder")
                     item.value = value.value.empty() ? "Program's folder" : value.value == "." ? "Game folder" : value.value;
                 else if (definition->kind == rt::SettingKind::kText) item.value = value.value.empty() ? "Empty" : value.value;
@@ -9313,17 +9375,30 @@ void Simulation::rebuild_view() {
                            : saved ? std::to_string(saved) : std::string("None");
                 item.subtitle = from_file ? "From the game's steam_appid.txt" : "Only for games that need Steam. Most run without it.";
                 item.modified = saved != 0;
-            } else if (settings_ready && action_key == "controller-tuning") {
+            } else if (settings_ready && action_key == "controller-panel") {
+                // How the game sees the controller and what plays: "Keyboard and mouse · WASD and mouse layout".
                 item.kind = RowKind::Choice;
-                item.title = "Controller tuning";
-                item.subtitle = "Pointer stick and rumble.";
-                int changed = 0;
+                item.title = "Controller";
+                // What plays now; a choice that waits for the runtime kit update shows in the panel.
+                const auto& controller_row = settings_values.values.at("controller");
+                std::string summary = choice_label(*rt::FindSetting("controller"), controller_row.value);
+                const auto& layout_row = settings_values.values.at("controller_layout");
+                const auto& preset_row = settings_values.values.at("controller_preset");
+                if (rt::ControllerLayoutInEffect(settings_values))
+                    summary += " \u00b7 " + LayoutNameFor(layout_row.value, controller_row.value) + " layout";
+                else if (preset_row.available && !preset_row.value.empty() && preset_row.value != "none")
+                    summary += " \u00b7 " + choice_label(*rt::FindSetting("controller_preset"), preset_row.value) + " preset";
+                item.subtitle = summary;
+                bool changed = false;
                 for (const auto& definition : rt::SettingsCatalogue())
-                    if (definition.group == rt::SettingGroup::kControllerTuning &&
-                        settings_values.values.at(definition.id).source == rt::ValueSource::kUser)
-                        ++changed;
-                item.value = changed == 0 ? "Default" : std::to_string(changed) + " changed";
-                item.modified = changed > 0;
+                    if (ControllerPanelSetting(definition) && definition.id != "launcher_controller_preset") {
+                        const auto found = settings_values.values.find(definition.id);
+                        if (found != settings_values.values.end() &&
+                            (found->second.source == rt::ValueSource::kUser || found->second.unlocked))
+                            changed = true;
+                    }
+                item.value = changed ? "Changed" : "Default";
+                item.modified = changed;
             } else if (settings_ready && action_key == "button-mapping") {
                 item.kind = RowKind::Choice;
                 item.title = "Button mapping";
@@ -10058,6 +10133,7 @@ void Simulation::rebuild_view() {
             else if (focused.rfind("recipe-", 0) == 0)
                 if (const auto offer = chooser_offer(settings_game, focused.substr(7))) build_recipe_comparison(settings_game, *offer);
         }
+        if (settings_ready && modal.id == "controller-panel") build_controller_card(settings_game, settings_values);
         view_.legends = {"Cross Select", "Circle Cancel"};
         if (modal.id == "game-settings") view_.legends = {"Cross Select", "Circle Close"};
         else if (modal.id == "game-settings-list") view_.legends = {"Cross Change", "Triangle Reset", "L1/R1 Jump", "Circle Back"};
@@ -10066,7 +10142,7 @@ void Simulation::rebuild_view() {
                                 ? std::vector<std::string>{"Cross Choose", "Triangle Manage", "L1/R1 Jump", "Circle Back"}
                                 : std::vector<std::string>{"Cross Choose", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "button-mapping") view_.legends = {"Cross Change", "L1/R1 Jump", "Circle Back"};
-        else if (modal.id == "controller-tuning") view_.legends = {"Cross Change", "Triangle Reset", "L1/R1 Jump", "Circle Back"};
+        else if (modal.id == "controller-panel") view_.legends = {"Cross Change", "Triangle Reset", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "game-maintenance") view_.legends = {"Cross Select", "L1/R1 Jump", "Circle Cancel"};
         else if (modal.id == "import-games" || modal.id == "prep-actions") view_.legends = {"Cross Select", "Circle Close"};
         else if (modal.id == "import-programs" || modal.id == "import-choice") view_.legends = {"Cross Select", "Circle Back"};
@@ -14254,7 +14330,7 @@ void Simulation::activate() {
             const std::string preset = settings && values.values["launcher_controller_preset"].value != "mouse" ? "the game's launcher preset"
                                                                                                                 : "the Mouse preset: the left stick moves the pointer and Cross clicks";
             confirm.body = "It starts in launcher mode, with " + preset + ". Its own Play button closes it and starts the game, "
-                           "which then uses your Controller preset.\n\nHold the touchpad for 2 seconds to switch between the two.";
+                           "which then uses its own controller settings.\n\nHold the touchpad for 2 seconds to switch between the two.";
         }
         open_modal(std::move(confirm));
     } else if (action_name == "run-once-dont-show") {
@@ -14576,12 +14652,11 @@ void Simulation::activate() {
         for (const auto& button : rt::ProsperoButtons()) actions.push_back("setting-button." + button);
         actions.push_back("cancel");
         open_modal({"button-mapping", "Button mapping", "button-mapping", std::move(actions), 0, false});
-    } else if (action_name == "controller-tuning") {
-        std::vector<std::string> actions;
-        for (const auto& definition : rt::SettingsCatalogue())
-            if (definition.group == rt::SettingGroup::kControllerTuning) actions.push_back("setting-" + definition.id);
-        actions.push_back("cancel");
-        open_modal({"controller-tuning", "Controller tuning", "controller-tuning", std::move(actions), 0, false});
+    } else if (action_name == "controller-panel") {
+        open_modal({"controller-panel", "Controller", "controller-panel", controller_panel_actions(), 0, false});
+    } else if (action_name == "controller-reset-confirm") {
+        close_modal();
+        reset_controller_settings();
     } else if (action_name.rfind("choice-", 0) == 0 && !state_.navigation.modals.empty() && state_.navigation.modals.back().setting_id.rfind("button.", 0) == 0) {
         const auto id = state_.navigation.modals.back().setting_id;
         const auto index = static_cast<std::size_t>(std::stoul(action_name.substr(7)));
@@ -14606,7 +14681,7 @@ void Simulation::activate() {
                 ModalEntry help{"confirmation", "Start through a launcher", state_.navigation.focus_key,
                                 {"cancel", "launcher-help-dont-show", "launcher-help-on"}, 2, false};
                 help.body = "For a program that opens a launcher window, which starts the game. The launcher uses the Launcher controller "
-                            "preset, and the game your Controller preset. Hold the touchpad for 2 seconds to switch.\n\n"
+                            "preset, and the game its own controller settings. Hold the touchpad for 2 seconds to switch.\n\n"
                             "Leave this off for other games: one that starts helper programs could restart or close.";
                 open_modal(std::move(help));
                 return;
@@ -15501,7 +15576,7 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
               state_.navigation.modals.back().id == "manage-dlc" ||
               state_.navigation.modals.back().id == "workshop-items" ||
               state_.navigation.modals.back().id == "install-version" ||
-              state_.navigation.modals.back().id == "button-mapping" || state_.navigation.modals.back().id == "controller-tuning" ||
+              state_.navigation.modals.back().id == "button-mapping" || state_.navigation.modals.back().id == "controller-panel" ||
               IsLayoutModal(state_.navigation.modals.back().id) ||
               !state_.navigation.modals.back().setting_id.empty()))
         move(0, logical_action == "l1" ? -5 : 5);  // L1/R1 jump five rows, as on macOS
@@ -15542,7 +15617,10 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
              state_.navigation.modals.back().id == "preset-picker" && state_.navigation.focus_key.rfind("mypreset-my-", 0) == 0)
         open_my_preset_menu(state_.navigation.focus_key.substr(9));
     else if (logical_action == "triangle" && !state_.editor.active && !state_.navigation.modals.empty() &&
-             (state_.navigation.modals.back().id == "game-settings-list" || state_.navigation.modals.back().id == "controller-tuning" ||
+             state_.navigation.modals.back().id == "game-settings-list" && state_.navigation.focus_key == "controller-panel")
+        ask_controller_reset();
+    else if (logical_action == "triangle" && !state_.editor.active && !state_.navigation.modals.empty() &&
+             (state_.navigation.modals.back().id == "game-settings-list" || state_.navigation.modals.back().id == "controller-panel" ||
               !state_.navigation.modals.back().setting_id.empty())) {
         // Triangle returns the focused setting (or the open picker's setting) to the preset value.
         const auto& modal = state_.navigation.modals.back();
@@ -17602,10 +17680,9 @@ std::vector<std::string> Simulation::game_settings_list_actions() const {
     }
     actions.push_back("heading-display");
     rows(G::kDisplay);
+    // Controls: one row that opens the Controller panel (controller_panel_actions).
     actions.push_back("heading-controls");
-    rows(G::kControls);
-    actions.push_back("button-mapping");
-    actions.push_back("controller-tuning");
+    actions.push_back("controller-panel");
     actions.push_back("heading-sound");
     rows(G::kSound);
     actions.push_back("section-compatibility");
@@ -17644,13 +17721,12 @@ std::vector<Simulation::SettingsSummaryLine> Simulation::settings_summary(GameId
     if (changed.empty()) return lines;
     rt::EffectiveSettings values;
     const bool known = EffectiveSettingsFor(id, &values);
-    int buttons = 0, tuning = 0;
+    int buttons = 0;
     bool program = false;
     for (const auto& definition : rt::SettingsCatalogue()) {
         if (!changed.count(definition.id)) continue;
-        // Button mapping and Controller tuning are one row each in the list: one line each here.
+        // Button mapping is one row in the Controller panel: one line here.
         if (definition.id.rfind("button.", 0) == 0) { ++buttons; continue; }
-        if (definition.group == rt::SettingGroup::kControllerTuning) { ++tuning; continue; }
         SettingsSummaryLine line{"summary-" + definition.id, definition.id, definition.label, {}, SheetGroup(definition)};
         // A launch option and a program from the game folder are both the Program row.
         if (definition.id == "launch_option" || definition.id == "program") {
@@ -17676,13 +17752,127 @@ std::vector<Simulation::SettingsSummaryLine> Simulation::settings_summary(GameId
         lines.push_back(std::move(line));
     }
     if (buttons > 0) lines.push_back({"summary-buttons", "", "Button mapping", std::to_string(buttons) + (buttons == 1 ? " button" : " buttons"), rt::SettingGroup::kButtonMapping});
-    if (tuning > 0) lines.push_back({"summary-tuning", "", "Controller tuning", std::to_string(tuning) + " changed", rt::SettingGroup::kControllerTuning});
     // In the list's order: SettingGroup is the sheet's order (Button mapping and Controller tuning after Controls), and
     // the catalogue's order within a group.
     std::stable_sort(lines.begin(), lines.end(), [](const SettingsSummaryLine& left, const SettingsSummaryLine& right) {
         return left.group < right.group;
     });
     return lines;
+}
+
+// Game settings › Controller: how the game sees the controller, the layout, Touchpad hold and Rumble. While the game's
+// runtime kit can't read layouts, the rows that play until then follow (under a heading when a layout waits for the
+// update): the preset, Button mapping and the pointer stick. A layout replaces them, so they don't show beside one.
+std::vector<std::string> Simulation::controller_panel_actions() const {
+    const auto game = state_.navigation.selected_game_id;
+    std::vector<std::string> actions;
+    const auto add = [&](const char* id) {
+        const auto* definition = rt::FindSetting(id);
+        if (definition && game_settings_row_shown(*definition, game)) actions.push_back(std::string("setting-") + id);
+    };
+    add("controller");
+    add("controller_layout");
+    add("touchpad_hold");
+    add("rumble");
+    if (!kit_for(game).input_map) {
+        rt::EffectiveSettings values;
+        if (EffectiveSettingsFor(game, &values)) {
+            const auto& layout = values.values.at("controller_layout");
+            if (layout.waits_for_update && !rt::ChosenValue(layout).empty()) actions.push_back("heading-until-kit-update");
+        }
+        add("controller_preset");
+        actions.push_back("button-mapping");
+        add("pointer_stick");
+        add("pointer_speed");
+    }
+    actions.insert(actions.end(), {"divider", "cancel"});
+    return actions;
+}
+
+// The card beside the Controller panel: what each input sends now, as a layout (a preset and button rows as their
+// layout equivalent). A layout that waits for the runtime kit update isn't what plays yet: the card shows what does,
+// and says what comes after the update.
+void Simulation::build_controller_card(GameId game, const rt::EffectiveSettings& values) {
+    // What plays now: a choice that waits for the runtime kit update (a layout, the PlayStation controller) isn't yet.
+    rt::EffectiveSettings now = values;
+    auto& layout_row = now.values["controller_layout"];
+    const std::string waiting = layout_row.waits_for_update ? rt::ChosenValue(layout_row) : std::string();
+    if (!layout_row.available) layout_row.value.clear();
+    layout_row.after_update.clear();
+    layout_row.waits_for_update = false;
+    auto& controller = now.values["controller"];
+    controller.after_update.clear();
+    controller.waits_for_update = false;
+    const auto seed = rt::SeedControllerLayout(now);
+    rt::ControllerLayout layout;
+    if (!rt::ParseControllerLayout(seed.text, &layout, nullptr)) layout = {};
+    rt::FillControllerLayout(&layout, seed.mode);
+    ViewData::Comparison card;
+    const auto& preset = now.values["controller_preset"];
+    std::string name;
+    if (rt::ControllerLayoutInEffect(now)) name = LayoutNameFor(now.values["controller_layout"].value, seed.mode);
+    else if (preset.available && !preset.value.empty() && preset.value != "none")
+        name = choice_label(*rt::FindSetting("controller_preset"), preset.value) + " preset";
+    else name = layout::ModeLabel(seed.mode);
+    card.title = waiting.empty() ? name : "Today: " + name;
+    card.hint = "What each input sends now.";
+    card.first = "Input";
+    card.column = "Sends";
+    card.compact = true;
+    card.single = true;
+    card.rows.push_back({"Controller", layout::ModeLabel(seed.mode), layout::ModeLabel(seed.mode)});
+    for (const auto& section : layout::Sections())
+        for (const auto input : section.inputs) {
+            // A controller button the mode has no controller for reaches nothing: say so, as the editor does.
+            std::string sends = layout::InputSummary(layout, input, seed.mode);
+            if (rt::LayoutInputKindOf(input) == rt::LayoutInputKind::kStick) {
+                const auto mode = layout::EffectiveStick(layout, input).mode;
+                const bool pad = mode == rt::StickMode::kPadLeftStick || mode == rt::StickMode::kPadRightStick ||
+                                 mode == rt::StickMode::kPadDpad;
+                if (pad && seed.mode == "keyboard") sends = "Nothing";
+            } else if (!layout::SilentReason(layout::EffectiveTarget(layout, input, seed.mode), seed.mode).empty()) {
+                sends = "Nothing";
+            }
+            card.rows.push_back({layout::InputLabel(input), sends, sends});
+        }
+    if (!waiting.empty())
+        card.note = "\u26a0 After the runtime kit update the game uses the " + layout_label(waiting) +
+                    " layout instead: Play or Maintenance > Update runtime.";
+    (void)game;
+    view_.comparison = std::move(card);
+}
+
+// Triangle on Game settings' Controller row: everything the panel holds goes back to the preset or the recipe, after
+// a question that says how many settings change.
+void Simulation::ask_controller_reset() {
+    const auto game = state_.navigation.selected_game_id;
+    const auto record = state_.game_settings.find(game);
+    if (record == state_.game_settings.end()) return;
+    int count = 0;
+    for (const auto& definition : rt::SettingsCatalogue())
+        if (ControllerPanelSetting(definition) && (record->second.overrides.count(definition.id) ||
+                                                   record->second.overrides.count(rt::kUnlockPrefix + definition.id)))
+            ++count;
+    if (count == 0) return;
+    ModalEntry confirmation{"confirmation", "Reset the controller settings?", state_.navigation.focus_key,
+                            {"cancel", "controller-reset-confirm"}, 0, false};
+    confirmation.body = std::to_string(count) + (count == 1 ? " setting goes" : " settings go") +
+                        " back to the preset: how the game sees the controller, its layout, Touchpad hold, Rumble and the older controller rows.";
+    open_modal(std::move(confirmation));
+}
+
+void Simulation::reset_controller_settings() {
+    const auto game = state_.navigation.selected_game_id;
+    const auto record = state_.game_settings.find(game);
+    if (record == state_.game_settings.end() || !can_change_game_settings()) return;
+    for (const auto& definition : rt::SettingsCatalogue())
+        if (ControllerPanelSetting(definition)) {
+            record->second.overrides.erase(definition.id);
+            record->second.overrides.erase(rt::kUnlockPrefix + definition.id);
+        }
+    ++record->second.revision;
+    save_profile();
+    refresh_game_settings();
 }
 
 // Whether the sheet lists a setting's row: Known problems only for a game that has one.
@@ -18638,9 +18828,9 @@ void Simulation::build_layout_row(const ModalEntry& modal, const std::string& ke
     }
     if (key == "layout-remove") {
         item.title = "Remove the layout";
-        item.subtitle = "The game goes back to its controller preset and button mapping. Controller stays as it is.";
+        item.subtitle = "The game goes back to the controls it had before the layout. Controller stays as it is.";
         item.enabled = layout_in_settings(edit.game);
-        if (!item.enabled) item.subtitle = "No layout is set: the game uses its controller preset and button mapping.";
+        if (!item.enabled) item.subtitle = "No layout is set yet.";
         return;
     }
     const auto target = layout::EffectiveTarget(edit.layout, edit.input, mode);
@@ -18781,7 +18971,7 @@ void Simulation::build_layout_view(const ModalEntry& modal) {
         view_.eyebrow = "Controller layout";
         view_.legends = {"Cross Choose", "L1/R1 Jump", "Circle Back"};
         if (modal.id == "layout-templates") {
-            view_.subtitle = "A template replaces every input. Gamepad, Mouse and Arrow keys send what the presets of the same name send.";
+            view_.subtitle = "A template replaces every input and sets how the game sees the controller.";
             // What the focused template sends beside the sheet, input by input against the layout now.
             if (focused.rfind("layout-template-", 0) == 0)
                 if (const auto* chosen = rt::FindControllerLayoutTemplate(focused.substr(16))) {
@@ -20149,9 +20339,10 @@ std::string Simulation::vote_words(const cm::CastVote* vote) const {
 
 void Simulation::refresh_game_settings() {
     for (auto& modal : state_.navigation.modals) {
-        if (modal.id != "game-settings" && modal.id != "game-settings-list") continue;
+        if (modal.id != "game-settings" && modal.id != "game-settings-list" && modal.id != "controller-panel") continue;
         const auto focused = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
-        modal.action_keys = modal.id == "game-settings" ? game_settings_actions() : game_settings_list_actions();
+        modal.action_keys = modal.id == "game-settings" ? game_settings_actions()
+                          : modal.id == "controller-panel" ? controller_panel_actions() : game_settings_list_actions();
         const auto found = std::find(modal.action_keys.begin(), modal.action_keys.end(), focused);
         modal.focused_action = found == modal.action_keys.end() ? 0 : static_cast<int>(found - modal.action_keys.begin());
         if (&modal == &state_.navigation.modals.back()) state_.navigation.focus_key = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];

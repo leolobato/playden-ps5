@@ -13,6 +13,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <set>
 #include <string>
 #include <unistd.h>
 #include "steam_id.h"
@@ -393,6 +394,14 @@ void load_settings_data(playden::homebrew::Simulation& simulation, const std::fi
 
 // Game settings has two pages: the summary, and over it the list that Change settings… opens. Tests name rows on
 // either page; this goes to the page that has the row, as a player would, and stays put when neither has it.
+// Rows that live in Game settings › Controller, the panel the Controls row opens.
+bool controller_panel_key(const std::string& key) {
+    static const std::set<std::string> keys = {"setting-controller", "setting-controller_layout", "setting-controller_preset",
+                                               "setting-touchpad_hold", "setting-rumble", "setting-pointer_stick",
+                                               "setting-pointer_speed", "button-mapping", "heading-until-kit-update"};
+    return keys.count(key) != 0;
+}
+
 bool settings_page_with(playden::homebrew::Simulation& simulation, const std::string& key) {
     const auto shown = [&] {
         for (const auto& row : simulation.view().rows)
@@ -410,6 +419,22 @@ bool settings_page_with(playden::homebrew::Simulation& simulation, const std::st
             simulation.action("focus:" + start_focus);
         return false;
     };
+    // The Controller panel: its rows are one Cross away from the list; anything else is back on the list.
+    if (modals.back().id == "controller-panel") {
+        if (controller_panel_key(key)) return restore();
+        simulation.action("circle");
+        if (shown()) return true;
+    }
+    if (controller_panel_key(key)) {
+        if (simulation.state().navigation.modals.back().id == "game-settings" && simulation.action("focus:change-settings"))
+            simulation.action("cross");
+        if (simulation.state().navigation.modals.back().id == "game-settings-list" && simulation.action("focus:controller-panel")) {
+            simulation.action("cross");
+            if (shown()) return true;
+            simulation.action("circle");
+        }
+        return restore();
+    }
     if (modals.back().id == "game-settings-list") {
         simulation.action("circle");
         if (shown()) return true;
@@ -468,6 +493,7 @@ void t08_nested_settings_restore_openers(const std::filesystem::path& fixtures,
     activate(simulation, "choice-0");
     check(!simulation.state().game_settings.at(SteamId(900001)).overrides.count("controller"), "T08 inherited choice is not an override");
     // Triangle resets the focused row to the preset value.
+    settings_page_with(simulation, "setting-resolution");
     check(simulation.action("focus:setting-resolution") && simulation.action("triangle"), "T08 triangle resets");
     check(!simulation.state().game_settings.at(SteamId(900001)).overrides.count("resolution"), "T08 reset removes the override");
     simulation.action("circle");  // the list returned to the summary
@@ -516,9 +542,9 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     check(top == std::vector<std::string>{"heading-game", "setting-launch_option", "setting-extra_arguments",
                                           "heading-display", "setting-resolution", "setting-refresh", "setting-frame_limit",
                                           "setting-framegen", "setting-vsync", "setting-performance_overlay", "setting-overlay_detail",
-                                          "setting-scaling", "setting-window_view", "heading-controls", "setting-controller",
-                                          "setting-controller_layout", "setting-controller_preset", "setting-touchpad_hold", "button-mapping", "controller-tuning", "heading-sound",
-                                          "setting-volume", "setting-microphone", "section-compatibility", "section-advanced"},
+                                          "setting-scaling", "setting-window_view", "heading-controls", "controller-panel", "heading-sound",
+                                          "setting-volume", "setting-microphone", "section-compatibility", "section-advanced", "divider",
+                                          "cancel"},
           "T08b the sheet groups rows by topic");
     check(keys.back() == "cancel" && find_row(simulation, "cancel")->title == "Back", "T08b the list ends with Back");
     check(find_row(simulation, "heading-display") && find_row(simulation, "heading-display")->title == "Display" &&
@@ -533,10 +559,28 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     check(simulation.state().navigation.focus_key == "setting-frame_limit", "T08b Frame limit follows Refresh rate");
     simulation.action("focus:setting-window_view");
     simulation.action("down");
-    check(simulation.state().navigation.focus_key == "setting-controller", "T08b Down steps over a heading");
-    simulation.action("focus:setting-controller");
+    check(simulation.state().navigation.focus_key == "controller-panel", "T08b Down steps over a heading");
+    simulation.action("focus:controller-panel");
     simulation.action("up");
     check(simulation.state().navigation.focus_key == "setting-window_view", "T08b Up steps over a heading");
+    // Controls is one row: the Controller panel, with the older rows while the runtime kit can't read layouts.
+    simulation.action("focus:controller-panel");
+    simulation.action("cross");
+    {
+        const auto& panel = simulation.state().navigation.modals.back();
+        check(panel.id == "controller-panel" &&
+                  panel.action_keys == std::vector<std::string>{"setting-controller", "setting-controller_layout",
+                                                                "setting-touchpad_hold", "setting-rumble",
+                                                                "setting-controller_preset", "button-mapping",
+                                                                "setting-pointer_stick", "setting-pointer_speed", "divider",
+                                                                "cancel"},
+              "T08b the Controller panel lists the controller rows, the older ones last");
+        check(find_row(simulation, "setting-controller")->title == "Game sees", "T08b the mode row is Game sees in the panel");
+        check(simulation.view().comparison && simulation.view().comparison->single &&
+                  simulation.view().comparison->rows.size() == 21,
+              "T08b the panel's card lists what each input sends");
+    }
+    simulation.action("circle");
     // Compatibility expands inline; graphics is locked by the recipe and scaling is
     // disabled on DXVK with its reason.
     check(!find_row(simulation, "setting-graphics"), "T08b Compatibility starts collapsed");
@@ -596,19 +640,17 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     check(rt::RenderProsperoProfile(simulation.RecipeFor(SteamId(900001)), settings, {"playden-steam-900001", "/data/playden/games/900001"},
                                     &generated, &reason), "T08b sheet settings render a valid prospero profile");
     // Reset all returns to the preset.
-    // Controller tuning is a submenu of Controls; its row counts the changed rows in it.
-    check(find_row(simulation, "controller-tuning") && find_row(simulation, "controller-tuning")->value == "Default" &&
-              !find_row(simulation, "setting-pointer_speed"),
-          "T08b controller tuning rows live in their submenu");
-    activate(simulation, "controller-tuning");
-    check(simulation.state().navigation.modals.back().id == "controller-tuning", "T08b controller tuning opens");
+    // Pointer speed is in the Controller panel; the Controls row says the panel has a change.
+    check(find_row(simulation, "controller-panel") && find_row(simulation, "controller-panel")->value == "Default",
+          "T08b the Controller row starts at Default");
     activate(simulation, "setting-pointer_speed");
     activate(simulation, "choice-4");
     check(!simulation.state().game_settings.at(SteamId(900001)).overrides.empty(), "T08b override recorded");
-    check(simulation.state().navigation.modals.back().id == "controller-tuning", "T08b a choice returns to controller tuning");
+    check(simulation.state().navigation.modals.back().id == "controller-panel", "T08b a choice returns to the Controller panel");
     simulation.action("circle");
-    check(find_row(simulation, "controller-tuning") && find_row(simulation, "controller-tuning")->value == "1 changed",
-          "T08b controller tuning counts its changes");
+    check(find_row(simulation, "controller-panel") && find_row(simulation, "controller-panel")->value == "Changed" &&
+              find_row(simulation, "controller-panel")->modified,
+          "T08b the Controller row marks its change");
     activate(simulation, "reset-settings");
     check(simulation.state().game_settings.at(SteamId(900001)).overrides.empty(), "T08b reset all clears overrides");
     simulation.action("circle");
@@ -740,16 +782,12 @@ void controller_layout_replaces_rows(const std::filesystem::path& fixtures, cons
     activate(simulation, "change-settings");
     const auto* layout = find_row(simulation, "setting-controller_layout");
     check(layout && layout->value == "WASD and mouse" && layout->enabled, "layout: the row shows the built-in layout's name");
-    for (const char* id : {"setting-controller_preset", "setting-touchpad_hold"}) {
-        const auto* row = find_row(simulation, id);
-        check(row && !row->enabled && row->subtitle == rt::kSetByControllerLayout, "layout: a replaced row says so");
-    }
+    // The rows the layout replaces aren't in the Controller panel beside it; Touchpad hold stays and says so.
+    for (const char* id : {"setting-controller_preset", "button-mapping", "setting-pointer_stick", "setting-pointer_speed"})
+        check(!find_row(simulation, id), "layout: a replaced row is not in the panel");
+    const auto* hold = find_row(simulation, "setting-touchpad_hold");
+    check(hold && !hold->enabled && hold->subtitle == rt::kSetByControllerLayout, "layout: Touchpad hold says the layout replaces it");
     check(find_row(simulation, "setting-controller")->enabled, "layout: Controller stays");
-    check(find_row(simulation, "button-mapping")->subtitle == rt::kSetByControllerLayout, "layout: Button mapping says so");
-    activate(simulation, "controller-tuning");
-    check(!find_row(simulation, "setting-pointer_stick")->enabled &&
-              find_row(simulation, "setting-pointer_stick")->subtitle == rt::kSetByControllerLayout,
-          "layout: the pointer stick says so");
     while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
     // Without input-map the row is off and names the runtime kit it needs; the old rows apply.
     simulation.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"touchpad-switch"}, true));
@@ -760,6 +798,130 @@ void controller_layout_replaces_rows(const std::filesystem::path& fixtures, cons
               find_row(simulation, "setting-controller_layout")->subtitle == "Needs a newer runtime kit with controller layouts.",
           "layout: without input-map the row names the runtime kit it needs");
     check(find_row(simulation, "setting-controller_preset")->enabled, "layout: the preset applies again");
+    check(find_row(simulation, "button-mapping") && find_row(simulation, "setting-pointer_stick"),
+          "layout: without input-map the older rows are in the panel");
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+    std::filesystem::remove(settings_file);
+}
+
+// Game settings › Controller: the panel the Controls row opens. On a runtime kit that reads layouts only the layout's
+// rows show, the Layout row names what the preset and buttons make; while a layout waits for the runtime kit update the
+// older rows play under their heading and the card says what plays today. Triangle on the row resets the whole panel.
+void controller_panel(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    load_settings_data(simulation, fixtures);
+    const auto settings_file = profile.string() + ".panel-settings";
+    const auto top = [&] {
+        return simulation.state().navigation.modals.empty() ? std::string() : simulation.state().navigation.modals.back().id;
+    };
+    rt::GameSettingsRecord record;
+    record.overrides = {{"controller", "keyboard"}, {"controller_preset", "mouse"}, {"button.triangle", "Escape"},
+                        {"resolution", "2560x1440"}};
+    std::string reason;
+    check(rt::SaveGameSettingsFile(settings_file, {{SteamId(900001), record}}, &reason), "panel: settings saved");
+    simulation.SetGameSettingsFile(settings_file);
+    simulation.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"input-map", "touchpad-switch"}, true));
+    simulation.action("details:900001");
+    activate(simulation, "details-more");
+    activate(simulation, "game-settings");
+    activate(simulation, "change-settings");
+    const auto* row = find_row(simulation, "controller-panel");
+    check(row && row->title == "Controller" && row->value == "Changed" && row->modified &&
+              row->subtitle.find("Keyboard and mouse") == 0 && row->subtitle.find("Mouse preset") != std::string::npos,
+          "panel: the Controls row names the mode and what plays");
+    activate(simulation, "controller-panel");
+    check(top() == "controller-panel", "panel: Cross opens the Controller panel");
+    check(!find_row(simulation, "setting-controller_preset") && !find_row(simulation, "button-mapping"),
+          "panel: a runtime kit that reads layouts shows no older rows");
+    const auto* layout = find_row(simulation, "setting-controller_layout");
+    check(layout && layout->value != "None" && !layout->value.empty(), "panel: the Layout row names what the preset makes");
+    check(simulation.view().comparison && simulation.view().comparison->title == "Mouse preset" &&
+              simulation.view().comparison->note.empty(),
+          "panel: the card says what plays");
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+
+    // A layout that waits for the runtime kit update: the older rows under their heading, the card says what plays.
+    record.overrides["controller_layout"] = rt::FindControllerLayoutTemplate("wasd-mouse")->text;
+    check(rt::SaveGameSettingsFile(settings_file, {{SteamId(900001), record}}, &reason), "panel: layout saved");
+    simulation.SetGameSettingsFile(settings_file);
+    rt::KitCapabilities waiting;
+    waiting.input_map_needs_update = true;
+    waiting.touchpad_switch = true;
+    simulation.SetKitCapabilities(waiting);
+    activate(simulation, "details-more");
+    activate(simulation, "game-settings");
+    activate(simulation, "change-settings");
+    activate(simulation, "controller-panel");
+    const auto& keys = simulation.state().navigation.modals.back().action_keys;
+    const auto heading = std::find(keys.begin(), keys.end(), "heading-until-kit-update");
+    check(heading != keys.end() && heading + 1 != keys.end() && *(heading + 1) == "setting-controller_preset",
+          "panel: the older rows follow their heading");
+    check(find_row(simulation, "heading-until-kit-update")->title == "Until the runtime kit update", "panel: the heading's words");
+    check(find_row(simulation, "setting-controller_layout")->subtitle == rt::kAppliesAfterKitUpdate &&
+              std::string(rt::kAppliesAfterKitUpdate).find("runtime kit update") != std::string::npos,
+          "panel: the layout says it waits for the runtime kit update");
+    simulation.action("focus:setting-controller");
+    check(simulation.view().comparison && simulation.view().comparison->title == "Today: Mouse preset" &&
+              simulation.view().comparison->note.find("WASD and mouse layout instead") != std::string::npos,
+          "panel: the card shows today's controls and what comes after the update");
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+
+    // Triangle on the Controller row: every panel setting goes back, after a question; others stay.
+    activate(simulation, "details-more");
+    activate(simulation, "game-settings");
+    activate(simulation, "change-settings");
+    simulation.action("focus:controller-panel");
+    simulation.action("triangle");
+    check(top() == "confirmation" && simulation.state().navigation.modals.back().title == "Reset the controller settings?" &&
+              simulation.state().navigation.modals.back().body.find("4 settings") == 0,
+          "panel: Reset asks first and counts the settings");
+    simulation.action("focus:controller-reset-confirm");
+    simulation.action("cross");
+    const auto& overrides = simulation.state().game_settings.at(SteamId(900001)).overrides;
+    check(top() == "game-settings-list" && overrides.size() == 1 && overrides.count("resolution"),
+          "panel: Reset clears the controller settings and keeps the others");
+    check(find_row(simulation, "controller-panel")->value == "Default", "panel: the row is back to Default");
+    simulation.action("triangle");
+    check(top() == "game-settings-list", "panel: nothing to reset asks nothing");
+
+    // A Gamepad layout with Keyboard and mouse: the panel names it as the player's own, and the card says the
+    // controller buttons reach nothing.
+    simulation.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"input-map", "touchpad-switch"}, true));
+    record.overrides = {{"controller", "keyboard"}, {"controller_layout", rt::FindControllerLayoutTemplate("gamepad")->text}};
+    check(rt::SaveGameSettingsFile(settings_file, {{SteamId(900001), record}}, &reason), "panel: Gamepad layout saved");
+    simulation.SetGameSettingsFile(settings_file);
+    activate(simulation, "controller-panel");
+    check(find_row(simulation, "setting-controller_layout")->value == "Custom",
+          "panel: a template's layout in another mode is the player's own");
+    simulation.action("focus:setting-controller");
+    {
+        const auto& card = simulation.view().comparison;
+        const auto cross = card ? std::find_if(card->rows.begin(), card->rows.end(), [](const auto& row) { return row[0] == "Cross"; })
+                                : decltype(card->rows.begin()){};
+        check(card && cross != card->rows.end() && (*cross)[2] == "Nothing", "panel: a controller button sends nothing without a controller");
+    }
+    // Back from the layout editor returns to its row, and Back from the panel to the Controller row.
+    activate(simulation, "setting-controller_layout");
+    check(top() == "controller-layout", "panel: the layout row opens the editor");
+    simulation.action("circle");
+    check(top() == "controller-panel" && simulation.state().navigation.focus_key == "setting-controller_layout",
+          "panel: Back from the editor returns to the layout row");
+    simulation.action("circle");
+    check(top() == "game-settings-list" && simulation.state().navigation.focus_key == "controller-panel",
+          "panel: Back from the panel returns to the Controller row");
+
+    // A record at its last revision: Reset asks, then changes nothing.
+    record.revision = std::numeric_limits<std::uint64_t>::max();
+    check(rt::SaveGameSettingsFile(settings_file, {{SteamId(900001), record}}, &reason), "panel: exhausted record saved");
+    simulation.SetGameSettingsFile(settings_file);
+    simulation.action("focus:controller-panel");
+    simulation.action("triangle");
+    simulation.action("focus:controller-reset-confirm");
+    simulation.action("cross");
+    check(simulation.state().game_settings.at(SteamId(900001)).overrides == record.overrides &&
+              simulation.state().game_settings.at(SteamId(900001)).revision == std::numeric_limits<std::uint64_t>::max(),
+          "panel: Reset leaves an exhausted record as it was");
     while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
     std::filesystem::remove(settings_file);
 }
@@ -1098,9 +1260,10 @@ void controller_layout_editor(const std::filesystem::path& fixtures, const std::
     activate(simulation, "details-more");
     activate(simulation, "game-settings");
     activate(simulation, "change-settings");
+    settings_page_with(simulation, "setting-controller_layout");
     simulation.action("focus:setting-controller_layout");
     simulation.action("cross");
-    check(top() == "game-settings-list", "layout editor: without input-map the editor does not open");
+    check(top() == "controller-panel", "layout editor: without input-map the editor does not open");
     while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
 }
 
@@ -3034,8 +3197,7 @@ void reset_keeps_the_imported_program(const std::filesystem::path& fixtures, con
     std::filesystem::remove(settings_file);
 }
 
-// The summary on Game settings: one line per change in the list's order, Button mapping and Controller tuning as one
-// line each; the focus passes over it, the list counts the changes, and a collapsed section names its own.
+// The summary on Game settings: one line per change in the list's order, Button mapping as one line; the focus passes over it, the list counts the changes, and a collapsed section names its own.
 void settings_summary_lists_changes(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
     namespace rt = playden::runtime;
     playden::homebrew::Simulation simulation(fixtures, profile);
@@ -3053,14 +3215,15 @@ void settings_summary_lists_changes(const std::filesystem::path& fixtures, const
     const auto& keys = simulation.state().navigation.modals.back().action_keys;
     const auto heading = std::find(keys.begin(), keys.end(), "heading-your-changes");
     check(heading != keys.end() && std::vector<std::string>(heading, heading + 6) ==
-              std::vector<std::string>{"heading-your-changes", "summary-resolution", "summary-buttons", "summary-tuning",
+              std::vector<std::string>{"heading-your-changes", "summary-resolution", "summary-buttons", "summary-pointer_speed",
                                        "summary-windows_version", "change-settings"},
           "the summary lists the changes in the list's order");
     check(find_row(simulation, "heading-your-changes")->value == "4" &&
               find_row(simulation, "summary-resolution")->value == "2560×1440" &&
               find_row(simulation, "summary-buttons")->title == "Button mapping" &&
               find_row(simulation, "summary-buttons")->value == "2 buttons" &&
-              find_row(simulation, "summary-tuning")->value == "1 changed" &&
+              find_row(simulation, "summary-pointer_speed")->title == "Pointer speed" &&
+              !find_row(simulation, "summary-pointer_speed")->value.empty() &&
               find_row(simulation, "summary-windows_version")->value == "Windows 7",
           "each line names the setting and its value");
     check(!simulation.action("focus:summary-resolution"), "a summary line can't take the focus");
@@ -5432,6 +5595,7 @@ int main(int argc, char** argv) {
     t08b_settings_sheet_rules(fixtures, profile);
     settings_revision_exhaustion_preserves_record(fixtures, profile);
     controller_layout_replaces_rows(fixtures, profile);
+    controller_panel(fixtures, profile);
     clean();
     controller_layout_editor(fixtures, profile);
     settings_sheet_details(fixtures, profile);

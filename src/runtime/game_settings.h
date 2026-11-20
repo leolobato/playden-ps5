@@ -384,7 +384,7 @@ struct EffectiveValue {
 };
 
 // Why a row's saved choice waits: the title must move to the kit's runtime first.
-inline constexpr const char* kAppliesAfterKitUpdate = "Applies after the kit update: Play or Maintenance > Update runtime.";
+inline constexpr const char* kAppliesAfterKitUpdate = "Applies after the runtime kit update: Play or Maintenance > Update runtime.";
 // The value a row shows and the player chose: the one that applies after the kit update, else the applied one.
 inline const std::string& ChosenValue(const EffectiveValue& value) {
   return value.after_update.empty() ? value.value : value.after_update;

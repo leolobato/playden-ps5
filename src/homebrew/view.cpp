@@ -4699,7 +4699,7 @@ class Render::Impl
     static std::string sheet_eyebrow(const std::string &surface)
     {
         static const std::map<std::string, std::string> names = {
-            {"choice-picker", "Game settings"}, {"preset-picker", "Game settings"}, {"button-mapping", "Game settings"}, {"controller-tuning", "Game settings"},
+            {"choice-picker", "Game settings"}, {"preset-picker", "Game settings"}, {"button-mapping", "Game settings"}, {"controller-panel", "Game settings"},
             {"game-settings", "Playden"}, {"game-settings-list", "Game settings"}, {"game-maintenance", "Playden"}, {"kept-data", "Settings"}, {"leftover-titles", "Settings"},
             {"download-server", "Settings"},
             {"import-games", "Library"}, {"import-programs", "Import games"}, {"steam-programs", "Setup"}, {"import-choice", "Import games"},
@@ -4847,7 +4847,7 @@ class Render::Impl
         const bool wide = view.surface.find("settings") != std::string::npos ||
                           view.surface.find("profile") != std::string::npos ||
                           view.surface == "choice-picker" || view.surface == "preset-picker" ||
-                          view.surface == "button-mapping" || view.surface == "controller-tuning" ||
+                          view.surface == "button-mapping" || view.surface == "controller-panel" ||
                           view.surface == "game-maintenance" ||
                           view.surface == "controller" || view.surface == "logs" ||
                           view.surface == "storage" || view.surface == "move-storage" || view.surface == "install" || view.surface == "update" || view.surface == "kept-data" || view.surface == "leftover-titles" ||
@@ -5029,8 +5029,15 @@ class Render::Impl
         const float arrow_x = current_x + column_w + 20.0F;
         const float preset_x = arrow_x + 20.0F;
         ui::text(overlay_, fonts_.semibold, ui::upper(comparison.first), card.x + 48.0F, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
-        ui::text(overlay_, fonts_.semibold, "CURRENT", current_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
-        ui::text(overlay_, fonts_.semibold, ui::upper(comparison.column), preset_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
+        // One value column (what plays now): it takes the place of Current, with the rest of the card's width.
+        const float single_w = card.x + card.w - 48.0F - current_x;
+        if (comparison.single)
+            ui::text(overlay_, fonts_.semibold, ui::upper(comparison.column), current_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
+        else
+        {
+            ui::text(overlay_, fonts_.semibold, "CURRENT", current_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
+            ui::text(overlay_, fonts_.semibold, ui::upper(comparison.column), preset_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
+        }
         y += 16.0F;
         // A community recipe's start changes (program, arguments, registry) sit between the table and the note.
         constexpr std::size_t kStartLines = 4;
@@ -5060,9 +5067,16 @@ class Render::Impl
             if (y + row_h > table_bottom)
                 break;
             overlay_.rounded_rect({card.x + 40.0F, y + 6.0F, card.w - 80.0F, 1.0F}, 0.0F, kText.with_alpha(0.10F));
-            const bool changes = row[1] != row[2];
+            const bool changes = !comparison.single && row[1] != row[2];
             ui::text(overlay_, fonts_.semibold, fit(fonts_.semibold, row[0], name_size, name_w - 16.0F), card.x + 48.0F,
                      y + text_y, name_size, kText);
+            if (comparison.single)
+            {
+                ui::text(overlay_, fonts_.regular, fit(fonts_.regular, row[2], value_size, single_w), current_x, y + text_y,
+                         value_size, kSecondary);
+                y += pitch;
+                continue;
+            }
             ui::text(overlay_, fonts_.regular, fit(fonts_.regular, row[1], value_size, column_w), current_x, y + text_y, value_size,
                      kSecondary);
             if (changes)
@@ -5414,7 +5428,7 @@ class Render::Impl
                                     view.surface == "choice-picker" ||
                                     view.surface == "download-server" ||
                                     view.surface == "preset-picker" || view.surface == "button-mapping" ||
-                                    view.surface == "controller-tuning" ||
+                                    view.surface == "controller-panel" ||
                                     view.surface == "game-maintenance" || view.surface == "share-recipe" ||
                                     view.surface == "vote-recipe" || view.surface == "feedback" || view.surface == "share-as" ||
                                     view.surface == "controller-layout" || layout_sheet(view.surface);

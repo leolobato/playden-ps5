@@ -1,5 +1,6 @@
 // homebrew_controller_graphical_test.cpp - Game settings' controller screens on screen: the layout editor with Templates
-// first, and the Templates sheet with the focused template's preview beside it.
+// first, the Templates sheet with the focused template's preview beside it, and the Controller panel on runtime kits
+// that read layouts and on ones that don't yet.
 // Each state is drawn and captured as a PNG beside the checks of what it shows.
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -71,6 +72,19 @@ int main(int argc, char** argv) {
                   model.view().comparison->rows.size() == 21,
               "the preview lists the controller and all 20 inputs");
         capture("templates-preview", "layout-templates");
+
+        // Game settings: Controls is one row; the Controller panel with the card of what each input sends.
+        check(model.scenario("controller-panel"), "the panel scenario opens");
+        check(model.state().navigation.focus_key == "controller-panel", "the list is on the Controller row");
+        capture("settings-controller-row", "game-settings-list");
+        check(model.action("cross"), "Cross opens the panel");
+        check(model.view().comparison && model.view().comparison->single, "the panel's card shows what plays");
+        capture("panel", "controller-panel");
+
+        // On a runtime kit that can't read layouts yet: the older rows under their heading, today's controls in the card.
+        check(model.scenario("controller-panel-old-kit") && model.action("cross"), "the older runtime kit's panel opens");
+        check(model.view().comparison && model.view().comparison->title.rfind("Today: ", 0) == 0, "the card shows today's controls");
+        capture("panel-old-kit", "controller-panel");
         std::filesystem::remove(profile, ignored);
     }
     SDL_GL_DeleteContext(context);

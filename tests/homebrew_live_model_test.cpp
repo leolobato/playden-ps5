@@ -282,6 +282,53 @@ bool has_notice(const Simulation& model, const std::string& id) {
 
 // Steam features = Online on a game the store lists with Valve Anti-Cheat says the account could be banned, on the
 // choice and on the row once chosen. Without the store's word, Online keeps its own text.
+// Game settings › Controller while the game's title updates to the runtime kit's runtime: the panel drops the older
+// rows (and their heading) once its layout plays, without being closed and opened again.
+void live_controller_panel_follows_runtime_update(const std::filesystem::path& base) {
+    std::filesystem::create_directories(base);
+    auto model = make_live(base);
+    model.SetGameSettingsFile(base / "panel-settings.json");
+    model.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
+    model.SetKitCapabilities(playden::runtime::KitCapabilitiesFromManifest({"dxvk", "input-map", "touchpad-switch"}, true));
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    playden::GameSummary game;
+    game.id = SteamId(220);
+    game.title = "Half-Life 2";
+    check(model.UpdateLibrary({{game}, false, {}, false, true, 100}), "panel game library delivered");
+    model.UpdateInstalls({}, {{SteamId(220), 1024, "internal", true}});
+    playden::homebrew::LiveRuntimeGame runtime;
+    runtime.game_id = SteamId(220);
+    runtime.prepared = runtime.has_title = true;
+    runtime.runtime_current = false;  // the title still runs an older runtime
+    runtime.launch_entry_id = "game";
+    runtime.activity = playden::homebrew::TitleActivity::Stopped;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
+    check(model.action("details:220"), "open the panel game's details");
+    activate(model, "details-more");
+    activate(model, "game-settings");
+    check(model.action("focus:change-settings") && model.action("cross"), "Change settings");
+    check(model.action("focus:controller-panel") && model.action("cross"), "the Controller panel opens");
+    // A layout chosen now waits for the update: the older rows play until then, under their heading.
+    check(model.action("focus:setting-controller_layout") && model.action("cross"), "the layout editor opens");
+    check(model.action("triangle") && model.action("focus:layout-template-wasd-mouse") && model.action("cross") &&
+              model.action("focus:layout-template-confirm") && model.action("cross"),
+          "a template is used");
+    model.action("circle");
+    const auto has = [&](const std::string& key) {
+        const auto& keys = model.state().navigation.modals.back().action_keys;
+        return std::find(keys.begin(), keys.end(), key) != keys.end();
+    };
+    check(model.state().navigation.modals.back().id == "controller-panel" && has("heading-until-kit-update") &&
+              has("setting-controller_preset"),
+          "while the layout waits, the older rows show under their heading");
+    runtime.runtime_current = true;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
+    check(model.state().navigation.modals.back().id == "controller-panel" && !has("heading-until-kit-update") &&
+              !has("setting-controller_preset") && !has("button-mapping"),
+          "after the update the open panel drops the older rows");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+}
+
 void live_vac_warns_on_online(const std::filesystem::path& base) {
     std::filesystem::create_directories(base);
     playden::runtime::SetOnlineSteamEnabled(true);
@@ -4790,6 +4837,7 @@ int main() {
     live_settings_follow_the_prepared_title(base);
     live_120hz_waits_for_the_title_update(base / "display");
     live_vac_warns_on_online(base / "vac");
+    live_controller_panel_follows_runtime_update(base / "controller-panel");
     live_workshop_items_follow_steam_features(base / "workshop");
     live_friends_join_and_invite(base / "friends");
     live_refresh_rate_keeps_off_over_a_preset_cap(base / "capped");

@@ -1346,6 +1346,7 @@ struct ViewData {
         std::string column = "This preset";  // the right column's heading
         std::string first = "Setting";       // the left column's heading
         bool compact = false;                 // tighter rows, for a long list (a controller layout's inputs)
+        bool single = false;                  // one value column (rows[2]) under `column`: what plays, no comparison
         std::vector<std::string> starts;      // a community recipe's "Changes how the game starts" items
     };
     std::optional<Comparison> comparison;
@@ -2438,6 +2439,10 @@ private:
     // Game settings opens on a summary (the preset, the player's changes, actions); Change settings… opens the list.
     [[nodiscard]] std::vector<std::string> game_settings_actions() const;
     [[nodiscard]] std::vector<std::string> game_settings_list_actions() const;
+    [[nodiscard]] std::vector<std::string> controller_panel_actions() const;
+    void build_controller_card(GameId game, const playden::runtime::EffectiveSettings& values);
+    void ask_controller_reset();
+    void reset_controller_settings();
     // One line per change the player made (Reset's rule): the summary's rows, in catalogue order.
     struct SettingsSummaryLine {
         std::string key;    // summary-<setting id>, summary-buttons, summary-tuning

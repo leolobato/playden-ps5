@@ -82,7 +82,7 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"off", "Off", ""}, {"on", "On", "Starts in launcher mode. Hold the touchpad in game to switch presets."}},
                         "off"));
   list.push_back(Choice("launcher_controller_preset", "Launcher controller preset",
-                        "Used until the game starts. Then the Controller preset takes over.", "", G::kGame,
+                        "Used until the game starts. Then the game's own controller settings take over.", "", G::kGame,
                         {{"mouse", "Mouse", "Left stick moves the pointer; Cross clicks, Circle right-clicks, Options Enter."},
                          {"gamepad", "Gamepad", "Xbox controller layout; no stick moves the pointer."},
                          {"arrows", "Arrow keys", "D-pad sends the arrows; Cross Z, Circle X, Triangle C, Options Enter."}},
