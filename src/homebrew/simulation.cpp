@@ -17623,6 +17623,12 @@ bool IsAnalogPull(const rt::LayoutTarget& target) {
 
 bool IsTriggerInput(rt::LayoutInput input) { return input == rt::LayoutInput::kL2 || input == rt::LayoutInput::kR2; }
 
+// A Controller the recipe locks (and the player hasn't changed anyway): a layout's mode doesn't move it.
+bool controller_required(const rt::EffectiveSettings& values) {
+    const auto& controller = values.values.at("controller");
+    return controller.locked && !controller.unlocked;
+}
+
 bool IsStickInput(rt::LayoutInput input) { return rt::LayoutInputKindOf(input) == rt::LayoutInputKind::kStick; }
 
 std::optional<rt::LayoutInput> LayoutInputOfKey(const std::string& key) {
@@ -17768,11 +17774,17 @@ void Simulation::save_layout() {
         push_notice({"layout-refused", "Controller layout not saved", "", false, kLiveNoticeSeconds, true, reason, false});
         return;
     }
+    // A Controller the recipe requires is not overridden: its mode is the one the layout plays with.
+    rt::EffectiveSettings values;
+    std::string mode = layout_edit_->mode;
+    if (EffectiveSettingsFor(layout_edit_->game, &values) && controller_required(values)) mode.clear();
     auto& record = state_.game_settings[layout_edit_->game];
-    rt::SetControllerLayout(&record, text, layout_edit_->mode);
+    rt::SetControllerLayout(&record, text, mode);
     ++record.revision;
     refresh_game_settings();
     save_profile();
+    // The list shows the targets for the mode the game gets.
+    if (EffectiveSettingsFor(layout_edit_->game, &values)) layout_edit_->mode = rt::ChosenValue(values.values.at("controller"));
 }
 
 void Simulation::open_layout_key_picker(int direction) {
@@ -17962,7 +17974,12 @@ bool Simulation::layout_action(const std::string& name) {
         edit.template_id = chosen->id;
         ModalEntry confirmation{"confirmation", "Use the " + chosen->name + " layout?", "", {"cancel", "layout-template-confirm"}, 0, false};
         confirmation.body = "Every input changes to what the " + chosen->name + " layout sends.";
-        if (chosen->mode != edit.mode) confirmation.body += " Controller changes to " + layout::ModeLabel(chosen->mode) + ".";
+        rt::EffectiveSettings values;
+        const bool required = EffectiveSettingsFor(edit.game, &values) && controller_required(values);
+        if (chosen->mode != edit.mode && required)
+            confirmation.body += " Controller stays " + layout::ModeLabel(edit.mode) + ": this game requires it.";
+        else if (chosen->mode != edit.mode)
+            confirmation.body += " Controller changes to " + layout::ModeLabel(chosen->mode) + ".";
         open_modal(std::move(confirmation));
         return true;
     }

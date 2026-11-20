@@ -972,6 +972,45 @@ void controller_layout_editor(const std::filesystem::path& fixtures, const std::
         while (!recipe_game.state().navigation.modals.empty()) recipe_game.action("circle");
     }
 
+    // With Controller required by the recipe, a template keeps the game's mode and says so; no override is saved
+    // that the lock would ignore.
+    {
+        const auto own_profile = std::filesystem::path(profile.string() + "-required");
+        std::filesystem::remove(own_profile);
+        playden::homebrew::Simulation recipe_game(fixtures, own_profile);
+        std::vector<rt::SettingsPreset> presets;
+        rt::GameRecipe recipe;
+        std::string reason;
+        const auto source = fixtures.parent_path().parent_path();
+        check(rt::ParseSettingsPresets(read_text(source / "runtime/presets.json"), &presets, &reason), "layout editor: presets load");
+        check(rt::ParseGameRecipe(read_text(source / "runtime/recipes/steam-220-hl2-v1.json"), &recipe, &reason),
+              "layout editor: recipe loads");
+        recipe.app_id = 900003;
+        recipe.defaults["controller"] = "keyboard";
+        recipe.locked.insert("controller");
+        recipe_game.SetSettingsData(std::move(presets), {std::move(recipe)});
+        recipe_game.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"input-map", "touchpad-switch"}, true));
+        recipe_game.action("details:900003");
+        activate(recipe_game, "details-more");
+        activate(recipe_game, "game-settings");
+        activate(recipe_game, "change-settings");
+        activate(recipe_game, "setting-controller_layout");
+        recipe_game.action("triangle");
+        activate(recipe_game, "layout-template-arrows");
+        activate(recipe_game, "layout-template-confirm");
+        recipe_game.action("triangle");
+        activate(recipe_game, "layout-template-gamepad");
+        const auto& confirmation = recipe_game.state().navigation.modals.back();
+        check(confirmation.id == "confirmation" && confirmation.body.find("stays Keyboard") != std::string::npos,
+              "layout editor: the template says the required Controller stays");
+        activate(recipe_game, "layout-template-confirm");
+        const auto& overrides = recipe_game.state().game_settings.at(SteamId(900003)).overrides;
+        check(overrides.at("controller_layout") == gamepad && overrides.count("controller") == 0,
+              "layout editor: no Controller override that the lock ignores");
+        while (!recipe_game.state().navigation.modals.empty()) recipe_game.action("circle");
+        std::filesystem::remove(own_profile);
+    }
+
     // Seeded from the Mouse preset and a button of the player's.
     check(simulation.scenario("controller-layout-mouse"), "layout editor: the Mouse scenario opens");
     check(find_row(simulation, "layout-input-triangle")->value == "Key \u00b7 Esc" &&
