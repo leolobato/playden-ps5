@@ -15023,7 +15023,7 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
         (state_.navigation.modals.empty() || !IsLayoutModal(state_.navigation.modals.back().id)))
         state_.key_picker = {};
     if (state_.key_picker.active && !state_.editor.active) {
-        layout_key_picker_action(logical_action);
+        layout_key_picker_action(logical_action, repeat);
         rebuild_view();
         return true;
     }
@@ -17814,12 +17814,12 @@ void Simulation::open_layout_key_picker(int direction) {
     picker.column = layout::PickerColumn(picker.focus);
 }
 
-void Simulation::layout_key_picker_action(const std::string& logical_action) {
+void Simulation::layout_key_picker_action(const std::string& logical_action, bool repeat) {
     auto& picker = state_.key_picker;
     if (logical_action == "up" || logical_action == "down" || logical_action == "left" || logical_action == "right") {
         const int dx = logical_action == "left" ? -1 : logical_action == "right" ? 1 : 0;
         const int dy = logical_action == "up" ? -1 : logical_action == "down" ? 1 : 0;
-        picker.focus = layout::PickerMove(picker.focus, dx, dy, &picker.column);
+        picker.focus = layout::PickerMove(picker.focus, dx, dy, &picker.column, repeat);
         picker.refusal.clear();
         return;
     }

@@ -112,8 +112,9 @@ inline constexpr int kPickerDoneSpan = 2;
 int PickerDoneIndex();
 int PickerIndex(std::string_view name);  // -1 for a name that is not on the grid
 // The focus after a move by one step (dx or dy is -1 or 1). `column` is where the player is across the grid; an up or
-// down move keeps it, so going back returns to the key they left. Left and right go round a row.
-int PickerMove(int focus, int dx, int dy, float* column);
+// down move keeps it, so going back returns to the key they left. Left and right go round a row; a held direction
+// (`repeat`) stops at the row's end first, as the side menus do, and a new press goes round.
+int PickerMove(int focus, int dx, int dy, float* column, bool repeat = false);
 float PickerColumn(int focus);
 
 }  // namespace playden::homebrew::layout

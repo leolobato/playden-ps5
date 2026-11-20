@@ -821,6 +821,20 @@ void controller_layout_editor(const std::filesystem::path& fixtures, const std::
     activate(simulation, "layout-input-cross");
     activate(simulation, "layout-kind-keys");
     check(simulation.state().key_picker.active && simulation.state().key_picker.max_keys == 4, "layout editor: Keyboard opens the key picker");
+    // A held Left stops at the row's start; a new press goes round to its end.
+    {
+        const int start = simulation.state().key_picker.focus;
+        for (int step = 0; step < 20; ++step) simulation.action("left", true);
+        const int edge = simulation.state().key_picker.focus;
+        simulation.action("left", true);
+        check(simulation.state().key_picker.focus == edge && edge != start, "layout editor: a held Left stops at the row's start");
+        simulation.action("left");
+        check(simulation.state().key_picker.focus != edge, "layout editor: a new Left goes round the row");
+        simulation.action("right");
+        check(simulation.state().key_picker.focus == edge, "layout editor: Right comes back");
+        for (int step = 0; step < 20 && simulation.state().key_picker.focus != start; ++step) simulation.action("right", true);
+        check(simulation.state().key_picker.focus == start, "layout editor: back on A");
+    }
     simulation.action("cross");  // A
     simulation.action("down");
     simulation.action("down");   // Ctrl

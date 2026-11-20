@@ -1641,7 +1641,7 @@ public:
     void open_layout_editor();
     std::vector<std::string> layout_editor_actions() const;
     bool layout_action(const std::string& action_name);
-    void layout_key_picker_action(const std::string& logical_action);
+    void layout_key_picker_action(const std::string& logical_action, bool repeat = false);
     void open_layout_key_picker(int direction);
     void open_layout_sheet(const std::string& id, const std::string& title, std::vector<std::string> actions,
                            const std::string& focus);

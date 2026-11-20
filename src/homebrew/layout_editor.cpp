@@ -446,7 +446,7 @@ float PickerColumn(int focus) {
     return static_cast<float>(cell.column) + static_cast<float>(cell.span) * 0.5F;
 }
 
-int PickerMove(int focus, int dx, int dy, float* column) {
+int PickerMove(int focus, int dx, int dy, float* column, bool repeat) {
     const auto& cells = Cells();
     const int count = static_cast<int>(cells.size());
     focus = std::clamp(focus, 0, count - 1);
@@ -456,6 +456,7 @@ int PickerMove(int focus, int dx, int dy, float* column) {
         while (first > 0 && cells[static_cast<std::size_t>(first - 1)].row == here.row) --first;
         while (last + 1 < count && cells[static_cast<std::size_t>(last + 1)].row == here.row) ++last;
         int next = focus + (dx > 0 ? 1 : -1);
+        if ((next < first || next > last) && repeat) return focus;
         if (next < first) next = last;
         if (next > last) next = first;
         if (column) *column = PickerColumn(next);
