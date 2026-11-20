@@ -2491,6 +2491,29 @@ int main(int argc, char** argv) {
     CHECK(settings.graphics == "opengl" && settings.architecture == "pe64" && settings.arguments == "-nosteam");
     CHECK(settings.values.at("windows_version").value == "win7" && !settings.values.at("windows_version").locked);
   }
+  // GTA V Legacy: GTA5.exe itself with the arguments Rockstar's launcher passes; with the console microphone the game
+  // never loads Social Club; the Steam emulator answers its Steam calls (with the game's own library and no Steam client,
+  // Rockstar asks to activate the game); and the Wine switches for its anti-tamper checks and its story load stay on its
+  // recipe only.
+  {
+    GameRecipe gta5;
+    CHECK(ParseGameRecipe(ReadText(source / "runtime/recipes/steam-271590-gta5legacy-v1.json"), &gta5, &reason));
+    CHECK(gta5.app_id == 271590 && gta5.launch_entries.size() == 1 && gta5.launch_entries[0].executable == "GTA5.exe");
+    KitCapabilities kit;
+    kit.registry = true;
+    kit.environment = true;
+    kit.audio_microphone = true;
+    EffectiveSettings settings;
+    SettingsError error;
+    CHECK(BuildEffectiveSettings(gta5, nullptr, {}, kit, &settings, &error));
+    CHECK(settings.graphics == "dxvk" && settings.architecture == "pe64" &&
+          settings.arguments.find("-scCommerceProvider=4") != std::string::npos);
+    CHECK(settings.values.at("microphone").value == "off");
+    CHECK(settings.values.at("steam_features").value == "emulate");
+    const auto& environment = settings.values.at("environment").value;
+    CHECK(environment.find("PW_DEBUG_REGISTERS_ZERO=1") != std::string::npos &&
+          environment.find("PW_SUBPAGE_FIXES=1") != std::string::npos);
+  }
   CHECK(!ParseSettingsPresets(R"({"presets":[{"id":"x","name":"X","settings":{"graphics":"gdi"}}]})", &presets, &reason));
   CHECK(!ParseSettingsPresets(R"({"presets":[{"id":"x","name":"X","settings":{"extra_arguments":"-a"}}]})", &presets, &reason));
   // The "my-" prefix is the player's own presets'; a built-in one may not take it.
@@ -2635,8 +2658,8 @@ int main(int argc, char** argv) {
   std::vector<SettingsPreset> loaded_presets;
   std::vector<GameRecipe> loaded_recipes;
   CHECK(LoadSettingsData((source / "runtime").string(), &loaded_presets, &loaded_recipes, &reason));
-  CHECK(loaded_presets.size() == 4 && loaded_recipes.size() == 8 && loaded_recipes.front().app_id == 220 &&
-        loaded_recipes.back().id == "steam-1903340-expedition33-v1");
+  CHECK(loaded_presets.size() == 4 && loaded_recipes.size() == 9 && loaded_recipes.front().app_id == 220 &&
+        loaded_recipes.back().id == "steam-271590-gta5legacy-v1");
   CHECK(!LoadSettingsData((source / "missing").string(), &loaded_presets, &loaded_recipes, &reason));
 
   // ApplyGameSettings writes the profile and a Playden dxvk.conf, removes it when nothing is

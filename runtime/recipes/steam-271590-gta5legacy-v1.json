@@ -1,0 +1,22 @@
+{
+  "recipe_id": "steam-271590-gta5legacy-v1",
+  "recipe_version": 1,
+  "app_id": 271590,
+  "name": "Grand Theft Auto V Legacy",
+  "launch_entries": [
+    {"id": "game", "label": "Grand Theft Auto V", "executable": "GTA5.exe"}
+  ],
+  "arguments": "-nobattleye -skipPatcherCheck -useSteam -steamAppId=271590 -scCommerceProvider=4",
+  "resolution_arguments": "",
+  "dll_overrides": "d3d8,d3d9,d3d10core,d3d11,dxgi=n",
+  "architecture": "pe64",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "dxvk",
+  "defaults": {
+    "steam_features": "emulate",
+    "microphone": "off",
+    "environment": "PW_IMAGE_HEADER_BASE=1;PW_IMAGE_WRITECOPY_EXEC=1;PW_DEBUG_REGISTERS_ZERO=1;PW_SUBPAGE_FIXES=1"
+  },
+  "locked": []
+}
