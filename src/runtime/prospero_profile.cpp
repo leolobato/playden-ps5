@@ -222,8 +222,12 @@ bool IsProsperoDebugEnvEntry(std::string_view name, std::string_view value) {
 }
 
 bool IsPlaydenEnvironmentVariable(std::string_view name) {
+  // The PW_IMAGE_*, PW_DEBUG_REGISTERS_ZERO and PW_SUBPAGE_FIXES switches turn on prospero-win patches a game needs
+  // (GTA V Legacy: Wine 1029, 1031, 1032, 1033-1036); a runtime kit without them ignores the variable.
   static constexpr std::string_view kNames[] = {"WINE_CPU_TOPOLOGY", "DXVK_FRAME_RATE", "MESA_EXTENSION_MAX_YEAR",
-                                                "PW_MEDIA_DISABLE", "WINE_LARGE_ADDRESS_AWARE", "PW_NSIPROXY_DISABLE"};
+                                                "PW_MEDIA_DISABLE", "WINE_LARGE_ADDRESS_AWARE", "PW_NSIPROXY_DISABLE",
+                                                "PW_IMAGE_HEADER_BASE", "PW_IMAGE_WRITECOPY_EXEC",
+                                                "PW_DEBUG_REGISTERS_ZERO", "PW_SUBPAGE_FIXES"};
   for (const auto known : kNames)
     if (name == known) return true;
   // VKD3D_LOG_FILE and VKD3D_SHADER_CACHE_PATH take a path: the player's own Environment row may set them, a shared recipe may not.

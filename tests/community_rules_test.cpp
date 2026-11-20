@@ -357,6 +357,12 @@ void Rules(const std::string& fixtures) {
   CHECK(!IsPlaydenEnvironmentVariable("VKD3D_LOG_FILE") && !IsPlaydenEnvironmentVariable("VKD3D_SHADER_CACHE_PATH") &&
         IsPlaydenEnvironmentVariable("VKD3D_CONFIG") && IsPlaydenEnvironmentVariable("PW_MEDIA_DISABLE"));
   CHECK(IsBottleEnvironmentEntry("VKD3D_LOG_FILE", "Z:\\x.log"));
+  // The Wine switches GTA V's recipe sets.
+  for (const char* name : {"PW_IMAGE_HEADER_BASE", "PW_IMAGE_WRITECOPY_EXEC", "PW_DEBUG_REGISTERS_ZERO", "PW_SUBPAGE_FIXES"})
+    CHECK(IsPlaydenEnvironmentVariable(name));
+  community = good;
+  community.recipe.defaults["environment"] = "PW_DEBUG_REGISTERS_ZERO=1;PW_SUBPAGE_FIXES=1";
+  CHECK(CommunityRecipeRefusals(community).empty());
   // A launch option naming a later program is allowed and flagged.
   const auto second = Load(fixtures + "/flagged/launch-option-second.json");
   CHECK(CommunityRecipeRefusals(second, ci).empty() && Mentions(CommunityRecipeFlags(second), "starts the program config"));
