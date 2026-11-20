@@ -4,7 +4,8 @@
 The publisher pack holds the closed EA, Rockstar, Ubisoft and Steam host helpers that some
 Steam games need. It is not part of Playden: each Playden build accepts exactly one pack
 version, listed under "publisher_pack" in dependencies.lock.json. This tool refuses a pack of
-another version or with any archive that doesn't match its pin.
+another version or with any archive that doesn't match its pin. The folder may hold only some of the archives:
+Playden checks each publisher's archive on its own.
 
 The folder must hold release.json (playden-helper-tools format: version, artifacts, tree_sha256)
 and the archives. They are written to a hidden staging folder, read back and hashed, and only
@@ -49,12 +50,13 @@ def check_pack(folder, lock):
         raise PackError(f"the pack is version {release.get('version')}; this Playden needs {version}")
     artifacts = release.get("artifacts", {})
     trees = release.get("tree_sha256", {})
-    names = sorted(pinned["archives"])
+    # A pack may hold only some publishers' archives (the builds page hosts the Rockstar one alone).
+    names = sorted(name for name in pinned["archives"] if (folder / name).is_file())
+    if not names:
+        raise PackError(f"the folder holds none of the pinned archives: {', '.join(sorted(pinned['archives']))}")
     for name in names:
         pin = pinned["archives"][name]
         path = folder / name
-        if not path.is_file():
-            raise PackError(f"{name} is missing")
         if artifacts.get(name) != pin["sha256"]:
             raise PackError(f"release.json lists another {name}")
         if name in trees and trees[name] != pin["tree_sha256"]:

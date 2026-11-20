@@ -120,6 +120,27 @@ int main(int argc, char** argv) {
   CHECK(!PreparePublisherRelease(pack.string(), version, cache.string(), ubi.release, &directory, &reason));
   CHECK(!reason.empty());
 
+  // A damaged archive and one that isn't there are told apart.
+  CHECK(status.message.find("Ubisoft damaged") != std::string::npos);
+  fs::remove(pack / version / steam.release.archive);
+  status = CheckPublisherPack(pack.string(), version, releases);
+  CHECK(status.message.find("Steam host not installed") != std::string::npos);
+  Write(pack / version / steam.release.archive, steam.archive_bytes);
+
+  // A pack with only some archives: each publisher is checked alone. Ubisoft starts through the Steam host, so it
+  // needs both; Rockstar's helpers run on their own (the builds page hosts the Rockstar archive by itself).
+  {
+    PublisherPackStatus partial;
+    partial.present = partial.version_matches = true;
+    partial.verified = {{Publisher::kSteamHost, false}, {Publisher::kRockstar, true}, {Publisher::kUbisoft, true},
+                        {Publisher::kEa, true}};
+    CHECK(PublisherSupported(partial, Publisher::kRockstar));
+    CHECK(!PublisherSupported(partial, Publisher::kUbisoft));
+    CHECK(!PublisherSupported(partial, Publisher::kEa));
+    partial.version_matches = false;
+    CHECK(!PublisherSupported(partial, Publisher::kRockstar));
+  }
+
   // Both good: Ubisoft is supported (it needs the Steam host too), EA is not part of this pack.
   Write(pack / version / ubi.release.archive, ubi.archive_bytes);
   status = CheckPublisherPack(pack.string(), version, releases);

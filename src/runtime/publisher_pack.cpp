@@ -273,8 +273,14 @@ PublisherPackStatus CheckPublisherPack(const std::string& pack_root, const std::
     status.message = "The publisher pack's release.json is damaged.";
     return status;
   }
-  std::string ready, failed;
+  // A pack may hold only some publishers' archives (the builds page hosts the Rockstar one alone): an archive that
+  // isn't there is not installed, one that doesn't match its pin is damaged.
+  std::string absent, failed;
   for (const auto& release : releases) {
+    if (!IsRegular(root / version / release.archive)) {
+      absent += std::string(absent.empty() ? "" : ", ") + PublisherName(release.publisher);
+      continue;
+    }
     const auto* listed = artifacts->Find(release.archive);
     const auto* tree = trees && trees->is_object() ? trees->Find(release.archive) : nullptr;
     bool ok = listed && listed->is_string() && listed->text() == release.sha256 &&
@@ -284,10 +290,12 @@ PublisherPackStatus CheckPublisherPack(const std::string& pack_root, const std::
       ok = digest && *digest == release.sha256;
     }
     status.verified[release.publisher] = ok;
-    auto& list = ok ? ready : failed;
-    list += std::string(list.empty() ? "" : ", ") + PublisherName(release.publisher);
+    if (!ok) failed += std::string(failed.empty() ? "" : ", ") + PublisherName(release.publisher);
   }
-  status.message = "Publisher pack " + version + (failed.empty() ? " is ready." : ": " + failed + " missing or damaged.");
+  status.message = "Publisher pack " + version;
+  if (failed.empty() && absent.empty()) status.message += " is ready.";
+  if (!failed.empty()) status.message += ": " + failed + " damaged.";
+  if (!absent.empty()) status.message += (failed.empty() ? ": " : " ") + absent + " not installed.";
   return status;
 }
 
@@ -296,7 +304,9 @@ bool PublisherSupported(const PublisherPackStatus& status, Publisher publisher) 
     const auto found = status.verified.find(p);
     return found != status.verified.end() && found->second;
   };
-  return status.version_matches && has(Publisher::kSteamHost) && has(publisher);
+  // EA and Ubisoft games start through the Steam host; Rockstar's helpers run on their own.
+  const bool needs_steam_host = publisher == Publisher::kEa || publisher == Publisher::kUbisoft;
+  return status.version_matches && has(publisher) && (!needs_steam_host || has(Publisher::kSteamHost));
 }
 
 bool PreparePublisherRelease(const std::string& pack_root, const std::string& cache_root,

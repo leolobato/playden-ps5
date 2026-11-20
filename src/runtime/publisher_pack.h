@@ -45,7 +45,7 @@ PublisherPackStatus CheckPublisherPack(const std::string& pack_root);
 PublisherPackStatus CheckPublisherPack(const std::string& pack_root, const std::string& version,
                                        const std::vector<PublisherRelease>& releases);
 
-// Whether a publisher's games can use the pack: its own archive and the Steam host's verified.
+// Whether a publisher's games can use the pack: its own archive verified, and for EA and Ubisoft the Steam host's.
 bool PublisherSupported(const PublisherPackStatus& status, Publisher publisher);
 
 // Unpacks a verified archive into <cache_root>/<archive name without .tzst>/ (through a staging

@@ -11018,7 +11018,7 @@ void PublisherGameWithoutPackSaysWhy() {
   CHECK(WaitFor(host, Started).kit_available);
   host.Prepare(Hl2());
   const auto refused = WaitFor(host, [](const RuntimeSnapshot& s) { return s.prepares_handled > 0; }, 60);
-  const std::string wanted = "Rockstar Games games need the publisher pack. Upload it from a computer (see the docs).";
+  const std::string wanted = "Games from Rockstar Games need the publisher pack. Install it from builds.playden.club.";
   CHECK(refused.refusals.count(220) && refused.refusals.at(220) == wanted);
   const auto view = WaitFor(host, [](const RuntimeSnapshot& s) {
     return s.publishers.count(Publisher::kRockstar) && s.publishers.at(Publisher::kRockstar).pack_checked;

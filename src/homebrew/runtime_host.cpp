@@ -7022,7 +7022,7 @@ std::string RuntimeHost::LoadPublisher(Composition& c, rt::Publisher publisher) 
       auto status = rt::CheckPublisherPack(root);
       Log("publisher pack " + status.message);
       if (!status.present)
-        release.message = name + " games need the publisher pack. Upload it from a computer (see the docs).";
+        release.message = "Games from " + name + " need the publisher pack. Install it from builds.playden.club.";
       else if (!rt::PublisherSupported(status, publisher))
         release.message = status.message;
       else
@@ -7054,7 +7054,7 @@ std::string RuntimeHost::LoadPublisher(Composition& c, rt::Publisher publisher) 
   std::string reason;
   if (!rt::LoadPublisherStageManifest(release.directory, &manifest, &reason)) {
     Log("publisher manifest " + std::string(rt::PublisherSlug(publisher)) + " unavailable: " + reason);
-    c.publisher_failures[publisher] = "The publisher pack can't start " + name + " games. Upload a newer pack.";
+    c.publisher_failures[publisher] = "The publisher pack can't start games from " + name + ". Install a newer pack from builds.playden.club.";
     return c.publisher_failures[publisher];
   }
   Log("publisher " + std::string(rt::PublisherSlug(publisher)) + " ready titles=" + std::to_string(manifest.titles.size()) +

@@ -109,9 +109,15 @@ class PublisherUploadTests(unittest.TestCase):
         with self.assertRaisesRegex(upload.PackError, 'lists another'):
             upload.check_pack(self.folder, self.lock)
 
-    def test_refuses_a_missing_archive(self):
+    def test_accepts_a_pack_with_some_archives(self):
         (self.folder / 'playden-steamhost-1.tzst').unlink()
-        with self.assertRaisesRegex(upload.PackError, 'missing'):
+        version, names = upload.check_pack(self.folder, self.lock)
+        self.assertEqual(names, ['playden-ubisoft-1.tzst'])
+
+    def test_refuses_a_pack_with_no_archives(self):
+        for name in self.archives:
+            (self.folder / name).unlink()
+        with self.assertRaisesRegex(upload.PackError, 'none of the pinned archives'):
             upload.check_pack(self.folder, self.lock)
 
     def test_uploads_verifies_and_replaces_other_versions(self):
