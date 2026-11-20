@@ -13,7 +13,7 @@ namespace playden::runtime {
 inline constexpr const char* kDevelopmentKitId = "playden-kit";
 inline constexpr const char* kDevelopmentKitRoot = "/data/playden/kits/playden-kit";
 inline constexpr const char* kExpectedKitManifestSha256 =
-    "4b32a6997e192ffb0575884c58e4fa93fcb53d036b643daeb8a919f6af96e625";
+    "352d939f92e845e8b18b83473f5a90332b1b54413411da317f64da78ca66b4c9";
 
 // Ids a kit had before it was renamed: its folder under /data/playden/kits and its manifest's kit_id.
 // A title, bottle or settings publication made from the earlier id belongs to the renamed kit (Update

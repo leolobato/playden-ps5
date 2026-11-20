@@ -228,9 +228,9 @@
   "prospero_kit": {
     "kit_id": "playden-kit",
     "published": false,
-    "status": "Kit 0.32, installed as playden-kit. Kit 0.31 with ws2_32.prx of prospero-win eaccec6 (an IPv6 lookup with AI_V4MAPPED returns IPv4-only hosts as mapped addresses, #1102), libvulkan.prx with RADV from PS5_Mesa 9db3f34 (a swapchain idle for 150 ms gives VideoOut's display to the next one, #1142) and the any-title shell of eaccec6, which keeps a button bound to a key or mouse button off the game's controller (#1139). The template, DXVK and Mono are 0.31's, so bottles need no Recreate.",
-    "manifest_sha256": "4b32a6997e192ffb0575884c58e4fa93fcb53d036b643daeb8a919f6af96e625",
-    "files_sha256": "b38124b16c69abb009e0c3878c10975120f676490e5409cdbf0f421c35b99c86",
+    "status": "Kit 0.33, installed as playden-kit. Kit 0.32 with ntdll.prx, win32u.prx, wineserver.prx, ntdll.dll and kernelbase.dll of prospero-win 35def4c and its any-title shell, which plays a profile's controller layout (`map = 1` in [input], capability input-map, #443). Wine 1037 sends the side mouse buttons, 1038 sends the title's input from one thread so key combinations keep their order; 1022, 1023, 1029-1036 (a storefront launcher as the title's helper, and fixes each off unless a profile asks) come with them. The template's ntdll.dll and kernelbase.dll copies change; DXVK and Mono are 0.32's, so bottles need no Recreate.",
+    "manifest_sha256": "352d939f92e845e8b18b83473f5a90332b1b54413411da317f64da78ca66b4c9",
+    "files_sha256": "cf2b7e0119fc4c5c18f0003a593aa2902fce7311f12eade79061b024a1ee4bc4",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"
@@ -247,6 +247,7 @@
       "game-root-unowned",
       "game-root-usb-search",
       "helper-process",
+      "input-map",
       "input-playstation",
       "input-rumble",
       "launch-arguments-4096",
@@ -271,9 +272,9 @@
       "wine-shared-sections",
       "wow64_i386"
     ],
-    "wrapper_revision": "eaccec6d3382fa4ab61e35d8cc72908aa67ac164",
-    "runtime_artifact_revision": "eaccec6-kit-0.32",
-    "runtime_inventory_source": "Kit 0.32: staged by kits/kit-0.32/stage.py in the kit archive: kit 0.31 with ws2_32.prx and libvulkan.prx (the only .prx that differ in a release cross build of eaccec6 with RADV from PS5_Mesa 9db3f34, scripts/build-kit-cross.sh --no-reuse, kit-h/work/wine-ps5-032-1) and the any-title shell built from a clean clone of eaccec6. No PE source changed, so PE modules stay 0.31's. Earlier kits: see this file's git history.",
+    "wrapper_revision": "35def4c8388f69c8602a61213e2a368f575aa0d4",
+    "runtime_artifact_revision": "35def4c-kit-0.33",
+    "runtime_inventory_source": "Kit 0.33: staged by kits/kit-0.33/stage.py in the kit archive: kit 0.32 with ntdll.prx, win32u.prx and wineserver.prx (the only .prx that differ in a release cross build of 35def4c, scripts/build-kit-cross.sh --no-reuse, kit-h/work/wine-ps5-033-1), ntdll.dll and kernelbase.dll (x64, i386 and the template's copies) from that build, and the any-title shell built from a clean clone of 35def4c. Earlier kits: see this file's git history.",
     "wine_mono": {
       "version": "11.3.0",
       "url": "https://dl.winehq.org/wine/wine-mono/11.3.0/wine-mono-11.3.0-x86.tar.xz",
