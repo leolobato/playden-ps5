@@ -10189,9 +10189,9 @@ void Simulation::rebuild_view() {
             ? "Playden can't find this PS5 on a network. Connect it to Wi-Fi or a network cable, then try again."
             : sign_in.state == SignIn::Expired ? "Codes work for ten minutes. Get a new one to sign in."
             : sign_in.state == SignIn::Failed ? (sign_in.message.empty() ? "Playden couldn't open the sign-in page." : sign_in.message)
-            : "Your phone needs to be on the same network as this PS5.";
+            : "Your phone or computer needs to be on the same network as this PS5.";
         if (open || sign_in.state == SignIn::SignedIn) {
-            const char* steps[] = {"Scan the code with your phone", "Follow the steps on your phone to sign in",
+            const char* steps[] = {"Scan the code, or type the address in a browser", "Follow the steps there to sign in",
                                    "Playden continues here"};
             for (int index = 0; index < 3; ++index) {
                 auto& step = row("publisher-step-" + std::to_string(index + 1), RowKind::Status, steps[index], "");

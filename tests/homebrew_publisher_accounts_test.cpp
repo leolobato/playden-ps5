@@ -51,7 +51,7 @@ std::uint16_t PortOf(const std::string& address) {
   return static_cast<std::uint16_t>(std::stoi(address.substr(colon + 1, address.find('/', colon) - colon - 1)));
 }
 
-std::string PathOf(const std::string& address) { return address.substr(address.find("/s/")); }
+std::string PathOf(const std::string& address) { return address.substr(address.find('/', address.find("//") + 2)); }
 
 std::string Get(const std::string& address, const std::string& suffix = {}) {
   return Exchange(PortOf(address), "GET " + PathOf(address) + suffix + " HTTP/1.1\r\nHost: x\r\n\r\n");
@@ -98,7 +98,7 @@ void FollowsOneSignIn() {
   accounts.Begin(Publisher::kRockstar, "Rockstar Games", "/pack/signin/index.html");
   auto view = accounts.Current();
   CHECK(view.slug == "rockstar" && view.state == PublisherSignInState::Waiting);
-  CHECK(view.address.rfind("http://127.0.0.1:", 0) == 0 && Has(view.address, "/s/"));
+  CHECK(view.address.rfind("http://127.0.0.1:", 0) == 0 && PathOf(view.address).size() == 6);
   CHECK(view.expires_at == 1'800'000'600);
 
   // The pack's page; the paste page names the publisher.

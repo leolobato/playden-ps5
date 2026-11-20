@@ -20,6 +20,8 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr std::size_t kMaxBodyBytes = 16 * 1024;
+constexpr std::size_t kCodeLength = 5;  // 31^5: about 29 million codes
+constexpr int kMaxWrongCodes = 10;
 constexpr std::size_t kMaxHeaderBytes = 8 * 1024;
 constexpr int kRequestTimeoutMs = 5000;
 constexpr int kPollMs = 200;
@@ -63,26 +65,31 @@ void Wipe(std::string& text) {
   text.clear();
 }
 
-std::optional<std::string> RandomHex(std::size_t bytes) {
+// The page's code: letters and digits a person reads and types without mistakes (no 0/O, 1/I/L), drawn
+// without bias from /dev/urandom.
+constexpr std::string_view kCodeAlphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+
+std::optional<std::string> RandomCode(std::size_t length) {
   const int fd = ::open("/dev/urandom", O_RDONLY | O_CLOEXEC);
   if (fd < 0) return std::nullopt;
-  std::string raw(bytes, '\0');
-  std::size_t got = 0;
-  while (got < bytes) {
-    const auto count = ::read(fd, raw.data() + got, bytes - got);
+  std::string out;
+  // 248 = 8 * 31: bytes from 248 up would favour the first letters, so they are drawn again.
+  while (out.size() < length) {
+    unsigned char byte = 0;
+    const auto count = ::read(fd, &byte, 1);
     if (count < 0 && errno == EINTR) continue;
-    if (count <= 0) break;
-    got += static_cast<std::size_t>(count);
+    if (count != 1) break;
+    if (byte < 248) out += kCodeAlphabet[byte % kCodeAlphabet.size()];
   }
   ::close(fd);
-  if (got != bytes) return std::nullopt;
-  static const char* hex = "0123456789abcdef";
-  std::string out;
-  for (unsigned char c : raw) {
-    out += hex[c >> 4];
-    out += hex[c & 15];
-  }
+  if (out.size() != length) return std::nullopt;
   return out;
+}
+
+std::string Upper(std::string text) {
+  for (auto& c : text)
+    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 32);
+  return text;
 }
 
 // Same length and same bytes, without stopping at the first difference.
@@ -165,7 +172,8 @@ std::string Trim(const std::string& text) {
 struct PhoneRelay::State {
   PhoneRelayPage page;
   PhoneRelaySubmit submit;
-  std::string host, nonce;
+  std::string host, nonce;  // nonce: the page's code (kCodeLength characters of kCodeAlphabet)
+  int wrong_codes = 0;      // addresses with a wrong code so far (the relay's thread only)
   std::uint16_t port = 0;
   int listener = -1;
   Clock::time_point deadline;
@@ -203,7 +211,7 @@ struct PhoneRelay::State {
            "var text=field.value.trim();try{if(typeof JSON.parse(text)!=='object')throw 0;}catch(e){"
            "note.textContent='That is not a sign-in Playden can read. Copy it again.';return;}"
            "button.disabled=true;note.textContent='Sending to your PS5…';"
-           "fetch('/s/" + nonce + "/credential',{method:'POST',cache:'no-store',"
+           "fetch('/" + nonce + "/credential',{method:'POST',cache:'no-store',"
            "headers:{'Content-Type':'application/json'},body:text}).then(function(answer){return answer.json();})"
            ".then(function(answer){if(answer.ok){field.value='';note.textContent='Signed in'+(answer.display?"
            "' as '+answer.display:'')+'. You can close this page.';}else{button.disabled=false;"
@@ -247,17 +255,21 @@ struct PhoneRelay::State {
     const auto method = line.substr(0, first);
     auto path = line.substr(first + 1, second - first - 1);
     if (const auto query = path.find('?'); query != std::string::npos) path.erase(query);
-    // /s/<nonce>[/paste|/credential]
+    // /<code>[/paste|/credential], the code in any case.
     std::string rest;
-    bool known = path.rfind("/s/", 0) == 0;
-    if (known) {
-      const auto slash = path.find('/', 3);
-      known = SameSecret(path.substr(3, slash == std::string::npos ? std::string::npos : slash - 3), nonce);
-      if (slash != std::string::npos) rest = path.substr(slash);
-    }
+    const auto slash = path.find('/', 1);
+    bool known = path.size() > 1 && path[0] == '/' &&
+                 SameSecret(Upper(path.substr(1, slash == std::string::npos ? std::string::npos : slash - 1)), nonce);
+    if (known && slash != std::string::npos) rest = path.substr(slash);
     if (!known || (rest != "" && rest != "/paste" && rest != "/credential")) {
       Wipe(request);
       Send(client, Response(404, "Not Found", "Not found.", "text/plain"));
+      // A short code can be guessed: after kMaxWrongCodes wrong addresses the page closes. A browser's own
+      // request for the site icon doesn't count.
+      if (!known && path != "/favicon.ico" && ++wrong_codes >= kMaxWrongCodes) {
+        stop = true;
+        SetPhase(PhoneRelayPhase::kClosed, {}, "Too many wrong codes. Get a new one.");
+      }
       return false;
     }
     if (rest != "/credential") {
@@ -375,7 +387,7 @@ bool PhoneRelay::Start(const std::string& host, std::uint16_t first_port, PhoneR
                        PhoneRelaySubmit submit, std::string* reason, std::int64_t lifetime_ms) {
   Stop();
   auto state = std::make_shared<State>();
-  const auto nonce = RandomHex(16);
+  const auto nonce = RandomCode(kCodeLength);
   if (!nonce) {
     *reason = "no random source";
     return false;
@@ -431,7 +443,7 @@ bool PhoneRelay::Start(const std::string& host, std::uint16_t first_port, PhoneR
 
 std::string PhoneRelay::Address() const {
   if (!state_) return {};
-  return "http://" + state_->host + ":" + std::to_string(state_->port) + "/s/" + state_->nonce;
+  return "http://" + state_->host + ":" + std::to_string(state_->port) + "/" + state_->nonce;
 }
 
 bool PhoneRelay::Running() const { return state_ && state_->running; }

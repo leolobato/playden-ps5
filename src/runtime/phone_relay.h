@@ -10,16 +10,17 @@ namespace playden::runtime {
 
 // A one-time web page on the local network for signing in to a publisher from a phone: Playden
 // shows its address as a QR code, the phone opens it, and the page hands one credential back to
-// Playden. Every request needs the random path (/s/<nonce>, 128 bits); anything else gets 404.
+// Playden. Every request needs the page's code, five random letters and digits a person can type
+// from the TV (any case; no 0/O, 1/I/L); anything else gets 404, and ten wrong codes close the page.
 //
-//   GET  /s/<nonce>             the publisher pack's sign-in page as is (or the paste page below)
-//   GET  /s/<nonce>/paste       Playden's own page: paste a credential and send it
-//   POST /s/<nonce>/credential  application/json, at most 16 KiB: handed to the submit callback,
-//                               answered {"ok":true,"display":"…"} or 4xx {"ok":false,"message":"…"}
+//   GET  /<code>             the publisher pack's sign-in page as is (or the paste page below)
+//   GET  /<code>/paste       Playden's own page: paste a credential and send it
+//   POST /<code>/credential  application/json, at most 16 KiB: handed to the submit callback,
+//                            answered {"ok":true,"display":"…"} or 4xx {"ok":false,"message":"…"}
 //
 // The relay carries a publisher credential, in plain HTTP on the local network. That is accepted
 // because the publisher's sign-in only works in a real browser, so there is no other way from the
-// phone to the console; it is kept as small as it can be: the nonce is spent once a credential is
+// phone to the console; it is kept as small as it can be: the code is spent once a credential is
 // accepted (the page then closes), the body is never logged or kept (the relay wipes its copies),
 // answers are never cached (Cache-Control: no-store, Referrer-Policy: no-referrer), and the page
 // closes on Stop or after ten minutes. What the credential holds is the publisher pack's business:
@@ -68,7 +69,7 @@ class PhoneRelay {
   // on all interfaces) at first_port or one of the next nine.
   bool Start(const std::string& host, std::uint16_t first_port, PhoneRelayPage page, PhoneRelaySubmit submit,
              std::string* reason, std::int64_t lifetime_ms = 10 * 60 * 1000);
-  std::string Address() const;  // http://<host>:<port>/s/<nonce>
+  std::string Address() const;  // http://<host>:<port>/<code>
   bool Running() const;
   PhoneRelayStatus Status() const;
   // Asks the page to close and returns at once; its thread ends on its own (a credential being

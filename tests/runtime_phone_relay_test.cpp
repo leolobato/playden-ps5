@@ -63,7 +63,7 @@ std::uint16_t PortOf(const std::string& address) {
   return static_cast<std::uint16_t>(std::stoi(address.substr(colon + 1, address.find('/', colon) - colon - 1)));
 }
 
-std::string PathOf(const std::string& address) { return address.substr(address.find("/s/")); }
+std::string PathOf(const std::string& address) { return address.substr(address.find('/', address.find("//") + 2)); }
 
 bool WaitFor(const PhoneRelay& relay, bool running) {
   for (int i = 0; i < 100; ++i) {
@@ -95,13 +95,19 @@ void ServesThePackPageAndTakesOneCredential() {
   CHECK(address.rfind("http://127.0.0.1:", 0) == 0);
   const auto port = PortOf(address);
   const auto path = PathOf(address);
-  CHECK(path.size() == 3 + 32);  // 128-bit nonce in hex
+  // A code a person types: five letters and digits, none that look alike.
+  CHECK(path.size() == 1 + 5);
+  for (const char c : path.substr(1))
+    CHECK(std::string("23456789ABCDEFGHJKMNPQRSTUVWXYZ").find(c) != std::string::npos);
+  std::string lower = path;
+  for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  const std::string wrong = path.substr(0, 5) + (path[5] == '2' ? "3" : "2");
 
-  // Wrong or missing nonce: nothing, and the page stays unvisited.
+  // Wrong or missing code: nothing, and the page stays unvisited.
   CHECK(Status(Get(port, "/"), 404));
-  CHECK(Status(Get(port, "/s/0123456789abcdef0123456789abcdef"), 404));
+  CHECK(Status(Get(port, wrong), 404));
   CHECK(Status(Get(port, path + "/other"), 404));
-  CHECK(Status(Post(port, "/s/0123456789abcdef0123456789abcdef/credential", "{\"x\":\"good\"}"), 404));
+  CHECK(Status(Post(port, wrong + "/credential", "{\"x\":\"good\"}"), 404));
   CHECK(relay.Status().phase == PhoneRelayPhase::kWaiting);
   CHECK(calls == 0);
 
@@ -113,10 +119,11 @@ void ServesThePackPageAndTakesOneCredential() {
   CHECK(Has(page, "Referrer-Policy: no-referrer"));
   CHECK(Has(page, "\r\n\r\n<html>pack page</html>"));
   CHECK(relay.Status().phase == PhoneRelayPhase::kConnected);
-  // A query string is ignored.
+  // A query string is ignored, and the code may be typed in any case.
   CHECK(Has(Get(port, path + "?from=qr"), "pack page"));
+  CHECK(Has(Get(port, lower), "pack page"));
 
-  // Playden's paste page, escaped, posting to this nonce only.
+  // Playden's paste page, escaped, posting to this code only.
   const auto paste = Get(port, path + "/paste");
   CHECK(Status(paste, 200));
   CHECK(Has(paste, "Sign in to Example &lt;b&gt;"));
@@ -189,6 +196,22 @@ void ClosesAfterItsLifetime() {
   CHECK(relay.Status().phase == PhoneRelayPhase::kClosed);
 }
 
+// A short code can be guessed: ten wrong addresses close the page (the browser's icon request doesn't count).
+void ClosesAfterTenWrongCodes() {
+  PhoneRelay relay;
+  std::string reason;
+  CHECK(relay.Start("127.0.0.1", 18099, {"A", "<html>page</html>"}, [](std::string) { return PhoneRelayAnswer{}; }, &reason));
+  const auto port = PortOf(relay.Address());
+  const auto path = PathOf(relay.Address());
+  const std::string wrong = path.substr(0, 5) + (path[5] == '2' ? "3" : "2");
+  for (int i = 0; i < 5; ++i) CHECK(Status(Get(port, "/favicon.ico"), 404));
+  for (int i = 0; i < 9; ++i) CHECK(Status(Get(port, wrong), 404));
+  CHECK(relay.Running() && Status(Get(port, path), 200));
+  CHECK(Status(Get(port, wrong), 404));
+  CHECK(WaitFor(relay, false));
+  CHECK(relay.Status().phase == PhoneRelayPhase::kClosed);
+}
+
 void CloseReturnsAtOnce() {
   PhoneRelay relay;
   std::string reason;
@@ -254,6 +277,7 @@ int main() {
   WithoutAPackPageThePastePageAnswers();
   TwoPagesGetTwoPortsAndNonces();
   ClosesAfterItsLifetime();
+  ClosesAfterTenWrongCodes();
   CloseReturnsAtOnce();
   SurvivesAPeerReset();
   ASilentReaderDoesNotHoldTheRelay();

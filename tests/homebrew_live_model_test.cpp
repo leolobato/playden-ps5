@@ -3007,8 +3007,8 @@ void live_publisher_accounts(const std::filesystem::path& base) {
     check(model.TakePublisherRequests() == Requests{{PublisherRequestKind::SignIn, "rockstar"}},
           "publisher: the screen asks for the phone page");
     check(find_row(model, "publisher-status")->title == "Opening the sign-in page…", "publisher: starting");
-    check(find_row(model, "publisher-step-1")->title == "Scan the code with your phone" &&
-              find_row(model, "publisher-step-2")->title == "Follow the steps on your phone to sign in" &&
+    check(find_row(model, "publisher-step-1")->title == "Scan the code, or type the address in a browser" &&
+              find_row(model, "publisher-step-2")->title == "Follow the steps there to sign in" &&
               find_row(model, "publisher-step-3")->title == "Playden continues here",
           "publisher: three numbered steps");
     check(model.action("r1") && model.state().navigation.route == Route::PublisherSignIn,

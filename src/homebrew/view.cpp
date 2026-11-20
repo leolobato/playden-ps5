@@ -1563,10 +1563,14 @@ class Render::Impl
             if (!cached_qr_error_.empty() || !draw_encoded_qr(qr_x, qr_y, qr_side))
                 draw_qr_placeholder(qr_x, qr_y, side, "QR code unavailable", "Try again");
         }
-        // The address, for typing it on the phone, under the code.
+        // The address, for typing it on a phone or computer, under the code (browsers add http:// themselves).
         if (publisher_code_shown(sign_in.state) && !sign_in.address.empty())
-            ui::text(scene_, fonts_.regular, fit(fonts_.regular, sign_in.address, 22.0F, 620.0F), qr_x + side * 0.5F,
-                     qr_y + side + 44.0F, 22.0F, kText.with_alpha(0.72F), gfx::Align::center);
+        {
+            std::string typed = sign_in.address;
+            if (typed.rfind("http://", 0) == 0) typed.erase(0, 7);
+            ui::text(scene_, fonts_.semibold, fit(fonts_.semibold, typed, 30.0F, 620.0F), qr_x + side * 0.5F,
+                     qr_y + side + 50.0F, 30.0F, kText, gfx::Align::center);
+        }
         for (const ViewRow &row : view.rows)
         {
             if (row.key != "publisher-status")
