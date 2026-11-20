@@ -264,7 +264,9 @@ std::vector<Shelf> shelves(const State& state)
     Shelf continued{"continue", "Continue playing", {}};
     std::vector<const Game*> played;
     for (const Game& game : state.games)
-        if (!state.library.hidden.contains(game.id) && game.playtime_minutes.value_or(0) > 0)
+        // A store's play time, or Playden's own history (#446): a game Steam never heard of (offline) or one of a
+        // store without play times (GOG, imported).
+        if (!state.library.hidden.contains(game.id) && (game.playtime_minutes.value_or(0) > 0 || game.played_here))
             played.push_back(&game);
     std::stable_sort(played.begin(), played.end(), [](const Game* left, const Game* right) {
         return optional_descending(left->last_played, right->last_played);

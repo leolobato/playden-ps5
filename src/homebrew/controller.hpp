@@ -539,6 +539,10 @@ class Controller {
   LiveSavesJob saves_job_;
   std::map<GameId, std::uint64_t> save_sizes_;
   std::optional<std::pair<GameId, runtime::LaunchState>> last_launch_;
+  // Play history (#446): the runtime's last published change, and when TickRuntime last ran and last asked for a scan.
+  std::uint64_t play_history_serial_ = 0;
+  std::chrono::system_clock::time_point play_scan_checked_{};
+  std::chrono::system_clock::time_point play_scan_asked_{};
   // A game whose title may be running: Cloud must not touch its saves.
   bool SessionActive(GameId id) const;
   std::chrono::steady_clock::time_point volume_refreshed_at_{};

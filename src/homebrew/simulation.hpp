@@ -9,6 +9,7 @@
 #include "community/vote_state.h"
 #include "library/organization.h"
 #include "library/update_check.h"
+#include "library/play_history.h"
 #include "library/model.h"
 #include "homebrew/layout_editor.hpp"
 #include "runtime/controller_layout.h"
@@ -865,8 +866,11 @@ struct Game {
     std::optional<std::uint64_t> download_bytes;
     std::optional<std::uint64_t> install_bytes;
     std::optional<std::int64_t> added_at;
+    // From the store, or from Playden's own play history when that is later (#446).
     std::optional<std::int64_t> last_played;
+    // From the store, or the time Playden measured when that is longer (#446).
     std::optional<std::uint64_t> playtime_minutes;
+    bool played_here = false;  // Playden's play history has it: Continue playing lists it without a store play time
     std::optional<bool> windows_installable;  // from the store's details; absent until fetched
     // Why the store's details say this console can't install the game (GOG: an older download format), shown on its
     // page instead of "No Windows version to install"; empty: no reason given.
@@ -1421,6 +1425,9 @@ public:
     // Live mode, online-steam only: the Steam friends and whether the session that brings them is logged on.
     void UpdateFriends(std::vector<Friend> friends, bool connected, bool need_sign_in);
     void UpdateSaveSizes(std::map<GameId, std::uint64_t> sizes);
+    // Live mode: what Playden saw of each game's play on this console (#446). It stays across library loads, and
+    // each game takes the later of its store's last played date and this one.
+    void SetPlayHistory(playden::PlayHistory history);
     // Live mode: the answer to a Cloud request the player made (its settled result), or its refusal
     // (the game's title may run). Play waiting to quit to Home goes on from these.
     void NotifyCloudAnswered(GameId id, CloudStatus status);
@@ -2178,6 +2185,7 @@ private:
     bool pending_runtime_cleanup_ = false;
     bool library_catalog_received_ = false;
     std::set<Store> catalog_sources_;  // stores whose library arrived at least once
+    playden::PlayHistory play_history_;  // live: SetPlayHistory's, applied to each library load
     // The sign-in screen shows because Steam's saved sign-in failed to restore, not for a sign-in the player started.
     bool restore_failed_sign_in_ = false;
     std::set<Store> loading_sources_;  // stores whose library is loading now

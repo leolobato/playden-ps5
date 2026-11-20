@@ -18,6 +18,7 @@
 #include "runtime/publisher_pack.h"
 #include "runtime/recipe_choice.h"
 #include "runtime/redist_install.h"
+#include "library/play_history.h"
 
 #include <algorithm>
 #include <atomic>
@@ -195,6 +196,8 @@ struct RuntimeHostConfig {
   std::chrono::milliseconds removal_poll_interval{1000};
   // Canonical /data as this process sees it, for the wrapper's session records.
   std::filesystem::path session_data_root = "/data";
+  // The user storage root, for Playden's own play history (`play-history.v1`, #446). Empty: none is kept.
+  std::string play_history_root;
   std::function<std::int64_t()> now_ms;
   // How long a started title may take to report its session before Play gives up.
   std::int64_t launch_evidence_wait_ms = 60000;
@@ -517,6 +520,9 @@ struct RuntimeSnapshot {
   std::uint64_t home_handoffs_handled = 0;
   // Bytes in each game's Windows user folders (installed and kept), from the latest MeasureSaves.
   std::map<std::uint32_t, std::uint64_t> save_bytes;
+  // What Playden saw of each game's play on this console (#446), and a number that grows with each change.
+  PlayHistory play_history;
+  std::uint64_t play_history_serial = 0;
   // What Play does before the launch is requested, per runtime number, while it runs: a game whose
   // folder moved in Playden 0.6 is republished first (kPlayUpdatingForLayout).
   std::map<std::uint32_t, std::string> play_progress;
@@ -716,6 +722,9 @@ class RuntimeHost {
   void ScanPrograms(std::uint32_t runtime_number, std::string install_path);
   // Measures each game's Windows user folders (where saves of games without Steam Cloud live).
   void MeasureSaves();
+  // Reads when each installed game's title last ran a game from its session records: a game started from its Home
+  // tile while Playden was closed or in the background shows as played (RuntimeSnapshot::play_history).
+  void ScanPlayHistory();
   // A kit was put in place while Playden runs (the first-run kit download): the worker stops its
   // services and starts them again to admit it, publishing kStarting in between, once no launch is
   // being handed off or followed. Queued requests wait for it.
@@ -1091,6 +1100,11 @@ class RuntimeHost {
   // Finished preparations, in prepared_history_ and the state root's prepared-history file (worker thread).
   void LoadPreparedHistory();
   void SavePreparedHistory();
+  // Play history (#446), on the worker: loaded once per Run, saved and published after each change.
+  void LoadPlayHistory();
+  void CommitPlayHistory();
+  // Each installed game's newest session record; true when the history changed.
+  bool ScanPlays(Composition& c);
   std::vector<PreparedGame> ListPrepared(const Composition* composition) const;
   void PublishPrepared(const Composition* composition);
   // With an any-title kit, lists every recorded game title in the helper's allow-list so their
@@ -1252,6 +1266,10 @@ class RuntimeHost {
   std::uint32_t report_home_start_ = 0;  // guarded by mutex_: the app ReportHomeStartsAtQuit names
   bool cleanup_requested_ = false;
   bool measure_requested_ = false;
+  bool play_scan_requested_ = false;  // guarded by mutex_
+  // Worker thread only: the play history as loaded and since changed, and whether it may be saved (it loaded).
+  PlayHistory play_history_;
+  bool play_history_saveable_ = false;
   std::set<std::string> gone_installs_;  // guarded by mutex_
   bool gone_installs_changed_ = false;    // guarded by mutex_
   bool kit_reload_requested_ = false;  // guarded by mutex_

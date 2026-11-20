@@ -1089,6 +1089,16 @@ std::string free_collection_id(const playden::OrganizationSnapshot& base,
     }
 }
 
+// Playden's own play history (#446): the later last played date, the longer play time, and Continue playing.
+void apply_play_history(Game& game, const playden::PlayHistory& history) {
+    const auto found = history.find(game.id);
+    if (found == history.end()) return;
+    game.played_here = true;
+    if (!game.last_played || *game.last_played < found->second.last_played) game.last_played = found->second.last_played;
+    const std::uint64_t minutes = found->second.played_seconds / 60;
+    if (minutes > game.playtime_minutes.value_or(0)) game.playtime_minutes = minutes;
+}
+
 void replay_organization_delta(playden::OrganizationSnapshot& base,
                                const playden::OrganizationSnapshot& before,
                                const playden::OrganizationSnapshot& after,
@@ -5364,6 +5374,7 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
                 game.added_at = static_cast<std::int64_t>(*summary.added_at_unix_seconds);
             game.demo = summary.demo;
             game.family_shared = summary.family_shared;
+            apply_play_history(game, play_history_);
             if (const auto facts = store_facts_.find(game.id); facts != store_facts_.end()) {
                 if (!facts->second.description.empty()) game.description = facts->second.description;
                 game.genres = facts->second.genres;
@@ -12552,6 +12563,28 @@ void Simulation::UpdateSavesJob(LiveSavesJob job) {
                      std::to_string(in_sync) + (in_sync == 1 ? " game" : " games") + " in sync" +
                          (need > 0 ? " · " + std::to_string(need) + " need you" : std::string())});
     }
+    rebuild_view();
+}
+
+void Simulation::SetPlayHistory(playden::PlayHistory history) {
+    if (!live() || history == play_history_) return;
+    play_history_ = std::move(history);
+    // The history only moves forward, so taking the later date and the longer time again keeps what the store said.
+    for (auto& game : state_.games) apply_play_history(game, play_history_);
+    // Continue playing may have changed order: the Home focus stays on the selected game, wherever it is now, in the
+    // shelf it was in when that shelf still has it.
+    const auto projected = shelves(state_);
+    const auto place = [&](std::size_t shelf_index) {
+        const auto& shelf = projected[shelf_index];
+        const auto selected = std::find(shelf.game_ids.begin(), shelf.game_ids.end(), state_.navigation.selected_game_id);
+        if (selected == shelf.game_ids.end()) return false;
+        state_.navigation.home_shelf = static_cast<int>(shelf_index);
+        state_.navigation.home_shelf_focus[shelf.key] = static_cast<int>(std::distance(shelf.game_ids.begin(), selected));
+        return true;
+    };
+    const auto current = static_cast<std::size_t>(std::max(0, state_.navigation.home_shelf));
+    if (current >= projected.size() || !place(current))
+        for (std::size_t shelf_index = 0; shelf_index < projected.size() && !place(shelf_index); ++shelf_index) {}
     rebuild_view();
 }
 

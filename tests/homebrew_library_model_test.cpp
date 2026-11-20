@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: MIT
 
+#include "homebrew/browse.hpp"
 #include "homebrew/queue_layout.hpp"
 #include "homebrew/details_ask.hpp"
 #include "homebrew/simulation.hpp"
@@ -5729,7 +5730,94 @@ void live_remove_playden() {
     check(model.action("cross") && model.state().quit_requested, "Cross quits to Home");
 }
 
+// #446: Playden's own play history puts a game in Continue playing that Steam never heard was played (offline) or
+// that has no store play time (GOG), takes the later last played date, and stays across library loads.
+void live_play_history() {
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    auto steam_played = game(SteamId(10), "Steam played");
+    steam_played.playtime_minutes = 600;
+    steam_played.last_played_unix_seconds = 1'700'000'000ULL;
+    auto offline_played = game(SteamId(11), "Played offline");
+    offline_played.playtime_minutes = 0;
+    auto newer_on_steam = game(SteamId(12), "Newer on Steam");
+    newer_on_steam.playtime_minutes = 30;
+    newer_on_steam.last_played_unix_seconds = 1'800'000'000ULL;
+    const auto never = game(SteamId(13), "Never played");
+    const auto steam_update = [&] {
+        return LibraryUpdate{{steam_played, offline_played, newer_on_steam, never}, false, {}, false, true, 1};
+    };
+    check(model.UpdateLibrary(steam_update()), "Steam library loaded");
+    const auto continued = [&model] {
+        for (const auto& shelf : playden::homebrew::shelves(model.state()))
+            if (shelf.key == "continue") return shelf.game_ids;
+        return std::vector<playden::GameId>{};
+    };
+    check(continued() == std::vector<playden::GameId>{SteamId(12), SteamId(10)},
+          "without a history only Steam's play times count");
+
+    playden::PlayHistory history;
+    history[SteamId(10)] = {1'750'000'000, 120};   // later than Steam's date, shorter than Steam's time
+    history[SteamId(11)] = {1'760'000'000, 5400};  // Steam never heard of it
+    history[SteamId(12)] = {1'600'000'000, 0};     // Steam's date is later
+    model.SetPlayHistory(history);
+    const auto* played = find_game(model, SteamId(10));
+    check(played && played->last_played == 1'750'000'000 && played->playtime_minutes == 600,
+          "the later date wins; Steam's longer time stays");
+    const auto* offline = find_game(model, SteamId(11));
+    check(offline && offline->played_here && offline->last_played == 1'760'000'000 && offline->playtime_minutes == 90,
+          "a game played offline takes Playden's date and time");
+    const auto* newer = find_game(model, SteamId(12));
+    check(newer && newer->last_played == 1'800'000'000 && newer->playtime_minutes == 30, "Steam's later date stays");
+    check(!find_game(model, SteamId(13))->played_here, "a game without history isn't marked played");
+    check(continued() == std::vector<playden::GameId>{SteamId(12), SteamId(11), SteamId(10)},
+          "Continue playing lists the offline game, newest first");
+
+    // A library refresh rebuilds every game from the store: the history is applied again.
+    check(model.UpdateLibrary(steam_update()), "Steam library refreshed");
+    offline = find_game(model, SteamId(11));
+    check(offline && offline->played_here && offline->last_played == 1'760'000'000 && offline->playtime_minutes == 90,
+          "the history survives a library refresh");
+    check(continued() == std::vector<playden::GameId>{SteamId(12), SteamId(11), SteamId(10)},
+          "Continue playing keeps the offline game after a refresh");
+
+    // The history reorders Continue playing under the focus: the focus stays on the same game.
+    for (const auto* move : {"right", "right", "right"}) model.action(move);
+    check(model.state().navigation.selected_game_id == SteamId(10) &&
+              model.state().navigation.home_shelf_focus.at("continue") == 2,
+          "the third Continue playing game is focused");
+    auto reordered = history;
+    reordered[SteamId(13)] = {1'850'000'000, 60};
+    model.SetPlayHistory(reordered);
+    const auto now_continued = continued();
+    const auto focused = std::find(now_continued.begin(), now_continued.end(), SteamId(10));
+    check(model.state().navigation.selected_game_id == SteamId(10) && focused != now_continued.end() &&
+              model.state().navigation.home_shelf_focus.at("continue") ==
+                  static_cast<int>(std::distance(now_continued.begin(), focused)),
+          "the focus follows the game when the shelf reorders");
+    history = reordered;
+
+    // A game started from its Home tile: when it ran, not for how long.
+    const auto gog = playden::GameId::Gog(1900000001);
+    playden::homebrew::AccountUpdate gog_account;
+    gog_account.authentication = AuthState::SignedIn;
+    gog_account.id = "00000000000000ab";
+    gog_account.display_name = "Synthetic GOG";
+    gog_account.store = playden::Store::kGog;
+    model.UpdateAccount(gog_account);
+    LibraryUpdate gog_update{{game(gog, "GOG game")}, false, {}, false, false, {}};
+    gog_update.source = playden::Store::kGog;
+    check(model.UpdateLibrary(gog_update), "GOG library loaded");
+    history[gog] = {1'900'000'000, 0};
+    model.SetPlayHistory(history);
+    const auto* home = find_game(model, gog);
+    check(home && home->played_here && home->last_played == 1'900'000'000 && !home->playtime_minutes,
+          "a Home start gives a date and no time");
+    check(!continued().empty() && continued().front() == gog, "a GOG game played from Home leads Continue playing");
+}
+
 int main() {
+    live_play_history();
     live_remove_playden();
     live_filters_sheet_sections();
     live_game_menus_regrouped();

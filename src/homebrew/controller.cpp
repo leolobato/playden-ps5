@@ -1118,6 +1118,25 @@ void Controller::TickRuntime() {
   // Calls that waited for the runtime worker (a game's first number) are asked again, in order.
   for (auto& again : std::exchange(deferred_runtime_, {})) again();
   {
+    // Playden's play history (#446). A game started from its Home tile while Playden stayed open in the background
+    // shows when Playden is back: the wall clock jumped since the last frame (the app was suspended), or a while
+    // went by.
+    const auto now = std::chrono::system_clock::now();
+    if (play_scan_checked_ != std::chrono::system_clock::time_point{} &&
+        (now - play_scan_checked_ > std::chrono::seconds(30) || now < play_scan_checked_ ||
+         now - play_scan_asked_ > std::chrono::minutes(10))) {
+      runtime_->ScanPlayHistory();
+      play_scan_asked_ = now;
+    }
+    if (play_scan_asked_ == std::chrono::system_clock::time_point{}) play_scan_asked_ = now;
+    play_scan_checked_ = now;
+    const auto history = runtime_->Shared();
+    if (history->play_history_serial != play_history_serial_) {
+      play_history_serial_ = history->play_history_serial;
+      model_.SetPlayHistory(history->play_history);
+    }
+  }
+  {
     // The name each installed game's PS5 title should carry.
     // Keyed by runtime number; a game with none yet has no title to name.
     std::map<std::uint32_t, std::string> names;

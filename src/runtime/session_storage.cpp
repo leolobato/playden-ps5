@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <dirent.h>
 #include <fcntl.h>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
@@ -17,6 +18,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <utility>
+#include <vector>
 
 namespace playden::runtime {
 namespace fs = std::filesystem;
@@ -580,6 +582,74 @@ SessionEnumeration FilesystemReconcileSessionSource::Read(
     return SourceFailure("session-identity-invalid",
                          "wrapper session syntax or persisted identity is invalid");
   return SessionEnumeration::Success({std::move(*session)});
+}
+
+namespace {
+
+// A record's modification time when it names this install and reached running or exited.
+std::optional<std::int64_t> PlayedAt(const ManagedDirectory &sessions,
+                                     const RuntimeInstall &record,
+                                     const std::string &name,
+                                     const struct stat &info) {
+  const auto bytes = ReadFile(sessions, name, FilesystemReconcileSessionSource::kMaxSessionBytes);
+  if (!bytes) return std::nullopt;
+  const auto session = ParseSession(*bytes, name.substr(0, 36));
+  if (!session || !BoundToRecord(*session, record)) return std::nullopt;
+  if (session->phase != WrapperSessionPhase::kRunning &&
+      session->phase != WrapperSessionPhase::kExited)
+    return std::nullopt;
+  if (info.st_mtime <= 0) return std::nullopt;
+  return static_cast<std::int64_t>(info.st_mtime);
+}
+
+bool SessionRecordName(const std::string &name) {
+  constexpr std::string_view suffix = ".json";
+  return name.size() == 36 + suffix.size() &&
+         name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0 &&
+         CanonicalUuid(std::string_view(name).substr(0, 36));
+}
+
+} // namespace
+
+std::optional<std::int64_t> FilesystemReconcileSessionSource::LastPlayed(
+    const RuntimeInstall &record, std::int64_t not_after) {
+  SessionEnumeration failure;
+  auto sessions = OpenSessions(record, &failure);
+  if (!sessions) return std::nullopt;
+  // By absolute path: a PS5 title can't open relative to a directory descriptor.
+  DIR *stream = ::opendir(sessions->path().c_str());
+  if (!stream) return std::nullopt;
+  std::vector<std::pair<std::int64_t, std::string>> records;
+  std::size_t entries = 0;
+  while (const auto *entry = ::readdir(stream)) {
+    if (++entries > kMaxPlayedEntries) break;
+    const std::string name(entry->d_name);
+    if (!SessionRecordName(name)) continue;
+    struct stat info {};
+    if (!sessions->InspectChild(name, &info) || !S_ISREG(info.st_mode) || info.st_mtime > not_after) continue;
+    records.emplace_back(static_cast<std::int64_t>(info.st_mtime), name);
+  }
+  ::closedir(stream);
+  // Newest first; one that never ran (starting, failed) or doesn't read gives way to the next.
+  std::sort(records.begin(), records.end(), std::greater<>());
+  for (const auto &[modified, name] : records) {
+    struct stat info {};
+    if (!sessions->InspectChild(name, &info) || !S_ISREG(info.st_mode)) continue;
+    if (const auto played = PlayedAt(*sessions, record, name, info)) return played;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::int64_t> FilesystemReconcileSessionSource::SessionPlayed(
+    const RuntimeInstall &record, const std::string &session_id) {
+  if (!CanonicalUuid(session_id)) return std::nullopt;
+  SessionEnumeration failure;
+  auto sessions = OpenSessions(record, &failure);
+  if (!sessions) return std::nullopt;
+  const auto name = session_id + ".json";
+  struct stat info {};
+  if (!sessions->InspectChild(name, &info) || !S_ISREG(info.st_mode)) return std::nullopt;
+  return PlayedAt(*sessions, record, name, info);
 }
 
 DurableReconcileJournal::DurableReconcileJournal(Storage &storage)

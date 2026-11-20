@@ -13,6 +13,8 @@ extern "C" {
 #include <limits>
 #include <string>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <ctime>
 #include <unordered_map>
 #include <unistd.h>
 
@@ -531,7 +533,69 @@ void DurableJournalRejectsWrongIdentitySchemaCorruptionAndPrivatePathProblems() 
 
 } // namespace
 
+// #446: when the title last ran a game, from its records' modification times. Unlike Enumerate, a stray temporary
+// file, a record of another install, one that never ran or more than 256 records don't hide the newest play.
+void SourceReportsWhenTheTitleLastPlayed() {
+  TemporaryDirectory temporary;
+  const auto record = Record();
+  AdmitOwnedGame(temporary, record);
+  const auto sessions = MappedGame(temporary) / "logs/sessions";
+  FilesystemReconcileSessionSource source(HostDataRootForTests{temporary.path});
+  CHECK(!source.LastPlayed(record));  // no sessions folder yet
+  PrivateDirectories(sessions);
+  CHECK(!source.LastPlayed(record));  // no records
+  const auto id = [](int number) {
+    char text[37];
+    std::snprintf(text, sizeof(text), "123e4567-e89b-42d3-a456-%012d", number);
+    return std::string(text);
+  };
+  const auto write = [&](const std::string &name, std::string bytes, std::time_t modified) {
+    // Only an ended session names its exit code.
+    if (bytes.find("\"phase\":\"running\"") != std::string::npos || bytes.find("\"phase\":\"starting\"") != std::string::npos)
+      bytes.replace(bytes.find(",\"exit_code\":0"), 14, "");
+    Write(sessions / name, bytes);
+    struct timeval times[2] = {{modified, 0}, {modified, 0}};
+    CHECK(::utimes((sessions / name).c_str(), times) == 0);
+  };
+  constexpr std::time_t kBase = 1'700'000'000;
+  for (int number = 0; number < 300; ++number)
+    write(id(number) + ".json", SessionJson(record, id(number), number % 2 ? "exited" : "running"), kBase + number);
+  CHECK(!source.Enumerate(record, SessionReconciler::kMaxSessionsPerInstall).ok);
+  CHECK(source.LastPlayed(record) == kBase + 299);
+  // The newest one still running (the game runs now, or the title was closed before it could say so) counts too.
+  write(id(298) + ".json", SessionJson(record, id(298), "running"), kBase + 350);
+  CHECK(source.LastPlayed(record) == kBase + 350);
+
+  // Newer, but none of them a play of this install's title.
+  write(id(300) + ".json", SessionJson(record, id(300), "starting"), kBase + 400);
+  write(id(301) + ".json", SessionJson(record, id(301), "failed"), kBase + 401);
+  auto other = record;
+  other.install_id = "install-other";
+  write(id(302) + ".json", SessionJson(other, id(302)), kBase + 402);
+  write(id(303) + ".json.tmp", SessionJson(record, id(303)), kBase + 403);
+  write(id(304) + ".json", "{not json", kBase + 404);
+  CHECK(source.LastPlayed(record) == kBase + 350);
+
+  // A Home start (origin home) counts like a Playden one.
+  auto home = SessionJson(record, id(305), "running");
+  home.replace(home.find("\"playden\""), 9, "\"home\"");
+  write(id(305) + ".json", home, kBase + 500);
+  CHECK(source.LastPlayed(record) == kBase + 500);
+  // A record dated ahead of the clock is passed over for the newest one before it.
+  CHECK(source.LastPlayed(record, kBase + 499) == kBase + 350);
+
+  // One session by id: the one a Playden launch named.
+  CHECK(source.SessionPlayed(record, id(299)) == kBase + 299);
+  CHECK(!source.SessionPlayed(record, id(300)));  // never ran
+  CHECK(!source.SessionPlayed(record, id(306)));  // not written
+  CHECK(!source.SessionPlayed(record, "not-a-uuid"));
+  auto arbitrary = record;
+  arbitrary.data_root = MappedGame(temporary).string();
+  CHECK(!source.LastPlayed(arbitrary));  // not the canonical game root
+}
+
 int main() {
+  SourceReportsWhenTheTitleLastPlayed();
   ActualWriterFixtureIsAdmittedThroughCanonicalDataMapping();
   SourceAcceptsCanonicalV1UuidAndRejectsIdentityOrNumericDrift();
   SourceTreatsUnsafeOrAmbiguousEvidenceAsFailure();

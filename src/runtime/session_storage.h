@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -32,6 +33,19 @@ public:
   // how many other records exist. A record not written yet is an empty result.
   SessionEnumeration Read(const RuntimeInstall &record,
                           const std::string &session_id);
+
+  // When the install's title last ran a game (#446): the modification time (unix seconds) of its newest session
+  // record that reached running or exited, from Home or from Playden. The title writes each phase by replacing the
+  // record, so for an ended session that is when it ended. Unlike Enumerate this reads as much as it can: a record
+  // it can't read, a temporary file or a record of another install is skipped, and there is no record limit (only
+  // kMaxPlayedEntries entries are looked at). A record modified after `not_after` (the clock was set back since) is
+  // passed over. Nothing when no record qualifies or the folder can't be opened.
+  static constexpr std::size_t kMaxPlayedEntries = 8192;
+  std::optional<std::int64_t> LastPlayed(const RuntimeInstall &record,
+                                         std::int64_t not_after = std::numeric_limits<std::int64_t>::max());
+  // The same for one session record by id (the one a Playden launch named).
+  std::optional<std::int64_t> SessionPlayed(const RuntimeInstall &record,
+                                            const std::string &session_id);
 
   // Historical runtime/revision identities are returned unchanged so the
   // reconciler can reject each one without hiding later records. This adapter

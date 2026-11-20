@@ -4112,8 +4112,10 @@ class Render::Impl
         const std::string size = installed ? short_size(installation->installed_bytes) :
             install_row != view.rows.end() && !install_row->value.empty() && install_row->value != "Size unknown" ? install_row->value :
             bare_bytes ? short_size(*bare_bytes) : std::string("Unknown");
-        const std::string playtime = game->playtime_minutes && *game->playtime_minutes > 0 ?
-            playtime_label(game->playtime_minutes) : std::string("Never played");
+        // Played from its Home tile, or for less than a minute: when is known, not for how long, so no Playtime (#446).
+        const bool timed = game->playtime_minutes && *game->playtime_minutes > 0;
+        const bool show_playtime = timed || !game->played_here;
+        const std::string playtime = timed ? playtime_label(game->playtime_minutes) : std::string("Never played");
         // The player's own rating, apart from how the community's list has the game.
         std::string own_rating = rating_label(compatibility);
         if (const auto dot = own_rating.find(" · "); dot != std::string::npos)
@@ -4148,8 +4150,9 @@ class Render::Impl
         const float rating_row = has_listed ? 76.0F + count_line : 0.0F;
         const float facts_top = (setup == view.rows.end() ? 754.0F : setup_detail.empty() ? 694.0F : 662.0F) -
                                 (setup == view.rows.end() && !has_listed ? 0.0F : recipe_line) - rating_row;
-        detail_cell("Playtime", playtime, left, facts_top, 240.0F);
-        detail_cell("Size", size, right, facts_top, 240.0F);
+        // Without Playtime, Size takes its place rather than leave a gap in the first column.
+        if (show_playtime) detail_cell("Playtime", playtime, left, facts_top, 240.0F);
+        detail_cell("Size", size, show_playtime ? right : left, facts_top, 240.0F);
         // A game a Steam family member shares comes from Steam Families, not the account's own library.
         const std::string store = game->id.store == Store::kLocal ? std::string("Imported") :
                                   game->id.store == Store::kGog ? std::string("GOG") :

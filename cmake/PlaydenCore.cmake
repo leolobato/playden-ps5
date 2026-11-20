@@ -22,7 +22,8 @@ add_library(playden_library STATIC
     "${CMAKE_SOURCE_DIR}/src/library/store.cpp"
     "${CMAKE_SOURCE_DIR}/src/library/game_ref.cpp"
     "${CMAKE_SOURCE_DIR}/src/library/recipe_exports.cpp"
-    "${CMAKE_SOURCE_DIR}/src/library/update_check.cpp")
+    "${CMAKE_SOURCE_DIR}/src/library/update_check.cpp"
+    "${CMAKE_SOURCE_DIR}/src/library/play_history.cpp")
 target_include_directories(playden_library PUBLIC "${CMAKE_SOURCE_DIR}/src"
     PRIVATE "${CMAKE_SOURCE_DIR}/third_party/utf8proc")
 target_compile_definitions(playden_library PRIVATE UTF8PROC_STATIC)
@@ -337,7 +338,8 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     add_executable(library_sync_test "${CMAKE_SOURCE_DIR}/tests/library_sync_test.cpp")
     target_link_libraries(library_sync_test PRIVATE playden_library_service)
     add_test(NAME library_sync COMMAND library_sync_test)
-    foreach(test_name library_query library_cache library_organization library_store library_update_check)
+    foreach(test_name library_query library_cache library_organization library_store library_update_check
+            library_play_history)
         add_executable(${test_name}_test "${CMAKE_SOURCE_DIR}/tests/${test_name}_test.cpp")
         target_link_libraries(${test_name}_test PRIVATE playden_library)
         add_test(NAME ${test_name} COMMAND ${test_name}_test)

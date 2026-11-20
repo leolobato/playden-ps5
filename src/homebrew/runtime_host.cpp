@@ -303,6 +303,31 @@ std::vector<std::filesystem::path> Folders(const std::filesystem::path& folder) 
 // AppData/Local/<project>/Saved/Logs/*.log in the bottle, or Unity 5's
 // <program>_Data/output_log.txt beside the program, or an SCS game's Documents/<game>/game.log.txt
 // (and its game.crash.txt). Those name the crash when the report stops short.
+// When the run that began at `started` ended (unix seconds), from the title's session reports
+// (library/logs/session-N.log): the title writes one per run while the game runs, so its last change is close to the
+// run's end, also for a game closed from the PS5 menu, which leaves its session record at running (#446). This run's
+// report is the oldest one changed since `started`: a report changed earlier is an older run's, and a later run's
+// (the game started from Home before Playden noticed this one ended) changed after it. A long run's older chunk
+// (session-N.previous.log) is not its end.
+std::optional<std::int64_t> SessionReportEnd(const std::filesystem::path& data_root, std::int64_t started) {
+  namespace fs = std::filesystem;
+  std::optional<std::int64_t> end;
+  std::error_code error;
+  std::size_t seen = 0;
+  for (fs::directory_iterator it(data_root / "library/logs", error), stop; !error && it != stop && ++seen <= 1024;
+       it.increment(error)) {
+    const auto name = it->path().filename().string();
+    constexpr std::string_view kChunk = ".previous.log";
+    if (name.rfind("session-", 0) != 0 ||
+        (name.size() >= kChunk.size() && name.compare(name.size() - kChunk.size(), kChunk.size(), kChunk) == 0))
+      continue;
+    struct stat info {};
+    if (::lstat(it->path().c_str(), &info) != 0 || !S_ISREG(info.st_mode) || info.st_mtime < started) continue;
+    if (!end || info.st_mtime < *end) end = static_cast<std::int64_t>(info.st_mtime);
+  }
+  return end;
+}
+
 std::optional<std::string> NewestSessionLog(const std::filesystem::path& data_root,
                                             const std::filesystem::path& program) {
   namespace fs = std::filesystem;
@@ -4269,6 +4294,21 @@ bool RuntimeHost::PollLaunch(Composition& c) {
       }
     // A publisher game leaves a status file when its sign-in was refused.
     if (const auto record = c.records.Find(snapshot.install_id)) ApplyPublisherStatus(c, *record);
+    // Playden's play history (#446), once per session (only the Finish that ends it is accepted). It ended when
+    // the title last wrote its session record or its session report, which can be long before now if Playden was
+    // closed while the game ran. A game closed from the PS5 menu leaves its record at running: the report says more.
+    if (finished.accepted && snapshot.state == rt::LaunchState::kExited && handoff_ms > 0)
+      if (const auto record = c.records.Find(snapshot.install_id); record && play_history_saveable_) {
+        const std::int64_t started = handoff_ms / 1000;
+        const std::int64_t now = std::max(config_.now_ms() / 1000, started);
+        // Its report, else its record (a record left at running says only when the game got going). Neither: the
+        // date, not a time, rather than the hours Playden may have been closed.
+        std::optional<std::int64_t> written = SessionReportEnd(HostPath(record->data_root), started);
+        if (!written && c.sessions) written = c.sessions->SessionPlayed(*record, snapshot.session_id);
+        const std::int64_t ended = written ? std::clamp(*written, started, now) : started;
+        const auto seconds = ended > started ? static_cast<std::uint64_t>(ended - started) : 0;
+        if (ended > 0 && RecordPlay(play_history_, GameOf(*record), ended, seconds)) CommitPlayHistory();
+      }
     PublishLaunch(c, snapshot, played_seconds);
     return !finished.accepted;
   }
@@ -7553,7 +7593,67 @@ void RuntimeHost::RunPublisherRequest(Composition* c, PublisherRequest& request)
 }
 
 void RuntimeHost::Run() {
+  // Before the services and apart from them: a console without a runtime kit still shows what was played.
+  {
+    const auto load_hold = config_.hold_effective_uid ? config_.hold_effective_uid() : nullptr;
+    LoadPlayHistory();
+  }
   while (RunServices()) Log("kit reload: starting the runtime services again");
+}
+
+void RuntimeHost::LoadPlayHistory() {
+  if (config_.play_history_root.empty()) return;
+  Storage storage(config_.play_history_root);
+  const auto loaded = PlayHistoryStore(storage).Load();
+  if (!loaded.ok()) {
+    // A newer Playden's file, or one that can't be read: kept as it is, and nothing is saved over it.
+    Log("play history unavailable: " + loaded.message());
+    return;
+  }
+  play_history_ = loaded.value();
+  play_history_saveable_ = true;
+  Log("play history loaded games=" + std::to_string(play_history_.size()));
+  Publish([&](RuntimeSnapshot& s) {
+    s.play_history = play_history_;
+    ++s.play_history_serial;
+  });
+}
+
+void RuntimeHost::CommitPlayHistory() {
+  if (!play_history_saveable_) return;
+  Storage storage(config_.play_history_root);
+  if (const auto saved = PlayHistoryStore(storage).Save(play_history_); !saved.ok())
+    Log("play history not saved: " + saved.message());
+  Publish([&](RuntimeSnapshot& s) {
+    s.play_history = play_history_;
+    ++s.play_history_serial;
+  });
+}
+
+bool RuntimeHost::ScanPlays(Composition& c) {
+  if (!play_history_saveable_ || !c.sessions) return false;
+  bool changed = false;
+  std::size_t found = 0;
+  for (const auto& record : c.repository.Snapshot()) {
+    if (record.state != rt::PreparationState::kReady || record.title_id.empty()) continue;
+    // A record dated ahead of the clock (set back since) is passed over, so it never stays ahead of real plays.
+    const auto played = c.sessions->LastPlayed(record, config_.now_ms() / 1000 + 60);
+    if (!played) continue;
+    ++found;
+    // When it ran, not for how long: the record of a Home start says only when it last changed.
+    if (RecordPlay(play_history_, GameOf(record), *played, 0)) changed = true;
+  }
+  Log("play history scan played=" + std::to_string(found) + " changed=" + std::to_string(changed));
+  return changed;
+}
+
+void RuntimeHost::ScanPlayHistory() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) return;
+    play_scan_requested_ = true;
+  }
+  wake_.notify_all();
 }
 
 bool RuntimeHost::RunServices() {
@@ -7876,6 +7976,11 @@ bool RuntimeHost::RunServices() {
     const auto logs_hold = hold();
     CopyTitleLogs(*composition);
   }
+  // Games started from their Home tile since Playden last looked: after the first frame, like the logs.
+  if (composition && composition->repository.Loaded()) {
+    const auto scan_hold = hold();
+    if (ScanPlays(*composition)) CommitPlayHistory();
+  }
   bool reload = false;
   for (;;) {
     std::vector<PlayRequest> plays;
@@ -7887,6 +7992,7 @@ bool RuntimeHost::RunServices() {
     bool poll = false;
     bool cleanup = false;
     bool measure = false;
+    bool play_scan = false;
     std::vector<std::uint32_t> checks;
     std::vector<std::unique_ptr<PublisherRequest>> publisher_requests;
     bool names_changed = false;
@@ -7905,7 +8011,8 @@ bool RuntimeHost::RunServices() {
       const auto ready = [this] {
         return stopping_ || (!prepare_requests_.empty() && !snapshot_.handoff_ready && !PreparesHeldLocked()) ||
                !play_requests_.empty() ||
-               cleanup_requested_ || measure_requested_ || !activity_requests_.empty() || title_names_changed_ ||
+               cleanup_requested_ || measure_requested_ || play_scan_requested_ || !activity_requests_.empty() ||
+               title_names_changed_ ||
                gone_installs_changed_ ||
                installs_recheck_requested_ ||
                steam_account_changed_ ||
@@ -7976,6 +8083,7 @@ bool RuntimeHost::RunServices() {
       cleanup_requested_ = false;
       measure = measure_requested_;
       measure_requested_ = false;
+      play_scan = std::exchange(play_scan_requested_, false);
       checks.swap(activity_requests_);
       names_changed = title_names_changed_ || installs_recheck_requested_;
       title_names_changed_ = false;
@@ -8056,6 +8164,7 @@ bool RuntimeHost::RunServices() {
         if (!sizes.count(bottle.runtime_number)) sizes[bottle.runtime_number] = SizeTreeNoFollow(HostPath(bottle.data_root + kUsers).string());
       Publish([&](RuntimeSnapshot& s) { s.save_bytes = std::move(sizes); });
     }
+    if (play_scan && composition && ScanPlays(*composition)) CommitPlayHistory();
     if (cleanup && composition) {
       const auto kept = LeftoverRequests(*composition, true);
       const auto left = LeftoverRequests(*composition, false);

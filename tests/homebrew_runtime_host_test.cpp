@@ -29,6 +29,7 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <thread>
 #include <atomic>
 #include <condition_variable>
@@ -1574,6 +1575,127 @@ void HandoffTrustsARecentCheck() {
   *offset += 10000;  // the player's Play reaches the handoff ten seconds after the check
   CHECK(host.Handoff());
   CHECK(launches.size() == 1 && launches[0] == "FAKE78001");
+}
+
+// #446: Playden keeps its own play history. A Playden session counts from the handoff to when the title last wrote
+// its record (not to when Playden noticed: it may have been closed meanwhile), once. A game started from its Home
+// tile counts when Playden starts again or is asked to look, with its date only.
+void KeepsPlayHistoryOfPlaydenAndHomeSessions() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.session_data_root = fixture.root / "data";
+  config.play_history_root = (fixture.root / "data/user").string();
+  fs::create_directories(fixture.root / "data/user");  // Playden's user folder is there before the runtime starts
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  constexpr std::int64_t kHandoff = 1'760'000'000;
+  auto clock = std::make_shared<std::atomic<std::int64_t>>(kHandoff * 1000);
+  config.now_ms = [clock] { return clock->load(); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  config.launch_title = [](const std::string&, const std::vector<std::string>&) { return TitleResult{true, 0, "launch"}; };
+  Write(fixture.root / "data/homebrew/FAKE77031/games/220/hl2.exe", "existing-game", 0644);
+  const auto sessions = fixture.root / "data/playden/games/steam-220/logs/sessions";
+  const auto record = [&](const std::string& id, const std::string& origin, const std::string& phase,
+                          std::time_t modified) {
+    const auto path = sessions / (id + ".json");
+    Write(path, R"({"schema_version":1,"session_id":")" + id +
+                R"(","install_id":"steam-220","title_id":"FAKE78001","origin":")" + origin +
+                R"(","settings_revision":0,"runtime_bundle_id":"wine-wow64","phase":")" + phase + "\"}\n", 0600);
+    struct timeval times[2] = {{modified, 0}, {modified, 0}};
+    CHECK(::utimes(path.c_str(), times) == 0);
+  };
+  const auto entry = [](const RuntimeSnapshot& s) {
+    const auto found = s.play_history.find(playden::GameId::Steam(220));
+    return found == s.play_history.end() ? playden::PlayRecord{} : found->second;
+  };
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    CHECK(host.Snapshot().play_history.empty());
+    host.Prepare(Hl2());
+    WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && !s.installs.empty() && s.installs[0].state == PreparationState::kReady;
+    }, 60);
+    host.Play(220);
+    WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+    CHECK(host.Handoff());
+    const std::string session = "00000000-0000-4000-8000-000000000002";
+    fs::create_directories(sessions);
+    CHECK(chmod(sessions.parent_path().c_str(), 0700) == 0);
+    CHECK(chmod(sessions.c_str(), 0700) == 0);
+    record(session, "playden", "running", kHandoff + 5);
+    WaitFor(host, [](const RuntimeSnapshot& s) { return s.launch && s.launch->state == LaunchState::kRunning; }, 30);
+    // The game ran two minutes; Playden sees the end an hour later. The record was last written a minute in (a game
+    // closed from the PS5 menu never writes exited); the title's session report goes on to the end.
+    *clock += 3600 * 1000;
+    // Beside it, an older run's report and a later one's (started from Home before Playden noticed), and this run's
+    // older chunk: none of them is when this run ended.
+    const auto report = [&](const std::string& name, std::time_t modified) {
+      const auto path = fixture.root / "data/playden/games/steam-220/library/logs" / name;
+      Write(path, "PW_REPORT/1\n", 0600);
+      struct timeval times[2] = {{modified, 0}, {modified, 0}};
+      CHECK(::utimes(path.c_str(), times) == 0);
+    };
+    report("session-0.log", kHandoff - 100);
+    report("session-1.previous.log", kHandoff + 30);
+    report("session-1.log", kHandoff + 120);
+    report("session-2.log", kHandoff + 1800);
+    record(session, "playden", "exited", kHandoff + 60);
+    const auto ended = WaitFor(host, [&](const RuntimeSnapshot& s) {
+      return s.launch && s.launch->state == LaunchState::kExited && entry(s).last_played != 0;
+    }, 30);
+    CHECK(entry(ended) == (playden::PlayRecord{kHandoff + 120, 120}));
+    CHECK(Read(fixture.root / "data/user/play-history.v1") == "version=1\n220 " + std::to_string(kHandoff + 120) + " 120\n");
+    // More polls of the ended session don't count it again.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    CHECK(entry(host.Snapshot()) == (playden::PlayRecord{kHandoff + 120, 120}));
+    // Asked to look (Playden back from the background): an older record changes nothing, a Home start moves the date.
+    const auto serial = host.Snapshot().play_history_serial;
+    record("11111111-1111-4111-8111-000000000001", "home", "exited", kHandoff + 60);
+    host.ScanPlayHistory();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    CHECK(host.Snapshot().play_history_serial == serial);
+    record("11111111-1111-4111-8111-000000000002", "home", "exited", kHandoff + 3000);
+    host.ScanPlayHistory();
+    const auto scanned = WaitFor(host, [&](const RuntimeSnapshot& s) { return s.play_history_serial > serial; }, 30);
+    CHECK(entry(scanned) == (playden::PlayRecord{kHandoff + 3000, 120}));
+    // One dated ahead of the clock (set back since) is passed over.
+    record("11111111-1111-4111-8111-000000000004", "home", "exited", kHandoff + 90000);
+    const auto ahead = host.Snapshot().play_history_serial;
+    host.ScanPlayHistory();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    CHECK(host.Snapshot().play_history_serial == ahead && entry(host.Snapshot()).last_played == kHandoff + 3000);
+    host.Shutdown();
+  }
+  // Started again: the saved history is published at once, and a Home start since is found after the first frame.
+  record("11111111-1111-4111-8111-000000000003", "home", "running", kHandoff + 3300);
+  RuntimeHost restarted(config);
+  CHECK(restarted.Start());
+  const auto loaded = WaitFor(restarted, [&](const RuntimeSnapshot& s) { return entry(s).last_played == kHandoff + 3300; }, 30);
+  CHECK(entry(loaded).played_seconds == 120);
+  restarted.Shutdown();
+  // A newer Playden's file is left alone: no history is published or saved over it.
+  Write(fixture.root / "data/user/play-history.v1", "version=2\n220 1 1 1\n", 0644);
+  RuntimeHost newer(config);
+  CHECK(newer.Start());
+  WaitFor(newer, Started);
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  CHECK(newer.Snapshot().play_history.empty());
+  newer.Shutdown();
+  CHECK(Read(fixture.root / "data/user/play-history.v1") == "version=2\n220 1 1 1\n");
 }
 
 // Play from Playden: the worker checks the Ready title and prepares a session;
@@ -11547,6 +11669,7 @@ int main(int argc, char** argv) {
   RepairsBottleRegistryModes();
   PlaysReadyTitleThroughHandoff();
   HandoffTrustsARecentCheck();
+  KeepsPlayHistoryOfPlaydenAndHomeSessions();
   ReplacedKitAsksForRestart();
   MaintainsReadyTitle();
   ModdedGameFolderStillPlays();
