@@ -967,10 +967,11 @@ ControllerLayoutSeed SeedControllerLayout(const EffectiveSettings& settings) {
   const auto& controller = OptionalValue(settings, "controller");
   seed.mode = ChosenValue(controller);
   if (seed.mode.empty()) seed.mode = FindSetting("controller")->playden_default;
-  if (ControllerLayoutInEffect(settings)) {
-    CanonicalControllerLayout(settings.values.at("controller_layout").value, &seed.text, nullptr);
+  // A layout in effect, or one that waits for the title's update, is the one to edit.
+  const auto& row = OptionalValue(settings, "controller_layout");
+  if (const auto& kept = ChosenValue(row); !kept.empty() && (row.available || row.waits_for_update) &&
+                                           CanonicalControllerLayout(kept, &seed.text, nullptr))
     return seed;
-  }
   const auto value = [&](const char* id) { return ChosenValue(OptionalValue(settings, id)); };
   const bool keyboard = seed.mode == "keyboard";
   // A binding from a button row, or else from the controller preset: the preset file's lines come first and the

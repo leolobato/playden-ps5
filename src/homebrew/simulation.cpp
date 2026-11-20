@@ -9018,6 +9018,8 @@ void Simulation::rebuild_view() {
                 }
                 item.value = bound == 0 ? "None" : std::to_string(bound) + (bound == 1 ? " button" : " buttons");
                 item.modified = changed;
+                // A controller layout sends every button itself.
+                if (rt::ControllerLayoutInEffect(settings_values)) item.subtitle = rt::kSetByControllerLayout;
             } else if (settings_ready && (action_key == "section-compatibility" || action_key == "section-advanced")) {
                 item.kind = RowKind::Heading;
                 const bool advanced = action_key == "section-advanced";

@@ -720,6 +720,50 @@ void settings_sheet_details(const std::filesystem::path& fixtures, const std::fi
     simulation.action("circle");
 }
 
+// A controller layout in effect: its row shows the built-in name, and the rows it replaces say so.
+void controller_layout_replaces_rows(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    load_settings_data(simulation, fixtures);
+    const auto settings_file = profile.string() + ".layout-settings";
+    rt::GameSettingsRecord record;
+    record.overrides = {{"controller_layout", rt::FindControllerLayoutTemplate("wasd-mouse")->text},
+                        {"controller", "keyboard"}, {"controller_preset", "mouse"}, {"touchpad_hold", "mouse"},
+                        {"pointer_stick", "left_stick"}};
+    std::string reason;
+    check(rt::SaveGameSettingsFile(settings_file, {{SteamId(900001), record}}, &reason), "layout: settings saved");
+    simulation.SetGameSettingsFile(settings_file);
+    simulation.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"input-map", "touchpad-switch"}, true));
+    simulation.action("details:900001");
+    activate(simulation, "details-more");
+    activate(simulation, "game-settings");
+    activate(simulation, "change-settings");
+    const auto* layout = find_row(simulation, "setting-controller_layout");
+    check(layout && layout->value == "WASD and mouse" && layout->enabled, "layout: the row shows the built-in layout's name");
+    for (const char* id : {"setting-controller_preset", "setting-touchpad_hold"}) {
+        const auto* row = find_row(simulation, id);
+        check(row && !row->enabled && row->subtitle == rt::kSetByControllerLayout, "layout: a replaced row says so");
+    }
+    check(find_row(simulation, "setting-controller")->enabled, "layout: Controller stays");
+    check(find_row(simulation, "button-mapping")->subtitle == rt::kSetByControllerLayout, "layout: Button mapping says so");
+    activate(simulation, "controller-tuning");
+    check(!find_row(simulation, "setting-pointer_stick")->enabled &&
+              find_row(simulation, "setting-pointer_stick")->subtitle == rt::kSetByControllerLayout,
+          "layout: the pointer stick says so");
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+    // Without input-map the row is off and names the runtime kit it needs; the old rows apply.
+    simulation.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"touchpad-switch"}, true));
+    activate(simulation, "details-more");
+    activate(simulation, "game-settings");
+    activate(simulation, "change-settings");
+    check(!find_row(simulation, "setting-controller_layout")->enabled &&
+              find_row(simulation, "setting-controller_layout")->subtitle == "Needs a newer runtime kit with controller layouts.",
+          "layout: without input-map the row names the runtime kit it needs");
+    check(find_row(simulation, "setting-controller_preset")->enabled, "layout: the preset applies again");
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+    std::filesystem::remove(settings_file);
+}
+
 void settings_revision_exhaustion_preserves_record(const std::filesystem::path& fixtures,
                                                  const std::filesystem::path& profile) {
     playden::homebrew::Simulation simulation(fixtures, profile);
@@ -4972,6 +5016,7 @@ int main(int argc, char** argv) {
     clean();
     t08b_settings_sheet_rules(fixtures, profile);
     settings_revision_exhaustion_preserves_record(fixtures, profile);
+    controller_layout_replaces_rows(fixtures, profile);
     settings_sheet_details(fixtures, profile);
     settings_save_failure_does_not_claim_success(fixtures, profile);
     clean();

@@ -506,7 +506,8 @@ bool SetByControllerLayout(std::string_view id);
 // can. kAppliesAfterKitUpdate when the kit can and only the game's title is older. An empty layout is checked for the
 // row itself, which needs input-map.
 std::string ControllerLayoutUnsupported(std::string_view text, const KitCapabilities& kit);
-// A layout to start editing from, and the controller mode it is for: the layout in effect, or else one made from what
+// A layout to start editing from, and the controller mode it is for: the layout in effect (or waiting for the title's
+// update), or else one made from what
 // the game uses now (the controller preset, the button rows, the touchpad binding and the pointer stick), which gives
 // the game the same input. Every input gets a line. Touchpad hold has no part in it.
 struct ControllerLayoutSeed {

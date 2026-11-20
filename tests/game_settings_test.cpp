@@ -4158,6 +4158,12 @@ int main(int argc, char** argv) {
     // With a layout in effect, the seed is that layout.
     CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, map_kit, &settings, &error));
     CHECK(SeedControllerLayout(settings).text == wasd && SeedControllerLayout(settings).mode == "keyboard");
+    // So is one that waits for the title's update: an edit never starts over from the old rows.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, stale, &settings, &error));
+    CHECK(!ControllerLayoutInEffect(settings) && SeedControllerLayout(settings).text == wasd);
+    // Without input-map the row is off, and the seed is the old rows'.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, no_map, &settings, &error));
+    CHECK(SeedControllerLayout(settings).text != wasd);
 
     // Saving a layout with its mode, then Reset.
     GameSettingsRecord record;
