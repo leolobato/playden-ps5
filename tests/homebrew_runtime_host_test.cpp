@@ -2,6 +2,7 @@
 #include "gog/dependencies.h"
 #include "installs/install_record.h"
 #include "runtime_host_fixture.h"
+#include "steam_stub_fixture.h"
 #include "msi_fixture.h"
 #include "stored_zip.h"
 #include "runtime/steam_client_install.h"
@@ -11,6 +12,7 @@
 #include "runtime/layout_migration.h"
 #include "runtime/artifact_hash.h"
 #include "runtime/steam_host.h"
+#include "runtime/steam_stub.h"
 
 #include <algorithm>
 #include <chrono>
@@ -29,6 +31,7 @@
 #include <thread>
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <future>
 #include <memory>
 #include <unistd.h>
@@ -3216,6 +3219,164 @@ void RunsSetupProgramOnce() {
   CHECK(refused.play_refusals.count(4300) && refused.play_refusals.at(4300).find("missing") != std::string::npos);
   CHECK(game_published() && launches.size() == 4);
   host.Shutdown();
+}
+
+// Start through a launcher: the launcher starts another program of the folder through the exec chain, so that program
+// is never the recipe's or the chosen one. A SteamStub-wrapped one is unpacked before the start all the same (Fallout:
+// New Vegas, #1105), with the setting on or for a program run once in launcher mode, and left as it is otherwise.
+void UnpacksSteamStubProgramsALauncherStarts() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  const auto runtime = fixture.root / "runtime";
+  Write(runtime / "presets.json", Read(fs::path(g_runtime_dir) / "presets.json"), 0644);
+  for (const auto& entry : fs::directory_iterator(fs::path(g_runtime_dir) / "input"))
+    Write(runtime / "input" / entry.path().filename(), Read(entry.path()), 0644);
+  Write(runtime / "recipes/steam-4310-launchertest-v1.json", R"({
+  "recipe_id": "steam-4310-launchertest-v1", "recipe_version": 1, "app_id": 4310, "name": "Launcher Game",
+  "launch_entries": [{"id": "game", "label": "Launcher Game", "executable": "GameLauncher.exe"}],
+  "arguments": "", "dll_overrides": "", "architecture": "pe32", "runtime": "wine-wow64", "prefix": "game",
+  "graphics": "dxvk"
+})", 0644);
+  Write(runtime / "recipes/recipes.lst", "steam-4310-launchertest-v1.json\n", 0644);
+  config.runtime_dir = runtime.string();
+  config.steamworks_dir = (fs::path(g_runtime_dir) / "steamworks").string();
+  config.host_namespace_prefix = fixture.root;
+  config.session_data_root = fixture.root / "data";
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  auto kit = SyntheticKit(fixture.root / "kit");
+  kit.capabilities.push_back(kKitLauncherMode);
+  std::sort(kit.capabilities.begin(), kit.capabilities.end());
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    char id[37];
+    std::snprintf(id, sizeof(id), "00000000-0000-4000-8000-%012u", ++uuids);
+    return std::string(id);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  std::vector<std::vector<std::string>> launches;
+  // What the programs are when the title starts: a later step must not be what unpacks them.
+  std::function<bool()> unpacked_at_launch;
+  std::vector<bool> unpacked_launches;
+  config.launch_title = [&](const std::string&, const std::vector<std::string>& arguments) {
+    launches.push_back(arguments);
+    unpacked_launches.push_back(unpacked_at_launch());
+    return TitleResult{true, 0, "launch"};
+  };
+  GameSettingsRecord saved;
+  std::mutex saved_lock;
+  config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> {
+    std::lock_guard<std::mutex> lock(saved_lock);
+    return saved;
+  };
+  const auto set_launcher = [&](const char* value) {
+    std::lock_guard<std::mutex> lock(saved_lock);
+    saved.overrides["start_through_launcher"] = value;
+    ++saved.revision;
+  };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/4310";
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x4c; pe[0x45] = 0x01; pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x01;
+  Write(game / "GameLauncher.exe", pe, 0644);
+  // The game the launcher starts, wrapped like FalloutNV.exe (SteamStub 2.1, 32-bit), and one in a subfolder that the
+  // wrapper enters from a TLS callback (3.1, 64-bit).
+  const auto wrapped = steam_stub_fixture::Build21();
+  steam_stub_fixture::Spec tls_spec;
+  tls_spec.tls = true;
+  const auto wrapped_tls = steam_stub_fixture::Build(tls_spec);
+  const auto wrap = [&] {
+    Write(game / "Game.exe", wrapped, 0644);
+    Write(game / "bin/Editor.exe", wrapped_tls, 0644);
+  };
+  wrap();
+  // One more that can't be unpacked where it is (its folder takes no .orig): the launcher may never start it, so it
+  // doesn't stop the start.
+  Write(game / "locked/Tool.exe", wrapped, 0644);
+  CHECK(chmod((game / "locked").c_str(), 0555) == 0);
+  const auto kind = [&](const char* program) { return InspectSteamStub((game / program).string()).kind; };
+  const auto unpacked = [&] {
+    // A wrapper entered from a TLS callback keeps its section after unpacking (steam_stub.h), so it reads as wrapped still.
+    return kind("Game.exe") == SteamStubKind::kNone && Read(game / "bin/Editor.exe") != wrapped_tls &&
+           Read(game / "Game.exe.orig") == wrapped && Read(game / "bin/Editor.exe.orig") == wrapped_tls &&
+           kind("GameLauncher.exe") == SteamStubKind::kNone && !fs::exists(game / "GameLauncher.exe.orig") &&
+           kind("locked/Tool.exe") == SteamStubKind::kSupported;
+  };
+  const auto still_wrapped = [&] {
+    return Read(game / "Game.exe") == wrapped && Read(game / "bin/Editor.exe") == wrapped_tls;
+  };
+  unpacked_at_launch = unpacked;
+  CHECK(still_wrapped());
+  RuntimePrepareRequest request{4310, "/data/homebrew/FAKE77031/games/4310", "internal", "Launcher Game"};
+  request.launches = {{"", "", "GameLauncher.exe", "", ""}};
+  const auto sessions = fixture.root / "data/playden/games/steam-4310/logs/sessions";
+  // The title records the settings revision it was published with.
+  const auto host_revision = [&] {
+    std::lock_guard<std::mutex> lock(saved_lock);
+    return saved.revision;
+  };
+  const auto end_session = [&](const std::string& argument) {
+    const auto id = argument.substr(argument.find('=') + 1);
+    const auto revision = host_revision();
+    fs::create_directories(sessions);
+    CHECK(chmod(sessions.parent_path().c_str(), 0700) == 0 && chmod(sessions.c_str(), 0700) == 0);
+    Write(sessions / (id + ".json"),
+          R"({"schema_version":1,"session_id":")" + id + R"(","install_id":"steam-4310","title_id":"FAKE78001",)"
+          R"("origin":"playden","settings_revision":)" + std::to_string(revision) +
+          R"(,"runtime_bundle_id":"wine-wow64","phase":"exited"})" "\n", 0600);
+  };
+  const auto handed_off = [&](RuntimeHost& host) {
+    CHECK(WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30).handoff_ready);
+    CHECK(host.Handoff());
+  };
+  const auto play = [&](RuntimeHost& host, const std::string& program = {}) {
+    fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+    host.Play(4310, program);
+    handed_off(host);
+    end_session(launches.back()[0]);
+    WaitFor(host, [](const RuntimeSnapshot& s) {
+      return s.launch && s.launch->state == LaunchState::kExited && !s.installs.empty() &&
+             s.installs[0].launch_path == "GameLauncher.exe";
+    }, 30);
+  };
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(request);
+  const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(4310) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  if (done.refusals.count(4310)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(4310).c_str());
+  CHECK(!done.refusals.count(4310));
+  // Without the setting the launcher can't start another program, so the others stay as they are.
+  play(host);
+  CHECK(launches.size() == 1 && !unpacked_launches[0] && still_wrapped());
+  // With it, every program in a form Playden unpacks is unpacked before the launcher starts.
+  set_launcher("on");
+  play(host);
+  CHECK(launches.size() == 2 && unpacked_launches[1]);
+  // The next start finds them unpacked and changes nothing, the TLS one included (it still reads as wrapped).
+  const auto editor = Read(game / "bin/Editor.exe"), editor_orig = Read(game / "bin/Editor.exe.orig");
+  const auto game_exe = Read(game / "Game.exe");
+  play(host);
+  CHECK(launches.size() == 3 && unpacked_launches[2] && Read(game / "bin/Editor.exe") == editor &&
+        Read(game / "bin/Editor.exe.orig") == editor_orig && Read(game / "Game.exe") == game_exe);
+  // A game update brings the wrapped programs back; a launcher run once in launcher mode unpacks them too.
+  set_launcher("off");
+  wrap();
+  play(host);
+  CHECK(launches.size() == 4 && !unpacked_launches[3] && still_wrapped());
+  play(host, "GameLauncher.exe");
+  CHECK(launches.size() == 5 && unpacked_launches[4]);
+  host.Shutdown();
+  CHECK(chmod((game / "locked").c_str(), 0755) == 0);
 }
 
 // Settings saved while the game is being prepared, after its profile was written, reach the title
@@ -10344,6 +10505,7 @@ int main(int argc, char** argv) {
   GeneratedRecipeGetsShippedSteamApiCopy();
   GeneratedRecipeGetsShippedGameFile();
   RunsSetupProgramOnce();
+  UnpacksSteamStubProgramsALauncherStarts();
   ShippedRecipeRequirementsFollowTheKit(false);
   ShippedRecipeRequirementsFollowTheKit(true);
   MigrationRewritesInstallPathsAndRepublishes();

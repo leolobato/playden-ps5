@@ -823,8 +823,9 @@ class RuntimeHost {
   // whatever its store (the steam_api DLLs follow its "Steam features" setting). Call only while the
   // game is stopped; empty on success, otherwise why not (for the player).
   // steam_account_known false: the emulator's files (which name the account) are left as they are.
+  // run_through_launcher: a program run once in launcher mode starts now, before the record names it.
   std::string ApplyPreparationSteps(Composition& composition, const runtime::RuntimeInstall& record,
-                                    bool steam_account_known = true);
+                                    bool steam_account_known = true, bool run_through_launcher = false);
   // Generic steps.
   void MediaStep(Composition& composition, const runtime::RuntimeInstall& record);
   std::string Ue3EulaStep(const GameFiles& files);

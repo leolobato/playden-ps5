@@ -3043,7 +3043,7 @@ std::string GameProgramRefusal(const std::string& install_root, const std::strin
   return defaults.refusal_soft && try_anyway ? std::string() : defaults.refusal;
 }
 
-std::vector<GameProgram> ListGamePrograms(const std::string& install_root, const KitCapabilities& kit) {
+std::vector<std::string> ListGameExecutables(const std::string& install_root, std::size_t limit) {
   namespace fs = std::filesystem;
   // Installers and redistributables the game ships next to itself are never the game.
   static const std::set<std::string> skipped = {"_commonredist", "__installer", "redist", "redistributables",
@@ -3053,7 +3053,7 @@ std::vector<GameProgram> ListGamePrograms(const std::string& install_root, const
   constexpr int kMaxDepth = 6;
   constexpr std::size_t kMaxEntries = 4096;
   std::size_t seen = 0;
-  for (std::size_t next = 0; next < folders.size() && found.size() < kMaxGamePrograms; ++next) {
+  for (std::size_t next = 0; next < folders.size() && found.size() < limit; ++next) {
     const auto [folder, depth] = folders[next];
     std::vector<std::string> names;
     std::error_code error;
@@ -3071,11 +3071,16 @@ std::vector<GameProgram> ListGamePrograms(const std::string& install_root, const
         if (depth < kMaxDepth && !skipped.count(LowerAscii(name)) && name.front() != '.')
           folders.push_back({relative, depth + 1});
       } else if (fs::is_regular_file(status) && name.size() > 4 &&
-                 LowerAscii(name.substr(name.size() - 4)) == ".exe" && found.size() < kMaxGamePrograms) {
+                 LowerAscii(name.substr(name.size() - 4)) == ".exe" && found.size() < limit) {
         found.push_back(relative);
       }
     }
   }
+  return found;
+}
+
+std::vector<GameProgram> ListGamePrograms(const std::string& install_root, const KitCapabilities& kit) {
+  const auto found = ListGameExecutables(install_root, kMaxGamePrograms);
   std::vector<GameProgram> programs;
   RuntimeAbilities abilities;
   abilities.shared_sections = kit.shared_sections;

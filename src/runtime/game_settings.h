@@ -656,6 +656,8 @@ inline constexpr std::size_t kMaxGamePrograms = 32;
 // The .exe files under install_root, up to six folders deep, without following symbolic links
 // or entering redistributable folders; at most kMaxGamePrograms, shallowest first.
 std::vector<GameProgram> ListGamePrograms(const std::string& install_root, const KitCapabilities& kit = {});
+// Only the paths ListGamePrograms walks to (the same folders, order and links skipped), at most limit of them.
+std::vector<std::string> ListGameExecutables(const std::string& install_root, std::size_t limit);
 // "pe32" or "pe64" for a game-relative program under install_root (any case); empty when it
 // is missing or not a Windows program.
 std::string GameProgramArchitecture(const std::string& install_root, const std::string& relative);

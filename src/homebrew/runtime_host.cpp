@@ -852,6 +852,8 @@ struct RuntimeHost::GameFiles {
   std::filesystem::path root;  // the game folder, as this process sees it
   std::string prefix;          // the game's bottle, as this process sees it
   std::vector<std::string> programs;
+  // Start through a launcher: the program that starts may start another of the folder (SteamStubStep).
+  bool launcher_may_start = false;
   // The INI values to apply: the recipe's, or for a game still on the recipe Playden generated, those of the recipe
   // Playden now ships for it (they touch only the game's own files, which the generated recipe doesn't name).
   const std::vector<rt::IniValue>* ini = nullptr;
@@ -862,6 +864,8 @@ struct RuntimeHost::GameFiles {
 };
 
 namespace {
+// How many of a game folder's programs SteamStubStep looks at for a launcher: each costs a read of its headers.
+constexpr std::size_t kLauncherProgramScanLimit = 256;
 // A steam_appid.txt's app ID (ParseSteamAppId); nothing when there is none or it holds something else.
 std::optional<std::uint32_t> ReadSteamAppIdFile(const std::filesystem::path& path) {
   const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
@@ -934,15 +938,28 @@ void RuntimeHost::MediaStep(Composition& c, const rt::RuntimeInstall& record) {
 // library the game uses, so it is unpacked first (runtime/steam_stub.h).
 std::string RuntimeHost::SteamStubStep(const GameFiles& files) {
   const auto& record = files.record;
-  const auto unpacked = rt::UnpackSteamStubPrograms(files.root.string(), files.programs);
-  if (!unpacked.found.empty() || !unpacked.ok) {
+  const auto log = [&](const rt::SteamStubResult& unpacked, const char* which) {
+    if (unpacked.found.empty() && unpacked.ok) return;
     std::string found, changed;
     for (const auto& path : unpacked.found) found += (found.empty() ? "" : ",") + path;
     for (const auto& path : unpacked.changed) changed += (changed.empty() ? "" : ",") + path;
-    Log("steamstub app=" + std::to_string(record.runtime_number) + " found=" + found + " changed=" + (changed.empty() ? "-" : changed) +
-        (unpacked.ok ? std::string() : " failed=" + unpacked.message));
+    Log("steamstub app=" + std::to_string(record.runtime_number) + which + " found=" + found + " changed=" +
+        (changed.empty() ? "-" : changed) + (unpacked.ok ? std::string() : " failed=" + unpacked.message));
+  };
+  const auto unpacked = rt::UnpackSteamStubPrograms(files.root.string(), files.programs);
+  log(unpacked, "");
+  if (!unpacked.ok) return unpacked.message;
+  // A program a launcher starts through the exec chain is neither the recipe's nor the chosen one, so it would keep
+  // its DRM and close at once (Fallout: New Vegas, #1105). Each other program of the folder still wrapped in a form
+  // Playden unpacks is unpacked too, from its headers alone. One that can't be leaves the start to the launcher: it
+  // may never start that program.
+  if (!files.launcher_may_start) return {};
+  for (const auto& path : rt::ListGameExecutables(files.root.string(), kLauncherProgramScanLimit)) {
+    if (std::find(files.programs.begin(), files.programs.end(), path) != files.programs.end()) continue;
+    if (rt::InspectSteamStub((files.root / path).string()).kind != rt::SteamStubKind::kSupported) continue;
+    log(rt::UnpackSteamStubPrograms(files.root.string(), {path}), " launcher");
   }
-  return unpacked.ok ? std::string() : unpacked.message;
+  return {};
 }
 
 void RuntimeHost::LogPlaySettings(Composition& c, const rt::RuntimeInstall& record) {
@@ -2209,7 +2226,8 @@ std::string RuntimeHost::DotnetHeapStep(const GameFiles& files) {
 // Mono, the bottle's Environment, MFC, the Visual C++ runtime key, the recipe's registry and INI values and files, the
 // .NET heap), GOG's install script registry and INI values, and Steam-file ones, which act only on the Steam files a game has
 // (SteamStub, Steamworks and steam.dll, install scripts and redistributables, Cloud save folders).
-std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::RuntimeInstall& record, bool steam_account_known) {
+std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::RuntimeInstall& record, bool steam_account_known,
+                                               bool run_through_launcher) {
   MediaStep(c, record);
   GameFiles files{record};
   files.recipe = RecipeOf(c, record);
@@ -2249,6 +2267,11 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
     if (std::find(files.programs.begin(), files.programs.end(), own) == files.programs.end())
       files.programs.push_back(std::move(own));
   }
+  // A launcher starts another program of the folder through the exec chain, past these steps: with Start through a
+  // launcher (or a program run once in launcher mode) the SteamStub step also looks at the folder's other programs.
+  const auto& through_launcher = files.settings.values.at("start_through_launcher");
+  files.launcher_may_start = run_through_launcher || (kit.launcher_mode && !record.setup_program.empty()) ||
+                             (through_launcher.available && through_launcher.value == "on");
   if (auto refused = SteamStubStep(files); !refused.empty()) return refused;
   if (auto refused = SteamworksStep(files, steam_account_known); !refused.empty()) return refused;
   // Steam sign-in follows the saved value at once, like the Steam files: kept now, or gone.
@@ -3255,7 +3278,8 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   // runs the steps after its publication commits instead, so a publication that fails leaves the
   // bottle as the applied recipe had it.
   if (!switching)
-    if (const auto steamworks = ApplyPreparationSteps(c, next, steam_account_known); !steamworks.empty()) return steamworks;
+    if (const auto steamworks = ApplyPreparationSteps(c, next, steam_account_known, run_launcher_mode); !steamworks.empty())
+      return steamworks;
   rt::SettingsLaunchInput input;
   input.recipe = recipe;
   input.record = saved;
