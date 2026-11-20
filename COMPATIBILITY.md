@@ -280,7 +280,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Graveyard Keeper](https://store.steampowered.com/app/599140) | ✅ Works | 0.28 | — | With changed Game settings; see the reports. (player reports, firmware 13.60) | 1 |
 | [Graveyard Keeper 2](https://store.steampowered.com/app/4358690) | ✅ Works | 0.28 | — | With changed Game settings; see the reports. (player reports, firmware 11.00) | 1 |
 | [GRID](https://store.steampowered.com/app/12750) | ✅ Works | 0.25 | — | Default settings. (player reports, firmware 13.40) | 1 |
-| [Grim Dawn](https://store.steampowered.com/app/219990) | ✅ Works | 0.16 | — | Default settings, DualSense. Cloud saves sync when the DLC the save uses is installed. ([#242](https://github.com/leolobato/playden-ps5/issues/242), firmware 13.42) | 2 |
+| [Grim Dawn](https://store.steampowered.com/app/219990) | ✅ Works | 0.31 | — | Default settings, DualSense. Cloud saves sync when the DLC the save uses is installed. ([#242](https://github.com/leolobato/playden-ps5/issues/242), firmware 13.42; [#1127](https://github.com/leolobato/playden-ps5/issues/1127), firmware 13.60) | 2 |
 | [GRIS](https://store.steampowered.com/app/683320) | ✅ Works | 0.11 | Unity · D3D11 · DXVK · 64-bit | Default settings. Menu, a new game, the intro and walking with the controller. |
 | [Guacamelee! Gold Edition](https://store.steampowered.com/app/214770) | ✅ Works | 0.18 | — | Default settings, DualSense. ([#682](https://github.com/leolobato/playden-ps5/issues/682), firmware 12.20) | 1 |
 | [Guardians of Middle-earth](https://store.steampowered.com/app/111900) | ✅ Works | 0.28 | — | Default settings. (player reports, firmware 7.00) | 1 |
