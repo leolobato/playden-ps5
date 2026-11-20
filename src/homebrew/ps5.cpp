@@ -388,6 +388,9 @@ int main() {
             const auto my_presets = simulation.SetMyPresetsFile(playden::runtime::MyPresetsPath(*settings_file));
             for (const auto& line : playden::runtime::MyPresetsLoadLog(my_presets))
                 playden::app::AppendLogLine(log_root, "launch.log", line);
+            const auto my_templates = simulation.SetMyTemplatesFile(playden::runtime::MyTemplatesPath(*settings_file));
+            for (const auto& line : playden::runtime::MyTemplatesLoadLog(my_templates))
+                playden::app::AppendLogLine(log_root, "launch.log", line);
         }
         playden::Storage auth_storage(user_root);
         // One line per Steam CM logon or refusal, with Steam's result code (#51).
@@ -1474,7 +1477,11 @@ int main() {
                        !input.is_held(hui::Action::menu)) {
                 offered_editor = editor.serial;
                 std::string refused;
-                const bool opened = system_keyboard.Open(editor.purpose, editor.value, editor.secret, &refused);
+                // A value the field refused comes back with the reason in the title: the system keyboard hides Playden's notice.
+                std::string title = editor.purpose;
+                for (const auto& notice : simulation.state().notices)
+                    if (notice.id == "setting-validation" && !notice.detail.empty()) title += ": " + notice.detail;
+                const bool opened = system_keyboard.Open(title, editor.value, editor.secret, &refused);
                 simulation.SetSystemKeyboardOpen(opened);
                 playden::app::AppendLogLine(log_root, "launch.log", (opened ? std::string("system keyboard open") : "system keyboard refused") +
                                                                         (refused.empty() ? std::string() : " " + refused));

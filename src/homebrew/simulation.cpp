@@ -900,10 +900,13 @@ rt::SettingGroup SheetGroup(const rt::SettingDefinition& definition) {
 
 // A layout's name as the Controller panel shows it: the built-in template with this text and mode, else "Custom";
 // "None" for no layout. A template's layout in another mode is the player's own.
-std::string LayoutNameFor(const std::string& text, const std::string& mode) {
+std::string LayoutNameFor(const std::string& text, const std::string& mode,
+                          const std::vector<rt::MyTemplate>* mine = nullptr) {
     if (text.empty()) return "None";
     std::string canonical;
     if (!rt::CanonicalControllerLayout(text, &canonical, nullptr)) return "Custom";
+    if (mine)
+        if (const auto* found = rt::FindMyTemplateByLayout(*mine, canonical, mode)) return found->name;
     for (const auto& item : rt::ControllerLayoutTemplates())
         if (item.text == canonical && item.mode == mode) return item.name;
     return "Custom";
@@ -924,7 +927,7 @@ bool SheetDecoration(const std::string& key) {
 
 std::string action_label(const std::string& key) {
     static const std::map<std::string, std::string> labels = {
-        {"cancel", "Cancel"}, {"confirm-destructive", "Confirm"}, {"layout-template-confirm", "Use this layout"}, {"runtime-batch-free", "Free up space"}, {"ready-later", "Later"}, {"update-ready-later", "Not now"}, {"update-ready-play", "Play"}, {"alert-ok", "OK"}, {"alert-settings", "Game settings"}, {"start-failed-settings", "Change settings"},
+        {"cancel", "Cancel"}, {"confirm-destructive", "Confirm"}, {"layout-template-confirm", "Use this layout"}, {"mytemplate-delete-confirm", "Delete"}, {"runtime-batch-free", "Free up space"}, {"ready-later", "Later"}, {"update-ready-later", "Not now"}, {"update-ready-play", "Play"}, {"alert-ok", "OK"}, {"alert-settings", "Game settings"}, {"start-failed-settings", "Change settings"},
         {"start-failed-report", "Report the problem"}, {"start-failed-logs", "Open logs"}, {"runtime-cleanup-confirm", "Clean up"}, {"quit-to-home", "Play"}, {"favorite", "Favorite"},
         {"collection", "Collections"}, {"compatibility", "Compatibility"}, {"note", "Note"}, {"verify", "Verify files"},
         {"uninstall", "Uninstall…"}, {"import-remove", "Remove from library…"}, {"uninstall-delete-saves", "Delete saves too"}, {"remove-playden-delete-saves", "Delete saves too"}, {"remove-playden-confirm", "Uninstall Playden"}, {"run-once-dont-show", "Don't show again"}, {"launcher-help-dont-show", "Don't show again"}, {"launcher-help-on", "Turn on"}, {"launcher-hint-later", "Not now"}, {"launcher-hint-on", "Turn on and play"}, {"folder-recipe-skip", "Don't use it"}, {"folder-recipe-use", "Use the recipe"}, {"logs", "Open logs"}, {"logs-back", "Back"},
@@ -7640,7 +7643,7 @@ bool Simulation::scenario(const std::string& name) {
         // The community's compatibility list: the Library's badges, its Compatibility filter and the Install sheet's
         // warning for a game listed as Partial, Broken or Refused (#977).
         seed_community_scenario(false);
-    } else if (name == "controller-layout" || name == "controller-layout-mouse") {
+    } else if (name == "controller-layout" || name == "controller-layout-mouse" || name == "controller-layout-mine") {
         // Game settings › Controller layout on a runtime kit that reads layouts: started from the game's controller
         // (the Gamepad defaults), or from the Mouse preset with a button of the player's.
         const auto id = GameId::Steam(900002);
@@ -7661,6 +7664,27 @@ bool Simulation::scenario(const std::string& name) {
         open_game_settings();
         open_settings_list();
         open_setting("controller_layout");
+        // Two templates of the player's, and Templates open on the first.
+        if (name == "controller-layout-mine") {
+            my_templates_.clear();
+            const auto own = [&](const char* built_in, const std::string& from, const std::string& to, const char* id,
+                                 const char* title) {
+                auto text = rt::FindControllerLayoutTemplate(built_in)->text;
+                const auto at = text.find(from);
+                std::string canonical;
+                if (at != std::string::npos && rt::CanonicalControllerLayout(text.replace(at, from.size(), to), &canonical, nullptr))
+                    my_templates_.push_back({id, title, "keyboard", canonical, 1, 1});
+            };
+            own("mouse", "triangle = none", "triangle = key:escape", "my-0000000000000001", "Point and click menus");
+            own("wasd-mouse", "cross = key:space", "cross = key:enter", "my-0000000000000002", "Shooter, Enter jumps");
+            layout_action("layout-templates");
+            auto& sheet = state_.navigation.modals.back();
+            const auto found = std::find(sheet.action_keys.begin(), sheet.action_keys.end(), "layout-template-my-0000000000000001");
+            if (found != sheet.action_keys.end()) {
+                sheet.focused_action = static_cast<int>(found - sheet.action_keys.begin());
+                state_.navigation.focus_key = *found;
+            }
+        }
     } else if (name == "controller-panel" || name == "controller-panel-old-kit") {
         // Game settings › Controller: on a runtime kit that reads layouts, with the WASD and mouse layout; or on one that
         // doesn't yet, where that layout waits for the update and the Mouse preset with a button of the player's plays.
@@ -9313,11 +9337,15 @@ void Simulation::rebuild_view() {
                 else if (id.rfind("button.", 0) == 0) item.value = binding_label(value.value);
                 else if (id == "controller_layout") {
                     const auto mode = rt::ChosenValue(settings_values.values.at("controller"));
-                    item.value = LayoutNameFor(rt::ChosenValue(value), mode);
+                    item.value = LayoutNameFor(rt::ChosenValue(value), mode, &my_templates_);
                     // No layout yet on a runtime kit that reads them: the preset and buttons as the layout they make.
                     if (rt::ChosenValue(value).empty() && kit_for(settings_game).input_map) {
                         const auto seed = rt::SeedControllerLayout(settings_values);
-                        item.value = LayoutNameFor(seed.text, seed.mode);
+                        item.value = LayoutNameFor(seed.text, seed.mode, &my_templates_);
+                        // Nothing but the controller's own buttons (no preset or button rows): None, in any mode.
+                        rt::ControllerLayout plain;
+                        rt::FillControllerLayout(&plain, seed.mode);
+                        if (seed.text == rt::SerializeControllerLayout(plain)) item.value = "None";
                     }
                 }
                 else if (id == "program_folder")
@@ -9385,7 +9413,7 @@ void Simulation::rebuild_view() {
                 const auto& layout_row = settings_values.values.at("controller_layout");
                 const auto& preset_row = settings_values.values.at("controller_preset");
                 if (rt::ControllerLayoutInEffect(settings_values))
-                    summary += " \u00b7 " + LayoutNameFor(layout_row.value, controller_row.value) + " layout";
+                    summary += " \u00b7 " + LayoutNameFor(layout_row.value, controller_row.value, &my_templates_) + " layout";
                 else if (preset_row.available && !preset_row.value.empty() && preset_row.value != "none")
                     summary += " \u00b7 " + choice_label(*rt::FindSetting("controller_preset"), preset_row.value) + " preset";
                 item.subtitle = summary;
@@ -12029,6 +12057,7 @@ void Simulation::commit_editor() {
         return;
     }
     if (state_.editor.purpose == "Preset name") { commit_my_preset_name(); return; }
+    if (state_.editor.purpose == "Template name") { commit_my_template_name(); return; }
     if (state_.editor.purpose == "Search") { state_.library.query = TrimLibraryQuery(state_.editor.value); reconcile_library_selection(state_); }
     else if (state_.editor.purpose == "Search recipes") {
         // The chooser lists the games whose name matches; the first is focused.
@@ -15553,6 +15582,14 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
         rebuild_view();
         return true;
     }
+    // Templates: Triangle on one of the player's opens its menu (Rename…, Update from this game, Delete…).
+    if (logical_action == "triangle" && !state_.editor.active && !state_.navigation.modals.empty() &&
+        state_.navigation.modals.back().id == "layout-templates" &&
+        state_.navigation.focus_key.rfind("layout-template-my-", 0) == 0) {
+        open_my_template_menu(state_.navigation.focus_key.substr(16));
+        rebuild_view();
+        return true;
+    }
     const bool layout_editor = !state_.editor.active && !state_.navigation.modals.empty() &&
                                state_.navigation.modals.back().id == "controller-layout";
     if (layout_editor && (logical_action == "square" || logical_action == "triangle")) {
@@ -16371,6 +16408,194 @@ void Simulation::finish_my_preset_change(GameId game, const rt::GameSettingsReco
 }
 
 // A dialog with OK over the sheet: a notice would wait behind it until the sheet closes.
+// ---- My templates (Controller layout › Templates) ----
+
+rt::MyTemplatesLoad Simulation::SetMyTemplatesFile(std::filesystem::path path) {
+    my_templates_file_ = std::move(path);
+    auto load = rt::LoadMyTemplatesFile(my_templates_file_.string());
+    my_templates_ = load.templates;
+    my_templates_unavailable_ = load.status == rt::MyTemplatesLoadStatus::kUnavailable;
+    // Templates from a newer Playden: the others can be used, but a change would lose those.
+    if (load.status == rt::MyTemplatesLoadStatus::kLoaded && !load.dropped.empty()) {
+        my_templates_unavailable_ = true;
+        push_notice({"my-templates-newer", "Some layout templates are from a newer Playden", "", false, kLiveNoticeSeconds, true,
+                     "Yours can be used, but can't be changed until that Playden is back."});
+    } else if (load.status == rt::MyTemplatesLoadStatus::kSetAside)
+        push_notice({"my-templates-set-aside", "Your layout templates could not be read", "", false, kLiveNoticeSeconds, true,
+                     "Playden kept the file as my-templates.json.bad and starts with no templates of yours."});
+    else if (my_templates_unavailable_)
+        push_notice({"my-templates-unavailable", "Your layout templates could not be read", "", false, kLiveNoticeSeconds, true,
+                     "They are left as they are, and can't be changed until Playden can read them."});
+    rebuild_view();
+    return load;
+}
+
+std::optional<Simulation::TemplateChoice> Simulation::template_choice(const std::string& id) const {
+    if (const auto* mine = rt::FindMyTemplate(my_templates_, id)) return TemplateChoice{mine->id, mine->name, mine->mode, mine->layout, true};
+    if (const auto* built_in = rt::FindControllerLayoutTemplate(id))
+        return TemplateChoice{built_in->id, built_in->name, built_in->mode, built_in->text, false};
+    return std::nullopt;
+}
+
+// The Templates sheet: the player's own first under their heading, then the built-in ones under theirs; without any
+// of the player's, the built-in ones alone.
+std::vector<std::string> Simulation::layout_template_actions() const {
+    std::vector<std::string> actions;
+    if (!my_templates_.empty()) {
+        actions.push_back("heading-templates-mine");
+        for (const auto& mine : my_templates_) actions.push_back("layout-template-" + mine.id);
+        actions.push_back("heading-templates-builtin");
+    }
+    for (const auto& item : rt::ControllerLayoutTemplates()) actions.push_back("layout-template-" + item.id);
+    actions.push_back("cancel");
+    return actions;
+}
+
+// The Templates sheet after a change to the player's templates: its rows again, on the same row or the nearest.
+void Simulation::refresh_layout_templates_sheet() {
+    if (state_.navigation.modals.empty() || state_.navigation.modals.back().id != "layout-templates") return;
+    auto& modal = state_.navigation.modals.back();
+    const auto focused = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
+    modal.action_keys = layout_template_actions();
+    const auto found = std::find(modal.action_keys.begin(), modal.action_keys.end(), focused);
+    int index = found == modal.action_keys.end() ? std::min(modal.focused_action, static_cast<int>(modal.action_keys.size()) - 1)
+                                                 : static_cast<int>(found - modal.action_keys.begin());
+    while (index > 0 && SheetDecoration(modal.action_keys[static_cast<std::size_t>(index)])) --index;
+    while (index + 1 < static_cast<int>(modal.action_keys.size()) && SheetDecoration(modal.action_keys[static_cast<std::size_t>(index)])) ++index;
+    modal.focused_action = index;
+    state_.navigation.focus_key = modal.action_keys[static_cast<std::size_t>(index)];
+}
+
+void Simulation::open_my_template_menu(const std::string& id) {
+    const auto* mine = rt::FindMyTemplate(my_templates_, id);
+    if (!mine) return;
+    my_template_menu_id_ = id;
+    open_layout_sheet("layout-mytemplate-menu", mine->name, {"mytemplate-rename", "mytemplate-update", "mytemplate-delete", "cancel"},
+                      "mytemplate-rename");
+}
+
+void Simulation::show_my_template_refusal(const rt::MyTemplateChange& change, const std::string& title) {
+    std::string body = change.detail;
+    switch (change.refusal) {
+        case rt::MyTemplateRefusal::kTooMany:
+            body = "You have " + std::to_string(rt::kMyTemplatesMax) + " templates. Delete one to save another.";
+            break;
+        case rt::MyTemplateRefusal::kSameAsBuiltIn:
+            body = "This layout is the " + change.detail + " template: change something first.";
+            break;
+        case rt::MyTemplateRefusal::kBadLayout:
+            body = "This layout can't be kept as a template: " + change.detail;
+            break;
+        default: break;
+    }
+    show_my_preset_dialog(title, body);
+}
+
+// Controller layout › Save as my template…: the keyboard, filled in with the game's name. What can't work is said
+// first: all 50 are used, or the layout is a built-in template as it is.
+void Simulation::start_my_template_save() {
+    if (!layout_edit_) return;
+    const auto& edit = *layout_edit_;
+    if (my_templates_.size() >= rt::kMyTemplatesMax) {
+        show_my_template_refusal({rt::MyTemplateRefusal::kTooMany, {}}, "The template was not saved");
+        return;
+    }
+    if (const auto* built_in = rt::FindBuiltInTemplateByLayout(rt::SerializeControllerLayout(edit.layout), edit.mode)) {
+        show_my_template_refusal({rt::MyTemplateRefusal::kSameAsBuiltIn, built_in->name}, "The template was not saved");
+        return;
+    }
+    const auto* known = find_game(state_, edit.game);
+    my_template_renaming_ = false;
+    start_editor("Template name", known ? known->title : std::string());
+}
+
+// The keyboard's Done for "Template name": saves the editor's layout as a new template, or renames the menu's one. A
+// name that can't be used keeps the keyboard open with the reason; any other refusal closes it and says why.
+void Simulation::commit_my_template_name() {
+    const auto name_refusal = [](rt::MyTemplateRefusal refusal) -> std::string {
+        switch (refusal) {
+            case rt::MyTemplateRefusal::kNameEmpty: return "Type a name for the template.";
+            case rt::MyTemplateRefusal::kNameTooLong: return "Up to 40 characters.";
+            case rt::MyTemplateRefusal::kNameNotPrintable: return "Letters, numbers and punctuation on one line.";
+            case rt::MyTemplateRefusal::kNameTaken: return "You already have a template with this name.";
+            default: return {};
+        }
+    };
+    const auto close_editor = [this] {
+        std::erase_if(state_.notices, [](const Notice& notice) { return notice.id == "setting-validation"; });
+        state_.editor.active = false;
+        state_.navigation.focus_key = state_.editor.opener_focus_key;
+    };
+    const auto now = my_preset_now_ ? my_preset_now_() : static_cast<std::int64_t>(std::time(nullptr));
+    auto next = my_templates_;
+    if (my_template_renaming_) {
+        auto change = rt::RenameMyTemplate(&next, my_template_menu_id_, state_.editor.value, now);
+        if (const auto why = name_refusal(change.refusal); !why.empty()) {
+            show_setting_validation("Template name", why);
+            return;
+        }
+        close_editor();
+        my_template_renaming_ = false;
+        if (change.ok()) change = commit_my_templates(std::move(next));
+        // Back to Templates, on the renamed row.
+        close_layout_sheets("layout-templates");
+        refresh_layout_templates_sheet();
+        if (!change.ok()) show_my_template_refusal(change, "The template was not renamed");
+        return;
+    }
+    if (!layout_edit_) { close_editor(); return; }
+    const auto uuid = my_preset_uuid_ ? my_preset_uuid_() : playden::RandomUuid();
+    const auto id = uuid ? rt::MyPresetIdFromUuid(*uuid) : std::nullopt;
+    auto change = rt::AddMyTemplate(&next, id.value_or(std::string()), state_.editor.value, layout_edit_->mode,
+                                    rt::SerializeControllerLayout(layout_edit_->layout), now);
+    if (const auto why = name_refusal(change.refusal); !why.empty()) {
+        show_setting_validation("Template name", why);
+        return;
+    }
+    close_editor();
+    if (change.ok()) change = commit_my_templates(std::move(next));
+    if (!change.ok()) {
+        show_my_template_refusal(change, "The template was not saved");
+        return;
+    }
+    const auto* saved = id ? rt::FindMyTemplate(my_templates_, *id) : nullptr;
+    show_my_preset_dialog("Saved \u201c" + (saved ? saved->name : std::string()) + "\u201d",
+                          "Other games can start from it in Controller > Controller layout > Templates.");
+}
+
+rt::MyTemplateChange Simulation::commit_my_templates(std::vector<rt::MyTemplate> next) {
+    if (live()) {
+        if (my_templates_unavailable_ || my_templates_file_.empty())
+            return {rt::MyTemplateRefusal::kNotSaved, "Your layout templates could not be read when Playden started."};
+        // A failed write may have renamed the new file before its directory sync failed: the old bytes go back, so the
+        // file says what the screen does; if they can't, changes stop until Playden starts again.
+        std::string previous;
+        const auto before = rt::ReadPrivateSettingsFile(my_templates_file_.string(), &previous);
+        if (before == rt::PrivateSettingsRead::kError)
+            return {rt::MyTemplateRefusal::kNotSaved, "Your layout templates could not be read before saving."};
+        std::string reason;
+        if (!rt::SaveMyTemplatesFile(my_templates_file_.string(), next, &reason)) {
+            std::string now;
+            const auto after = rt::ReadPrivateSettingsFile(my_templates_file_.string(), &now);
+            const bool unchanged = before == rt::PrivateSettingsRead::kPresent
+                                       ? after == rt::PrivateSettingsRead::kPresent && now == previous
+                                       : after == rt::PrivateSettingsRead::kMissing;
+            const bool restored = unchanged || (before == rt::PrivateSettingsRead::kPresent
+                                                    ? rt::WritePrivateSettingsFile(my_templates_file_.string(), previous)
+                                                    : rt::SaveMyTemplatesFile(my_templates_file_.string(), my_templates_, nullptr));
+            if (!restored) {
+                my_templates_unavailable_ = true;
+                return {rt::MyTemplateRefusal::kNotSaved,
+                        "The previous templates could not be restored. Restart Playden before changing templates again."};
+            }
+            return {rt::MyTemplateRefusal::kNotSaved, reason};
+        }
+    }
+    my_templates_ = std::move(next);
+    rebuild_view();
+    return {};
+}
+
 void Simulation::show_my_preset_dialog(std::string title, std::string body) {
     ModalEntry dialog{"confirmation", std::move(title), state_.navigation.focus_key, {"alert-ok"}, 0, false};
     dialog.body = body.empty() ? std::string(" ") : std::move(body);
@@ -17810,7 +18035,7 @@ void Simulation::build_controller_card(GameId game, const rt::EffectiveSettings&
     ViewData::Comparison card;
     const auto& preset = now.values["controller_preset"];
     std::string name;
-    if (rt::ControllerLayoutInEffect(now)) name = LayoutNameFor(now.values["controller_layout"].value, seed.mode);
+    if (rt::ControllerLayoutInEffect(now)) name = LayoutNameFor(now.values["controller_layout"].value, seed.mode, &my_templates_);
     else if (preset.available && !preset.value.empty() && preset.value != "none")
         name = choice_label(*rt::FindSetting("controller_preset"), preset.value) + " preset";
     else name = layout::ModeLabel(seed.mode);
@@ -17836,7 +18061,8 @@ void Simulation::build_controller_card(GameId game, const rt::EffectiveSettings&
             card.rows.push_back({layout::InputLabel(input), sends, sends});
         }
     if (!waiting.empty())
-        card.note = "\u26a0 After the runtime kit update the game uses the " + layout_label(waiting) +
+        card.note = "\u26a0 After the runtime kit update the game uses the " +
+                    LayoutNameFor(waiting, rt::ChosenValue(values.values.at("controller")), &my_templates_) +
                     " layout instead: Play or Maintenance > Update runtime.";
     (void)game;
     view_.comparison = std::move(card);
@@ -18391,7 +18617,10 @@ void Simulation::open_layout_editor() {
 }
 
 std::vector<std::string> Simulation::layout_editor_actions() const {
-    std::vector<std::string> actions = {"layout-templates", "divider"};
+    std::vector<std::string> actions = {"layout-templates"};
+    // Save is left out while my-templates.json can't be read (Playden said so at startup): it could only refuse.
+    if (!my_templates_unavailable_ && !(live() && my_templates_file_.empty())) actions.push_back("layout-save-template");
+    actions.push_back("divider");
     for (const auto& section : layout::Sections()) {
         actions.push_back("heading-layout-" + section.key);
         for (const auto input : section.inputs) actions.push_back("layout-input-" + std::string(rt::LayoutInputName(input)));
@@ -18564,8 +18793,17 @@ bool Simulation::layout_action(const std::string& name) {
     if (state_.navigation.modals.empty() || !layout_edit_) return false;
     const auto modal_id = state_.navigation.modals.back().id;
     auto& edit = *layout_edit_;
+    if (name == "mytemplate-delete-confirm") {
+        auto next = my_templates_;
+        auto change = rt::DeleteMyTemplate(&next, my_template_menu_id_);
+        if (change.ok()) change = commit_my_templates(std::move(next));
+        close_layout_sheets("layout-templates");
+        refresh_layout_templates_sheet();
+        if (!change.ok()) show_my_template_refusal(change, "The template was not deleted");
+        return true;
+    }
     if (name == "layout-template-confirm") {
-        const auto* chosen = rt::FindControllerLayoutTemplate(edit.template_id);
+        const auto chosen = template_choice(edit.template_id);
         if (!chosen) return true;
         rt::ControllerLayout parsed;
         if (rt::ParseControllerLayout(chosen->text, &parsed, nullptr)) {
@@ -18615,15 +18853,45 @@ bool Simulation::layout_action(const std::string& name) {
         return true;
     }
     if (name == "layout-templates" || name == "layout-triangle") {
-        std::vector<std::string> actions;
         const auto current = rt::SerializeControllerLayout(edit.layout);
         std::string focus;
-        for (const auto& item : rt::ControllerLayoutTemplates()) {
-            actions.push_back("layout-template-" + item.id);
-            if (item.text == current) focus = actions.back();
-        }
-        actions.push_back("cancel");
+        auto actions = layout_template_actions();
+        for (const auto& key : actions)
+            if (key.rfind("layout-template-", 0) == 0)
+                if (const auto chosen = template_choice(key.substr(16));
+                    chosen && chosen->text == current && chosen->mode == edit.mode && focus.empty())
+                    focus = key;
         open_layout_sheet("layout-templates", "Templates", std::move(actions), focus);
+        return true;
+    }
+    if (name == "layout-save-template") {
+        start_my_template_save();
+        return true;
+    }
+    if (name == "mytemplate-rename") {
+        const auto* mine = rt::FindMyTemplate(my_templates_, my_template_menu_id_);
+        if (!mine) return true;
+        my_template_renaming_ = true;
+        start_editor("Template name", mine->name);
+        return true;
+    }
+    if (name == "mytemplate-update") {
+        auto next = my_templates_;
+        const auto now = my_preset_now_ ? my_preset_now_() : static_cast<std::int64_t>(std::time(nullptr));
+        auto change = rt::ReplaceMyTemplateLayout(&next, my_template_menu_id_, edit.mode, rt::SerializeControllerLayout(edit.layout), now);
+        if (change.ok()) change = commit_my_templates(std::move(next));
+        close_layout_sheets("layout-templates");
+        refresh_layout_templates_sheet();
+        if (!change.ok()) show_my_template_refusal(change, "The template was not updated");
+        return true;
+    }
+    if (name == "mytemplate-delete") {
+        const auto* mine = rt::FindMyTemplate(my_templates_, my_template_menu_id_);
+        if (!mine) return true;
+        ModalEntry confirmation{"confirmation", "Delete \u201c" + mine->name + "\u201d?", state_.navigation.focus_key,
+                                {"cancel", "mytemplate-delete-confirm"}, 0, false};
+        confirmation.body = "Games that used it keep their layouts.";
+        open_modal(std::move(confirmation));
         return true;
     }
     if (name == "layout-remove") {
@@ -18644,7 +18912,7 @@ bool Simulation::layout_action(const std::string& name) {
         return true;
     }
     if (name.rfind("layout-template-", 0) == 0) {
-        const auto* chosen = rt::FindControllerLayoutTemplate(name.substr(16));
+        const auto chosen = template_choice(name.substr(16));
         if (!chosen) return true;
         edit.template_id = chosen->id;
         ModalEntry confirmation{"confirmation", "Use the " + chosen->name + " layout?", "", {"cancel", "layout-template-confirm"}, 0, false};
@@ -18796,6 +19064,8 @@ void Simulation::build_layout_row(const ModalEntry& modal, const std::string& ke
         item.title.clear();
         for (const auto& section : layout::Sections())
             if (key == "heading-layout-" + section.key) item.title = section.title;
+        if (key == "heading-templates-mine") item.title = "My templates \u00b7 made by you";
+        if (key == "heading-templates-builtin") item.title = "Built-in templates \u00b7 from Playden";
         return;
     }
     if (!layout_edit_) {
@@ -18823,7 +19093,29 @@ void Simulation::build_layout_row(const ModalEntry& modal, const std::string& ke
     }
     if (key == "layout-templates") {
         item.title = "Templates…";
-        item.subtitle = "Start again from a built-in layout.";
+        item.subtitle = my_templates_.empty() ? "Start again from a built-in layout." : "Start again from a built-in layout or one of yours.";
+        return;
+    }
+    if (key == "layout-save-template") {
+        item.title = "Save as my template…";
+        item.subtitle = "Keep this layout to start other games from.";
+        return;
+    }
+    if (key == "mytemplate-rename") {
+        item.title = "Rename…";
+        return;
+    }
+    if (key == "mytemplate-update") {
+        item.title = "Update from this game";
+        const auto* mine = rt::FindMyTemplate(my_templates_, my_template_menu_id_);
+        const bool same = mine && mine->mode == edit.mode && mine->layout == rt::SerializeControllerLayout(edit.layout);
+        item.enabled = mine && !same;
+        item.subtitle = item.enabled ? "Replaces it with this game's layout. No game changes." : "No changes to add";
+        return;
+    }
+    if (key == "mytemplate-delete") {
+        item.title = "Delete…";
+        item.dangerous = true;
         return;
     }
     if (key == "layout-remove") {
@@ -18935,10 +19227,11 @@ void Simulation::build_layout_row(const ModalEntry& modal, const std::string& ke
             item.subtitle = "The dead zone and the outer dead zone add up to 90% at most.";
         }
     } else if (key.rfind("layout-template-", 0) == 0) {
-        if (const auto* chosen = rt::FindControllerLayoutTemplate(key.substr(16))) {
+        if (const auto chosen = template_choice(key.substr(16))) {
             item.title = chosen->name;
             item.value = layout::ModeLabel(chosen->mode);
-            item.subtitle = TemplateDescription(chosen->id);
+            // The player's own say what they send in the card beside the sheet.
+            if (!chosen->mine) item.subtitle = TemplateDescription(chosen->id);
             item.selected = chosen->text == rt::SerializeControllerLayout(edit.layout) && chosen->mode == edit.mode;
         }
     }
@@ -18960,9 +19253,9 @@ void Simulation::build_layout_view(const ModalEntry& modal) {
         view_.eyebrow = "Game settings";
         const auto* game = find_game(state_, edit.game);
         const bool saved = layout_in_settings(edit.game);
-        const auto summary = rt::ControllerLayoutSummary(rt::SerializeControllerLayout(edit.layout));
+        const auto summary = LayoutNameFor(rt::SerializeControllerLayout(edit.layout), edit.mode, &my_templates_);
         view_.subtitle = (game ? game->title + " · " : std::string()) +
-                         (saved ? (summary.empty() ? std::string("Custom") : summary) : std::string("Not changed yet")) +
+                         (saved ? summary : std::string("Not changed yet")) +
                          " · " + layout::ModeLabel(edit.mode) + ". Changes apply the next time the game starts.";
         view_.legends = {"Cross Change", "Square Reset", "Triangle Templates", "L1/R1 Jump", "Circle Back"};
         if (const auto input = LayoutInputOfKey(focused)) panel(layout::DescribeInput(edit.layout, *input, edit.mode));
@@ -18970,11 +19263,37 @@ void Simulation::build_layout_view(const ModalEntry& modal) {
     } else {
         view_.eyebrow = "Controller layout";
         view_.legends = {"Cross Choose", "L1/R1 Jump", "Circle Back"};
-        if (modal.id == "layout-templates") {
+        if (modal.id == "layout-mytemplate-menu") {
+            // The template's name over its menu, and beside it what it sends.
+            view_.eyebrow = "My templates";
+            view_.legends = {"Cross Select", "L1/R1 Jump", "Circle Cancel"};
+            if (const auto* mine = rt::FindMyTemplate(my_templates_, my_template_menu_id_)) {
+                view_.subtitle = layout::ModeLabel(mine->mode) + ". Games that used it keep their layouts.";
+                rt::ControllerLayout layout;
+                if (!rt::ParseControllerLayout(mine->layout, &layout, nullptr)) layout = {};
+                rt::FillControllerLayout(&layout, mine->mode);
+                ViewData::Comparison card;
+                card.title = mine->name;
+                card.hint = "What each input sends with it.";
+                card.first = "Input";
+                card.column = "Sends";
+                card.compact = card.single = true;
+                card.rows.push_back({"Controller", layout::ModeLabel(mine->mode), layout::ModeLabel(mine->mode)});
+                for (const auto& section : layout::Sections())
+                    for (const auto input : section.inputs) {
+                        const auto sends = layout::InputSummary(layout, input, mine->mode);
+                        card.rows.push_back({layout::InputLabel(input), sends, sends});
+                    }
+                view_.comparison = std::move(card);
+            }
+        } else if (modal.id == "layout-templates") {
+            if (const auto chosen = focused.rfind("layout-template-", 0) == 0 ? template_choice(focused.substr(16)) : std::nullopt;
+                chosen && chosen->mine)
+                view_.legends = {"Cross Choose", "Triangle Manage", "L1/R1 Jump", "Circle Back"};
             view_.subtitle = "A template replaces every input and sets how the game sees the controller.";
             // What the focused template sends beside the sheet, input by input against the layout now.
             if (focused.rfind("layout-template-", 0) == 0)
-                if (const auto* chosen = rt::FindControllerLayoutTemplate(focused.substr(16))) {
+                if (const auto chosen = template_choice(focused.substr(16))) {
                     // A Controller the recipe locks stays as it is, as the confirmation says: the preview uses that mode.
                     rt::EffectiveSettings values;
                     const bool required = EffectiveSettingsFor(edit.game, &values) && controller_required(values);
@@ -18984,7 +19303,8 @@ void Simulation::build_layout_view(const ModalEntry& modal) {
                     rt::FillControllerLayout(&after, mode);
                     ViewData::Comparison comparison;
                     comparison.title = chosen->name;
-                    comparison.hint = TemplateDescription(chosen->id);
+                    comparison.hint = chosen->mine ? "Made by you. Games that used it keep their layouts when you change it."
+                                                   : TemplateDescription(chosen->id);
                     comparison.first = "Input";
                     comparison.column = "This template";
                     comparison.compact = true;

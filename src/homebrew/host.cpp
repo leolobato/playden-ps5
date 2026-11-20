@@ -575,6 +575,10 @@ int main(int argc, char** argv) {
             for (const auto& line : playden::runtime::MyPresetsLoadLog(
                      simulation.SetMyPresetsFile(playden::runtime::MyPresetsPath(*settings_file))))
                 std::fprintf(stderr, "%s\n", line.c_str());
+        if (settings_file)
+            for (const auto& line : playden::runtime::MyTemplatesLoadLog(
+                     simulation.SetMyTemplatesFile(playden::runtime::MyTemplatesPath(*settings_file))))
+                std::fprintf(stderr, "%s\n", line.c_str());
         auth_storage = std::make_unique<playden::Storage>(options->data_directory.string());
         auth_cm = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *auth_storage);
         auth_cm->SetOwner("auth");

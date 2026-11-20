@@ -841,6 +841,23 @@ void controller_panel(const std::filesystem::path& fixtures, const std::filesyst
           "panel: the card says what plays");
     while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
 
+    // No layout and the PlayStation controller, on a game whose recipe binds nothing: the Layout row says None.
+    {
+        rt::GameSettingsRecord plain;
+        plain.overrides = {{"controller", "playstation"}};
+        check(rt::SaveGameSettingsFile(settings_file, {{SteamId(900001), record}, {SteamId(900004), plain}}, &reason),
+              "panel: PlayStation saved");
+        simulation.SetGameSettingsFile(settings_file);
+        simulation.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"input-map", "touchpad-switch", "input-playstation"}, true));
+        simulation.action("details:900004");
+        activate(simulation, "details-more");
+        activate(simulation, "game-settings");
+        activate(simulation, "controller-panel");
+        check(find_row(simulation, "setting-controller_layout")->value == "None",
+              "panel: no layout and no preset is None, with the PlayStation controller too");
+        while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+        simulation.action("details:900001");
+    }
     // A layout that waits for the runtime kit update: the older rows under their heading, the card says what plays.
     record.overrides["controller_layout"] = rt::FindControllerLayoutTemplate("wasd-mouse")->text;
     check(rt::SaveGameSettingsFile(settings_file, {{SteamId(900001), record}}, &reason), "panel: layout saved");
@@ -924,6 +941,196 @@ void controller_panel(const std::filesystem::path& fixtures, const std::filesyst
           "panel: Reset leaves an exhausted record as it was");
     while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
     std::filesystem::remove(settings_file);
+}
+
+// Controller layout › My templates: Save as my template…, the Templates sheet with the player's own first, their menu
+// (Rename…, Update from this game, Delete…), the refusals, and the 50 limit read from my-templates.json.
+void controller_layout_my_templates(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    const auto game = SteamId(900002);
+    const auto top = [&] {
+        return simulation.state().navigation.modals.empty() ? std::string() : simulation.state().navigation.modals.back().id;
+    };
+    const auto saved = [&]() -> std::string {
+        const auto record = simulation.state().game_settings.find(game);
+        if (record == simulation.state().game_settings.end()) return "<none>";
+        const auto found = record->second.overrides.find("controller_layout");
+        return found == record->second.overrides.end() ? std::string("<none>") : found->second;
+    };
+    const auto type_name = [&](const std::string& name) {
+        simulation.action("clear");
+        simulation.text(name);
+        simulation.action("done");
+    };
+    check(simulation.scenario("controller-layout"), "my templates: the editor opens");
+    // The Gamepad defaults are the built-in Gamepad template: nothing of the player's to keep.
+    activate(simulation, "layout-save-template");
+    check(top() == "confirmation" && simulation.state().navigation.modals.back().body.find("the Gamepad template") != std::string::npos,
+          "my templates: a built-in template as it is is refused");
+    simulation.action("cross");
+    // Cross sends the left mouse button: a layout of the player's, saved under a name of theirs.
+    activate(simulation, "layout-input-cross");
+    activate(simulation, "layout-kind-mouse");
+    activate(simulation, "layout-mouse-left");
+    const auto layout = saved();
+    activate(simulation, "layout-save-template");
+    check(simulation.state().editor.active && simulation.state().editor.purpose == "Template name" &&
+              !simulation.state().editor.value.empty(),
+          "my templates: Save opens the keyboard with the game's name");
+    type_name("Menus");
+    check(top() == "confirmation" && simulation.state().navigation.modals.back().title == "Saved \u201cMenus\u201d",
+          "my templates: Save says so");
+    simulation.action("cross");
+    check(simulation.MyTemplates().size() == 1 && simulation.MyTemplates()[0].name == "Menus" &&
+              simulation.MyTemplates()[0].mode == "xinput" && simulation.MyTemplates()[0].layout == layout,
+          "my templates: the layout and its mode are kept");
+    check(simulation.view().subtitle.find("Menus") != std::string::npos, "my templates: the editor names the layout by its template");
+    // The same name again keeps the keyboard open with the reason.
+    activate(simulation, "layout-save-template");
+    type_name("menus");
+    check(simulation.state().editor.active && simulation.MyTemplates().size() == 1, "my templates: a name taken keeps the keyboard");
+    simulation.action("circle");
+
+    // Templates: the player's first under their heading; Triangle on one opens its menu.
+    simulation.action("triangle");
+    check(top() == "layout-templates", "my templates: Templates opens");
+    const auto mine = "layout-template-" + simulation.MyTemplates()[0].id;
+    {
+        const auto& keys = simulation.state().navigation.modals.back().action_keys;
+        check(keys.size() > 3 && keys[0] == "heading-templates-mine" && keys[1] == mine && keys[2] == "heading-templates-builtin",
+              "my templates: the player's come first, under their heading");
+        check(find_row(simulation, "heading-templates-mine")->title == "My templates \u00b7 made by you" &&
+                  find_row(simulation, "heading-templates-builtin")->title == "Built-in templates \u00b7 from Playden",
+              "my templates: the headings' words");
+        check(simulation.state().navigation.focus_key == mine, "my templates: Templates opens on the layout's own template");
+    }
+    check(simulation.view().comparison && simulation.view().comparison->hint.rfind("Made by you.", 0) == 0 &&
+              std::find(simulation.view().legends.begin(), simulation.view().legends.end(), "Triangle Manage") !=
+                  simulation.view().legends.end(),
+          "my templates: the preview and Triangle Manage");
+    simulation.action("triangle");
+    check(top() == "layout-mytemplate-menu" && simulation.state().navigation.modals.back().title == "Menus",
+          "my templates: Triangle opens the template's menu");
+    check(!find_row(simulation, "mytemplate-update")->enabled && find_row(simulation, "mytemplate-update")->subtitle == "No changes to add",
+          "my templates: nothing to update from the same layout");
+    activate(simulation, "mytemplate-rename");
+    check(simulation.state().editor.active && simulation.state().editor.value == "Menus", "my templates: Rename has the name");
+    type_name("Point and click");
+    check(top() == "layout-templates" && simulation.MyTemplates()[0].name == "Point and click" &&
+              simulation.state().navigation.focus_key == mine,
+          "my templates: Rename comes back to the renamed row");
+
+    // Gamepad, then Update: the built-in one can't be kept as the player's.
+    activate(simulation, "layout-template-gamepad");
+    activate(simulation, "layout-template-confirm");
+    simulation.action("triangle");
+    simulation.action("focus:" + mine);
+    simulation.action("triangle");
+    check(find_row(simulation, "mytemplate-update")->enabled, "my templates: another layout can update it");
+    activate(simulation, "mytemplate-update");
+    check(top() == "confirmation" && simulation.state().navigation.modals.back().title == "The template was not updated" &&
+              simulation.MyTemplates()[0].layout == layout,
+          "my templates: Update refuses a built-in layout");
+    simulation.action("cross");
+    // Delete: asked first; the game's layout stays.
+    const auto game_layout = saved();
+    simulation.action("focus:" + mine);
+    simulation.action("triangle");
+    activate(simulation, "mytemplate-delete");
+    check(top() == "confirmation" && simulation.state().navigation.modals.back().title == "Delete \u201cPoint and click\u201d?" &&
+              simulation.state().navigation.modals.back().body == "Games that used it keep their layouts.",
+          "my templates: Delete asks first");
+    simulation.action("focus:mytemplate-delete-confirm");
+    simulation.action("cross");
+    check(top() == "layout-templates" && simulation.MyTemplates().empty() && saved() == game_layout,
+          "my templates: Delete removes it and no game changes");
+    check(simulation.state().navigation.modals.back().action_keys.front() == "layout-template-gamepad",
+          "my templates: without any, Templates lists the built-in ones alone");
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+
+    // Templates are copies: a second game that used one keeps its copy when the template changes or goes.
+    {
+        check(simulation.scenario("controller-layout"), "my templates: the first game's editor");
+        activate(simulation, "layout-input-circle");
+        activate(simulation, "layout-kind-mouse");
+        activate(simulation, "layout-mouse-right");
+        activate(simulation, "layout-save-template");
+        type_name("Shared");
+        simulation.action("cross");
+        const auto shared = simulation.MyTemplates().back();
+        // The second game takes it from Templates.
+        while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+        // A game no earlier test left at its last settings revision.
+        const auto other = SteamId(900004);
+        simulation.action("details:900004");
+        activate(simulation, "details-more");
+        activate(simulation, "game-settings");
+        activate(simulation, "setting-controller_layout");
+        simulation.action("triangle");
+        activate(simulation, "layout-template-" + shared.id);
+        activate(simulation, "layout-template-confirm");
+        const auto copy = [&]() -> std::pair<std::string, std::string> {
+            const auto& overrides = simulation.state().game_settings.at(other).overrides;
+            const auto layout_it = overrides.find("controller_layout");
+            const auto mode_it = overrides.find("controller");
+            return {layout_it == overrides.end() ? std::string() : layout_it->second,
+                    mode_it == overrides.end() ? std::string() : mode_it->second};
+        };
+        const auto taken = copy();
+        check(taken.first == shared.layout, "my templates: a template's layout is copied into the game");
+        // The first game changes and updates the template, then deletes it: the second keeps its copy.
+        while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+        simulation.action("details:900002");
+        activate(simulation, "details-more");
+        activate(simulation, "game-settings");
+        activate(simulation, "setting-controller_layout");
+        activate(simulation, "layout-input-square");
+        activate(simulation, "layout-kind-mouse");
+        activate(simulation, "layout-mouse-middle");
+        simulation.action("triangle");
+        simulation.action("focus:layout-template-" + shared.id);
+        simulation.action("triangle");
+        activate(simulation, "mytemplate-update");
+        check(rt::FindMyTemplate(simulation.MyTemplates(), shared.id)->layout != shared.layout, "my templates: Update changes the template");
+        check(copy() == taken, "my templates: Update changes no game");
+        simulation.action("focus:layout-template-" + shared.id);
+        simulation.action("triangle");
+        activate(simulation, "mytemplate-delete");
+        simulation.action("focus:mytemplate-delete-confirm");
+        simulation.action("cross");
+        check(!rt::FindMyTemplate(simulation.MyTemplates(), shared.id) && copy() == taken, "my templates: Delete changes no game");
+        while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+    }
+
+    // 50 in my-templates.json: Save says so before the keyboard.
+    {
+        std::vector<rt::MyTemplate> full;
+        for (int n = 1; n <= static_cast<int>(rt::kMyTemplatesMax); ++n) {
+            char id[32];
+            std::snprintf(id, sizeof(id), "my-%016x", n);
+            check(rt::AddMyTemplate(&full, id, "Layout " + std::to_string(n), "xinput", layout, n).ok(), "my templates: fill");
+        }
+        const auto folder = profile.parent_path() / ("my-templates-" + std::to_string(getpid()));
+        std::filesystem::create_directories(folder);
+        std::filesystem::permissions(folder, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+        const auto path = rt::MyTemplatesPath(folder / "game-settings.json");
+        std::string reason;
+        check(rt::SaveMyTemplatesFile(path.string(), full, &reason), "my templates: 50 saved");
+        check(simulation.SetMyTemplatesFile(path).status == rt::MyTemplatesLoadStatus::kLoaded &&
+                  simulation.MyTemplates().size() == rt::kMyTemplatesMax,
+              "my templates: 50 load");
+        check(simulation.scenario("controller-layout"), "my templates: the editor opens again");
+        activate(simulation, "layout-input-cross");
+        activate(simulation, "layout-kind-mouse");
+        activate(simulation, "layout-mouse-right");
+        activate(simulation, "layout-save-template");
+        check(top() == "confirmation" && !simulation.state().editor.active &&
+                  simulation.state().navigation.modals.back().body.find("50 templates") != std::string::npos,
+              "my templates: Save refuses at 50 before the keyboard");
+        while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+        std::filesystem::remove_all(folder);
+    }
 }
 
 // Game settings › Controller layout (#443): the list editor, its sheets, the key picker and Templates. Opening it saves
@@ -1113,7 +1320,9 @@ void controller_layout_editor(const std::filesystem::path& fixtures, const std::
     // From Cross, Up reaches Templates over the divider; Cross opens it and Circle comes back to it.
     simulation.action("focus:layout-input-cross");
     simulation.action("up");
-    check(simulation.state().navigation.focus_key == "layout-templates", "layout editor: Up from Cross reaches Templates");
+    check(simulation.state().navigation.focus_key == "layout-save-template", "layout editor: Up from Cross reaches Save as my template");
+    simulation.action("up");
+    check(simulation.state().navigation.focus_key == "layout-templates", "layout editor: then Templates");
     simulation.action("cross");
     check(top() == "layout-templates", "layout editor: Cross on Templates opens the sheet");
     simulation.action("focus:layout-template-wasd-mouse");
@@ -5596,6 +5805,7 @@ int main(int argc, char** argv) {
     settings_revision_exhaustion_preserves_record(fixtures, profile);
     controller_layout_replaces_rows(fixtures, profile);
     controller_panel(fixtures, profile);
+    controller_layout_my_templates(fixtures, profile);
     clean();
     controller_layout_editor(fixtures, profile);
     settings_sheet_details(fixtures, profile);

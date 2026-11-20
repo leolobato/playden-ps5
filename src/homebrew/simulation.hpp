@@ -17,6 +17,7 @@
 #include "steam/backend/content_language.h"
 #include "runtime/kit_version.h"
 #include "runtime/my_presets.h"
+#include "runtime/my_templates.h"
 #include "runtime/online_session.h"
 #include "runtime/package_installer.h"
 #include "runtime/recipe_choice.h"
@@ -1653,6 +1654,10 @@ public:
     // read as presets is set aside (my-presets.json.bad) or, when that isn't safe, left alone with changes refused;
     // either shows a notice. The load comes back for the log (runtime::MyPresetsLoadLog).
     playden::runtime::MyPresetsLoad SetMyPresetsFile(std::filesystem::path path);
+    // The player's layout templates in my-templates.json (Controller layout › Templates), loaded and set aside as
+    // My presets are. The load comes back for the log (runtime::MyTemplatesLoadLog).
+    playden::runtime::MyTemplatesLoad SetMyTemplatesFile(std::filesystem::path path);
+    [[nodiscard]] const std::vector<playden::runtime::MyTemplate>& MyTemplates() const { return my_templates_; }
     // Where new presets get their id (a random UUID) and time (Unix seconds); unset: RandomUuid and the clock.
     void SetMyPresetSources(std::function<std::optional<std::string>()> uuid, std::function<std::int64_t()> now);
     // The player's presets, in the order they were made, and how many games' settings use each (by id; unused ones
@@ -1724,6 +1729,19 @@ public:
                            const std::string& focus);
     void close_layout_sheets(const std::string& keep);
     void build_layout_row(const ModalEntry& modal, const std::string& action_key, ViewRow& item) const;
+    // A template by its id: a built-in one (ControllerLayoutTemplates) or one of the player's ("my-…").
+    struct TemplateChoice {
+        std::string id, name, mode, text;
+        bool mine = false;
+    };
+    [[nodiscard]] std::optional<TemplateChoice> template_choice(const std::string& id) const;
+    [[nodiscard]] std::vector<std::string> layout_template_actions() const;
+    void start_my_template_save();
+    void commit_my_template_name();
+    void open_my_template_menu(const std::string& id);
+    void refresh_layout_templates_sheet();
+    void show_my_template_refusal(const playden::runtime::MyTemplateChange& change, const std::string& title);
+    playden::runtime::MyTemplateChange commit_my_templates(std::vector<playden::runtime::MyTemplate> next);
     void build_layout_view(const ModalEntry& modal);
     std::vector<std::string> layout_stick_actions() const;
     void save_layout();
@@ -2148,6 +2166,13 @@ private:
     std::filesystem::path my_presets_file_;
     std::vector<playden::runtime::MyPreset> my_presets_;
     bool my_presets_unavailable_ = false;
+    // The player's layout templates (SetMyTemplatesFile), with the same unavailable rule; the menu's template, and
+    // whether the "Template name" keyboard renames it (else it saves the layout as a new one).
+    std::filesystem::path my_templates_file_;
+    std::vector<playden::runtime::MyTemplate> my_templates_;
+    bool my_templates_unavailable_ = false;
+    std::string my_template_menu_id_;
+    bool my_template_renaming_ = false;
     bool gog_store_enabled_ = false;
     std::map<Store, bool> store_installs_;  // stores set with SetStoreInstalls; the rest use the default
     // The gog-sign-in dialog was opened and its sign-in not yet ended: closing the dialog (or losing it) ends it.

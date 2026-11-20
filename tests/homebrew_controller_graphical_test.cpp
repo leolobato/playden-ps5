@@ -1,6 +1,6 @@
 // homebrew_controller_graphical_test.cpp - Game settings' controller screens on screen: the layout editor with Templates
 // first, the Templates sheet with the focused template's preview beside it, and the Controller panel on runtime kits
-// that read layouts and on ones that don't yet.
+// that read layouts and on ones that don't yet; My templates in Templates, their menu, and Save as my template….
 // Each state is drawn and captured as a PNG beside the checks of what it shows.
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -72,6 +72,17 @@ int main(int argc, char** argv) {
                   model.view().comparison->rows.size() == 21,
               "the preview lists the controller and all 20 inputs");
         capture("templates-preview", "layout-templates");
+
+        // My templates: the player's first in Templates, with their preview and Triangle Manage; their menu.
+        check(model.scenario("controller-layout-mine"), "the My templates scenario opens");
+        check(model.view().surface == "layout-templates" && model.MyTemplates().size() == 2, "Templates with two of the player's");
+        check(model.view().comparison && model.view().comparison->title == "Point and click menus", "the preview is the player's template");
+        capture("templates-mine", "layout-templates");
+        check(model.action("triangle"), "Triangle opens the menu");
+        capture("template-menu", "layout-mytemplate-menu");
+        check(model.action("circle") && model.action("circle"), "back to the editor");
+        check(model.action("focus:layout-save-template"), "Save as my template… is in the editor");
+        capture("editor-save", "controller-layout");
 
         // Game settings: Controls is one row; the Controller panel with the card of what each input sends.
         check(model.scenario("controller-panel"), "the panel scenario opens");
