@@ -754,7 +754,9 @@ bool WatcomProgram(const std::string& path) {
 int DefaultsRevision(std::string_view engine) {
   engine = engine.substr(0, engine.find_first_of(", "));
   if (engine == "nwjs") return 2;  // 1: low-end device mode and a larger V8 heap. 2: low-end device mode gone
-  if (engine == "xna") return 1;   // 1: XNA's name alone no longer makes a .NET launcher the game (Borderlands 2)
+  // 1: XNA's name alone no longer makes a .NET launcher the game (Borderlands 2). 2: the profile turns Wine's d3d11 off
+  // (ProfileDllOverrides), so an XNA game set up before is published again.
+  if (engine == "xna") return 2;
   return 0;
 }
 
@@ -811,6 +813,7 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
     out.graphics = has("d3d11") ? "dxvk" : "opengl";
   } else if (probe.engine == "xna") {
     // Automatic graphics leave FNA without a GL pixel format ("No matching GL pixel format available").
+    // Wine Mono's FNA3D would still pick Wine's Direct3D 11: the profile turns it off (ProfileDllOverrides).
     out.graphics = "opengl";
   } else if (probe.engine == "love" || probe.engine == "sil" || probe.engine == "java") {
     // SIL (FTL) draws with OpenGL though its program also names Direct3D 11; under DXVK it

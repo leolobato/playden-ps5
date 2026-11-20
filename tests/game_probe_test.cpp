@@ -1092,7 +1092,7 @@ int main() {
       old.arguments.clear();
       old.detected = "xna graphics=opengl";
       old.defaults_revision = 0;
-      CHECK(DefaultsRevision("xna") == 1);
+      CHECK(DefaultsRevision("xna") == 2);
       CHECK(RefreshRecipeDefaults(bl2.string(), mono, &old));
       CHECK(old.id == recipe.id && old.launch_entries.size() == 2 &&
             old.launch_entries[0].executable == "Binaries/Win32/Borderlands2.exe" && old.launch_entries[0].id == "game" &&
@@ -1124,17 +1124,23 @@ int main() {
       chosen.defaults_revision = 0;
       CHECK(RefreshRecipeDefaults(bl2.string(), mono, &chosen));
       CHECK(chosen.launch_entries.size() == 1 && chosen.launch_entries[0].executable == "Binaries/Win32/Launcher.exe" &&
-            chosen.graphics == "opengl" && chosen.detected == "xna graphics=opengl" && chosen.defaults_revision == 1);
+            chosen.graphics == "opengl" && chosen.detected == "xna graphics=opengl" && chosen.defaults_revision == 2);
       CHECK(!RefreshRecipeDefaults(bl2.string(), mono, &chosen));
       // An XNA game set up before keeps its program and takes the new revision once.
       WritePe(bl2 / "Celeste.exe", {false, {"mscoree.dll"}, true, false, "Microsoft.Xna.Framework.Game"});
       CHECK(GenerateGameRecipe(504230, "Celeste", {{"", "", "Celeste.exe", "", ""}}, bl2.string(), &recipe, &reason, mono));
-      CHECK(recipe.defaults_revision == 1);
+      CHECK(recipe.defaults_revision == 2);
       auto celeste = recipe;
       celeste.defaults_revision = 0;
       CHECK(RefreshRecipeDefaults(bl2.string(), mono, &celeste));
       CHECK(celeste.launch_entries.size() == 1 && celeste.launch_entries[0].executable == "Celeste.exe" &&
-            celeste.graphics == "opengl" && celeste.defaults_revision == 1);
+            celeste.graphics == "opengl" && celeste.defaults_revision == 2);
+      CHECK(!RefreshRecipeDefaults(bl2.string(), mono, &celeste));
+      // One set up before its profile turned Wine's d3d11 off (revision 1) is published again once, as it was (#1140).
+      celeste.defaults_revision = 1;
+      CHECK(RefreshRecipeDefaults(bl2.string(), mono, &celeste));
+      CHECK(celeste.defaults_revision == 2 && celeste.graphics == "opengl" && celeste.arguments.empty() &&
+            celeste.launch_entries.size() == 1 && celeste.launch_entries[0].executable == "Celeste.exe");
       CHECK(!RefreshRecipeDefaults(bl2.string(), mono, &celeste));
     }
     // A program that draws, or the player's choice, is started as listed.

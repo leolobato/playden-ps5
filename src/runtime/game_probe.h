@@ -138,5 +138,7 @@ inline constexpr const char* kDxvkOverrides = "d3d8,d3d9,d3d10core,d3d11,dxgi=n"
 inline constexpr const char* kVkd3dProtonOverrides = "d3d12,d3d12core=n";
 // The same when the list does not already load a dxgi of its own choice.
 inline constexpr const char* kVkd3dProtonDxgiOverrides = "d3d12,d3d12core,dxgi=n";
+// The DLL override an XNA game drawn with OpenGL gets in its profile, so FNA3D draws with OpenGL, not Wine's Direct3D 11.
+inline constexpr const char* kXnaOpenGlOverrides = "d3d11=d";
 
 }  // namespace playden::runtime

@@ -1440,6 +1440,33 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
   return true;
 }
 
+std::string ProfileDllOverrides(const GameRecipe& recipe, const EffectiveSettings& settings) {
+  // Wine Mono's FNA3D tries Direct3D 11 before OpenGL. With Graphics = OpenGL there's no DXVK, so that is Wine's own
+  // Direct3D 11 on Zink. Celeste draws there, but TowerFall's ResizeBuffers fails ("Something's still holding back
+  // buffer 0") and no frame shows after it: the music plays on a black screen (#1151). With Wine's d3d11 turned off
+  // FNA3D draws with OpenGL, as FNA did before FNA3D. The entry is the profile's only: the rows and a shared recipe
+  // don't show it. A list that names d3d11 already keeps its own choice.
+  const auto& list = settings.dll_overrides;
+  const auto engine = std::string_view(recipe.detected).substr(0, recipe.detected.find_first_of(", "));
+  if (engine != "xna" || settings.graphics != "opengl") return list;
+  // Wine reads a name in any case, with or without ".dll", and "*d3d11" for every path.
+  for (const auto& entry : SplitDllOverrides(list)) {
+    auto names = entry.substr(0, entry.find('='));
+    for (auto& c : names) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+    std::size_t start = 0;
+    while (start <= names.size()) {
+      const auto end = std::min(names.find(',', start), names.size());
+      auto name = std::string_view(names).substr(start, end - start);
+      if (!name.empty() && name.front() == '*') name.remove_prefix(1);
+      if (name.size() > 4 && name.substr(name.size() - 4) == ".dll") name.remove_suffix(4);
+      if (name == "d3d11") return list;
+      start = end + 1;
+    }
+  }
+  auto with = list.empty() ? std::string(kXnaOpenGlOverrides) : kXnaOpenGlOverrides + (";" + list);
+  return with.size() <= kProsperoMaxDllOverrideBytes ? with : list;
+}
+
 bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& settings, const ProfileTarget& target,
                            ProsperoProfile* profile, std::string* reason) {
   const auto fail = [&](std::string why) {
@@ -1469,7 +1496,8 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   text += "executable = " + *root + "\\" + Backslashes(*executable) + "\n";
   text += "working_directory = " + (working.empty() ? *root : *root + "\\" + Backslashes(working)) + "\n";
   if (!settings.arguments.empty()) text += "arguments = " + settings.arguments + "\n";
-  if (!settings.dll_overrides.empty()) text += "dll_overrides = " + settings.dll_overrides + "\n";
+  if (const auto overrides = ProfileDllOverrides(recipe, settings); !overrides.empty())
+    text += "dll_overrides = " + overrides + "\n";
   text += "prefix = " + recipe.prefix + "\n";
   text += "runtime = " + recipe.runtime + "\n";
   text += "architecture = " + (settings.architecture.empty() ? recipe.architecture : settings.architecture) + "\n";

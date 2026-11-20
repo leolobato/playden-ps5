@@ -510,6 +510,9 @@ struct ProfileTarget {
 };
 
 // The full prospero profile: [application], [display], [input] and [debug].
+// The dll_overrides line of the profile: the settings' list, and for an XNA game drawn with OpenGL kXnaOpenGlOverrides
+// first, unless the list names d3d11 itself.
+std::string ProfileDllOverrides(const GameRecipe& recipe, const EffectiveSettings& settings);
 bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& settings, const ProfileTarget& target,
                            ProsperoProfile* profile, std::string* reason);
 

@@ -1020,6 +1020,48 @@ int main(int argc, char** argv) {
         settings.values.at("arguments").value == "--rendering-driver vulkan");
   CHECK(BuildEffectiveSettings(godot, nullptr, {}, KitCapabilities{}, &settings, &error));
   CHECK(settings.arguments == "--rendering-driver opengl3");
+  // An XNA game drawn with OpenGL turns Wine's d3d11 off in its profile, so FNA3D draws with OpenGL: on Wine's own
+  // Direct3D 11 TowerFall plays its music on a black screen (#1151). The rows and a shared recipe don't show it.
+  {
+    auto xna = opengl;
+    xna.detected = "xna graphics=opengl";
+    CHECK(BuildEffectiveSettings(xna, nullptr, {}, zink, &settings, &error));
+    CHECK(RenderProsperoProfile(xna, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\ndll_overrides = d3d11=d;d3d9=n\n") != std::string::npos);
+    CHECK(settings.dll_overrides == "d3d9=n" && settings.values.at("dll_overrides").value == "d3d9=n");
+    CHECK(BuildCommunityRecipe(xna, settings, playden::GameRef::Steam(220), "XNA").recipe.dll_overrides == "d3d9=n");
+    // Detected as plain "xna" too (a community recipe), and the player's added overrides follow it.
+    xna.detected = "xna";
+    CHECK(BuildEffectiveSettings(xna, nullptr, {{"library_overrides", "xinput1_3=n"}}, zink, &settings, &error));
+    CHECK(RenderProsperoProfile(xna, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\ndll_overrides = d3d11=d;d3d9=n;xinput1_3=n\n") != std::string::npos);
+    // A list that names d3d11 keeps its own choice.
+    CHECK(BuildEffectiveSettings(xna, nullptr, {{"dll_overrides", "dxgi,D3D11=n"}}, zink, &settings, &error));
+    CHECK(RenderProsperoProfile(xna, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\ndll_overrides = dxgi,D3D11=n\n") != std::string::npos);
+    for (const char* own : {"*d3d11=b", "D3D11.dll=n", "xinput1_3,*D3D11.DLL=n,b"}) {
+      CHECK(BuildEffectiveSettings(xna, nullptr, {{"dll_overrides", own}}, zink, &settings, &error));
+      CHECK(RenderProsperoProfile(xna, settings, target, &profile, &reason));
+      CHECK(profile.text.find("\ndll_overrides = " + std::string(own) + "\n") != std::string::npos);
+    }
+    // A name that only starts like it is another library; an empty list gets the entry alone.
+    CHECK(BuildEffectiveSettings(xna, nullptr, {{"dll_overrides", "d3d11on12=n"}}, zink, &settings, &error));
+    CHECK(RenderProsperoProfile(xna, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\ndll_overrides = d3d11=d;d3d11on12=n\n") != std::string::npos);
+    auto bare = xna;
+    bare.dll_overrides.clear();
+    CHECK(BuildEffectiveSettings(bare, nullptr, {}, zink, &settings, &error) && settings.dll_overrides.empty());
+    CHECK(RenderProsperoProfile(bare, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\ndll_overrides = d3d11=d\n") != std::string::npos);
+    // DXVK draws Direct3D 11 itself; other OpenGL games keep Wine's d3d11.
+    xna.graphics = "dxvk";
+    CHECK(BuildEffectiveSettings(xna, nullptr, {}, dxvk_kit, &settings, &error) && settings.graphics == "dxvk");
+    CHECK(RenderProsperoProfile(xna, settings, target, &profile, &reason));
+    CHECK(profile.text.find("d3d11=d") == std::string::npos);
+    CHECK(BuildEffectiveSettings(opengl, nullptr, {}, zink, &settings, &error));
+    CHECK(RenderProsperoProfile(opengl, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\ndll_overrides = d3d9=n\n") != std::string::npos);
+  }
   auto gdi = hl2;
   gdi.graphics = "gdi";
   CHECK(BuildEffectiveSettings(gdi, nullptr, {{"performance_overlay", "on"}}, KitCapabilities{}, &settings, &error));
