@@ -5,6 +5,7 @@
 #include "steam/secret.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
@@ -136,7 +137,128 @@ bool Read(const std::string& state_root, Publisher publisher, WipedJson* documen
   return state->text() == "expired";
 }
 
+// A parsed value written back as JSON (numbers keep their text; strings are escaped like JsonString).
+void Serialize(const Value& value, std::string& out) {
+  switch (value.type()) {
+    case Value::Type::kNull: out += "null"; return;
+    case Value::Type::kBool: out += value.boolean() ? "true" : "false"; return;
+    case Value::Type::kNumber: out += value.text(); return;
+    case Value::Type::kString: {
+      auto quoted = JsonString(value.text());
+      out += quoted;
+      ZeroizeSecret(quoted);
+      return;
+    }
+    case Value::Type::kArray: {
+      out += '[';
+      bool first = true;
+      for (const auto& item : value.array()) {
+        if (!first) out += ',';
+        first = false;
+        Serialize(item, out);
+      }
+      out += ']';
+      return;
+    }
+    case Value::Type::kObject: {
+      out += '{';
+      bool first = true;
+      for (const auto& [key, item] : value.object()) {
+        if (!first) out += ',';
+        first = false;
+        out += JsonString(key) + ':';
+        Serialize(item, out);
+      }
+      out += '}';
+      return;
+    }
+  }
+}
+
+// "Name" or "Object.Name" inside a blob (nullptr when absent).
+const Value* FindField(const Value& blob, const std::string& field) {
+  const auto dot = field.find('.');
+  if (dot == std::string::npos) return blob.Find(field);
+  const auto* parent = blob.Find(std::string_view(field).substr(0, dot));
+  return parent && parent->is_object() ? parent->Find(std::string_view(field).substr(dot + 1)) : nullptr;
+}
+
+std::string_view Trim(std::string_view text) {
+  while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) text.remove_prefix(1);
+  while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) text.remove_suffix(1);
+  return text;
+}
+
+// A cookie value Playden sends and keeps as is: printable ASCII without space, '"', ',', ';' or '\'.
+bool CookieValue(std::string_view value) {
+  return !value.empty() && value.size() <= 8192 && std::all_of(value.begin(), value.end(), [](unsigned char c) {
+    return c > 0x20 && c < 0x7f && c != '"' && c != ',' && c != ';' && c != '\\';
+  });
+}
+
+bool SameText(std::string_view a, std::string_view b) {
+  return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](unsigned char x, unsigned char y) {
+    return std::tolower(x) == std::tolower(y);
+  });
+}
+
+// The blob with the refreshed members: top-level fields replaced (or added) from `top`, and
+// Object.Name fields replaced inside their objects from `nested`. Values are JSON text.
+std::string Rewrite(const Value& blob, const std::vector<std::pair<std::string, std::string>>& top,
+                    const std::vector<std::pair<std::string, std::string>>& nested) {
+  const auto lookup = [](const std::vector<std::pair<std::string, std::string>>& list, std::string_view key) {
+    const auto found = std::find_if(list.begin(), list.end(), [&](const auto& entry) { return entry.first == key; });
+    return found == list.end() ? nullptr : &found->second;
+  };
+  std::string out = "{";
+  bool first = true;
+  const auto member = [&](const std::string& key) {
+    if (!first) out += ',';
+    first = false;
+    out += JsonString(key) + ':';
+  };
+  for (const auto& [key, value] : blob.object()) {
+    member(key);
+    if (const auto* replaced = lookup(top, key)) {
+      out += *replaced;
+      continue;
+    }
+    if (!value.is_object()) {
+      Serialize(value, out);
+      continue;
+    }
+    // An object some nested fields live in: its members, the renewed ones replaced.
+    out += '{';
+    bool inner_first = true;
+    for (const auto& [inner_key, inner] : value.object()) {
+      if (!inner_first) out += ',';
+      inner_first = false;
+      out += JsonString(inner_key) + ':';
+      if (const auto* renewed = lookup(nested, key + "." + inner_key)) out += *renewed;
+      else Serialize(inner, out);
+    }
+    out += '}';
+  }
+  for (const auto& [key, value] : top)
+    if (!blob.Find(key)) {
+      member(key);
+      out += value;
+    }
+  return out + "}";
+}
+
 }  // namespace
+
+const char* PublisherRefreshResultName(PublisherRefreshResult result) {
+  switch (result) {
+    case PublisherRefreshResult::kRefreshed: return "refreshed";
+    case PublisherRefreshResult::kExpired: return "expired";
+    case PublisherRefreshResult::kFailed: return "failed";
+    case PublisherRefreshResult::kNotRefreshable: return "not_refreshable";
+    case PublisherRefreshResult::kSignedOut: return "signed_out";
+  }
+  return "failed";
+}
 
 const char* PublisherSlug(Publisher publisher) {
   switch (publisher) {
@@ -190,7 +312,145 @@ PublisherAccount LoadPublisherAccount(const std::string& state_root, Publisher p
                                                                         : PublisherAccountState::kExpired;
   account.display = document.value->Find("display")->text();
   account.obtained_at = *document.value->Find("obtained_at")->AsUint64();
+  const auto* renewed = document.value->Find("refreshed_at");
+  account.renewed_at = renewed && renewed->AsUint64() ? *renewed->AsUint64() : account.obtained_at;
   return account;
+}
+
+PublisherRefreshOutcome RefreshPublisherAccount(const std::string& state_root, Publisher publisher,
+                                                const PublisherAccountSpec& account, const PublisherRefreshSpec& refresh,
+                                                const PublisherRefreshTransport& transport, std::uint64_t now) {
+  PublisherRefreshOutcome outcome;
+  const auto finish = [&](PublisherRefreshResult result, std::string reason) {
+    outcome.result = result;
+    outcome.reason = std::move(reason);
+    return outcome;
+  };
+  // The account as it was when the request left: written over only if it is still the same.
+  PublisherAccount before;
+  PublisherRefreshRequest request;
+  {
+    WipedJson document;
+    if (!Read(state_root, publisher, &document) || document.value->Find("state")->text() != "signed_in")
+      return finish(PublisherRefreshResult::kSignedOut, "no signed-in account");
+    const auto& blob = *document.value->Find("blob");
+    std::string cookie;
+    for (const auto& [name, field] : refresh.cookies) {
+      const auto* value = FindField(blob, field);
+      if (!value || !value->is_string() || !CookieValue(value->text())) {
+        ZeroizeSecret(cookie);
+        return finish(PublisherRefreshResult::kNotRefreshable, "the sign-in has no " + name + " to renew it with");
+      }
+      cookie += (cookie.empty() ? "" : "; ") + name + "=" + value->text();
+    }
+    request.url = refresh.url;
+    request.headers = refresh.headers;
+    if (!cookie.empty()) request.headers.emplace_back("Cookie", std::move(cookie));
+    ZeroizeSecret(cookie);
+  }
+  before = LoadPublisherAccount(state_root, publisher);
+  auto answer = transport ? transport(request) : PublisherRefreshAnswer{};
+  for (auto& [name, value] : request.headers) ZeroizeSecret(value);
+  struct WipeAnswer {
+    PublisherRefreshAnswer& answer;
+    ~WipeAnswer() {
+      ZeroizeSecret(answer.body);
+      for (auto& [name, value] : answer.headers) ZeroizeSecret(value);
+    }
+  } wipe_answer{answer};
+  outcome.status = answer.status;
+  if (!answer.reached) return finish(PublisherRefreshResult::kFailed, "no answer");
+  const auto unchanged = [&] {
+    const auto now_account = LoadPublisherAccount(state_root, publisher);
+    return now_account.state == PublisherAccountState::kSignedIn && now_account.obtained_at == before.obtained_at &&
+           now_account.renewed_at == before.renewed_at;
+  };
+  if (std::find(refresh.expired_statuses.begin(), refresh.expired_statuses.end(), answer.status) !=
+      refresh.expired_statuses.end()) {
+    if (!unchanged()) return finish(PublisherRefreshResult::kFailed, "the account changed during the refresh");
+    std::string reason;
+    if (!MarkPublisherAccountExpired(state_root, publisher, &reason)) return finish(PublisherRefreshResult::kFailed, reason);
+    return finish(PublisherRefreshResult::kExpired, "the server no longer accepts the sign-in");
+  }
+  if (answer.status != 200) return finish(PublisherRefreshResult::kFailed, "unexpected answer");
+
+  json::Limits limits;
+  limits.max_bytes = account.max_bytes;
+  limits.max_values = 16000;
+  limits.max_depth = 15;
+  WipedJson parsed;
+  parsed.value = json::Parse(answer.body, limits);
+  if (!parsed.value || !parsed.value->is_object() || !UniqueKeys(*parsed.value))
+    return finish(PublisherRefreshResult::kFailed, "the answer isn't a JSON object");
+  if (!refresh.ok_field.empty()) {
+    const auto* ok = parsed.value->Find(refresh.ok_field);
+    if (!ok || !ok->is_bool() || !ok->boolean()) return finish(PublisherRefreshResult::kFailed, "the answer says it failed");
+  }
+
+  // The renewed values, as JSON text: answer fields at the top, cookies where the recipe keeps them.
+  std::vector<std::pair<std::string, std::string>> top, nested;
+  struct WipeList {
+    std::vector<std::pair<std::string, std::string>>& list;
+    ~WipeList() {
+      for (auto& [name, value] : list) ZeroizeSecret(value);
+    }
+  } wipe_top{top}, wipe_nested{nested};
+  for (const auto& field : refresh.fields) {
+    const auto* value = parsed.value->Find(field);
+    if (!value) continue;
+    std::string text;
+    Serialize(*value, text);
+    top.emplace_back(field, std::move(text));
+  }
+  for (const auto& [name, field] : refresh.cookies) {
+    std::string value;
+    for (const auto& [header, line] : answer.headers) {
+      if (!SameText(header, "set-cookie")) continue;
+      const auto equals = line.find('=');
+      if (equals == std::string::npos || Trim(std::string_view(line).substr(0, equals)) != name) continue;
+      const auto end = line.find(';', equals + 1);
+      ZeroizeSecret(value);
+      value = std::string(Trim(std::string_view(line).substr(equals + 1, end == std::string::npos ? std::string::npos
+                                                                                                   : end - equals - 1)));
+    }
+    if (!CookieValue(value)) {
+      ZeroizeSecret(value);
+      return finish(PublisherRefreshResult::kFailed, "the answer didn't renew " + name);
+    }
+    auto text = JsonString(value);
+    ZeroizeSecret(value);
+    if (field.find('.') == std::string::npos) top.emplace_back(field, std::move(text));
+    else nested.emplace_back(field, std::move(text));
+  }
+
+  // The renewed sign-in must still be one Playden accepts.
+  std::string blob;
+  {
+    WipedJson document;
+    if (!Read(state_root, publisher, &document) || document.value->Find("state")->text() != "signed_in")
+      return finish(PublisherRefreshResult::kFailed, "the account changed during the refresh");
+    blob = Rewrite(*document.value->Find("blob"), top, nested);
+  }
+  struct WipeText {
+    std::string& text;
+    ~WipeText() { ZeroizeSecret(text); }
+  } wipe_blob{blob};
+  if (blob.size() > account.max_bytes) return finish(PublisherRefreshResult::kFailed, "the renewed sign-in is too large");
+  {
+    WipedJson renewed;
+    renewed.value = json::Parse(blob, limits);
+    const auto* stage = renewed.value && renewed.value->is_object() ? FirstString(*renewed.value, account.stage_fields)
+                                                                   : nullptr;
+    if (!stage || !StageValueMatches(stage->text(), account))
+      return finish(PublisherRefreshResult::kFailed, "the answer has no usable " + account.name + " credential");
+  }
+  if (!unchanged()) return finish(PublisherRefreshResult::kFailed, "the account changed during the refresh");
+  std::string text = "{\"version\":1,\"obtained_at\":" + std::to_string(before.obtained_at) +
+                     ",\"refreshed_at\":" + std::to_string(now) + ",\"state\":\"signed_in\",\"display\":" +
+                     JsonString(before.display) + ",\"blob\":" + blob + "}";
+  std::string reason;
+  if (!Write(state_root, publisher, text, &reason)) return finish(PublisherRefreshResult::kFailed, reason);
+  return finish(PublisherRefreshResult::kRefreshed, {});
 }
 
 bool PublisherStageValue(const std::string& state_root, Publisher publisher, const PublisherAccountSpec& spec,

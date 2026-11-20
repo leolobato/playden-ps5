@@ -80,6 +80,7 @@
 #include <filesystem>
 #include <map>
 #include <mutex>
+#include "homebrew/publisher_refresh_fetch.hpp"
 #include "homebrew/store_fetch.hpp"
 #include <memory>
 #include <optional>
@@ -630,6 +631,8 @@ int main() {
             config.writable_folders = {"/data/homebrew", "/data/playden", "/data/playden-games", "/data/playden/user",
                                        "/data/playden/logs"};
             config.registry_transport = playden::ps5::ShadowMountPost;
+            // A publisher pack's sign-in refresh (stage manifest "refresh"), over HTTPS with the store's trust anchors.
+            config.publisher_refresh = playden::homebrew::PublisherRefreshFetch(paths.trust_store);
             config.admit_kit = [](std::string* reason) -> std::optional<playden::homebrew::RuntimeKit> {
                 const auto firmware = playden::ps5::ConsoleFirmwareVersion();
                 playden::app::AppendLogLine(log_root, "runtime.log", "console_firmware=" + firmware.value_or("unknown") + " " +

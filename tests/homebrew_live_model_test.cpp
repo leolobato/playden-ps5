@@ -3147,6 +3147,16 @@ void live_publisher_accounts(const std::filesystem::path& base) {
     publishers.publishers[0].account = PublisherAccountState::SignedIn;
     model.SetPublishers(publishers);
     check(find_row(model, "details-publisher")->value == "Player One", "publisher: the game page names the account");
+    // The open page of a signed-in publisher game asks for its account to be checked (the runtime renews it then);
+    // an account the check finds expired says so.
+    check(model.DetailsPublisherCheck() == std::make_pair(std::string("rockstar"), SteamId(12210)),
+          "publisher: the game page has its account checked");
+    publishers.publishers[0].account = PublisherAccountState::Expired;
+    model.SetPublishers(publishers);
+    check(find_row(model, "details-publisher")->value == "Sign-in expired" && model.DetailsPublisherCheck().first.empty(),
+          "publisher: the game page says the sign-in expired, and checks no more");
+    publishers.publishers[0].account = PublisherAccountState::SignedIn;
+    model.SetPublishers(publishers);
 
     // Cancel at the prompt starts nothing.
     model.NotifyPublisherSignInNeeded(SteamId(12210));

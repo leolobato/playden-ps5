@@ -201,6 +201,127 @@ int main() {
   PublisherStatusSpec unsafe{"../status", "state=stale"};
   CHECK(!ApplyPublisherSessionStatus(state, Publisher::kRockstar, title.string(), unsafe, &expired, &reason));
 
+  // Refresh: a made-up recipe renewing the token from a cookie pair kept in the sign-in.
+  PublisherRefreshSpec recipe;
+  recipe.url = "https://accounts.example.test/renew?device=%7B%7D";
+  recipe.headers = {{"X-Kind", "renew"}};
+  recipe.cookies = {{"Access", "Session.Access"}, {"Renew", "Session.Renew"}};
+  recipe.fields = {"token", "Ticket"};
+  recipe.ok_field = "ok";
+  recipe.expired_statuses = {401, 403};
+  recipe.every_hours = 20;
+  const std::string kRenewed = "UkVORVdFRFRPS0VO";
+  const std::string session_blob = R"({"Name":"Player","token":")" + kToken +
+                                   R"(","Session":{"Access":"aaa","Renew":"bbb"},"keep":[1,{"x":true}],"n":1.50})";
+  const auto sign_in = [&](std::uint64_t at) {
+    CHECK(AcceptPublisherCredential(state, Publisher::kRockstar, session_blob, spec, at, &display, &reason));
+  };
+  // What the server answers, and what the transport saw.
+  PublisherRefreshRequest seen;
+  int calls = 0;
+  PublisherRefreshAnswer next;
+  const auto transport = [&](const PublisherRefreshRequest& request) {
+    ++calls;
+    seen = request;
+    return next;
+  };
+  const auto good_answer = [&] {
+    PublisherRefreshAnswer answer;
+    answer.reached = true;
+    answer.status = 200;
+    answer.headers = {{"Content-Type", "application/json"},
+                      {"Set-Cookie", "Access=ccc; expires=Sun, 22-Nov-2026 20:00:00 GMT; secure"},
+                      {"set-cookie", "Renew=ddd; path=/; SameSite=Strict"},
+                      {"Set-Cookie", "Other=zzz"}};
+    answer.body = R"({"ok":true,"token":")" + kRenewed + R"(","Ticket":"t-1","other":"x"})";
+    return answer;
+  };
+  const auto refresh = [&](std::uint64_t now) {
+    return RefreshPublisherAccount(state, Publisher::kRockstar, spec, recipe, transport, now);
+  };
+
+  // Renewed: the request carries the recipe's headers and the cookies; the answer's recipe fields and the
+  // renewed cookies replace the old ones, everything else stays as it was (numbers keep their text).
+  sign_in(1760001000);
+  next = good_answer();
+  auto outcome = refresh(1760002000);
+  CHECK(outcome.result == PublisherRefreshResult::kRefreshed && outcome.status == 200 && calls == 1);
+  CHECK(std::string(PublisherRefreshResultName(outcome.result)) == "refreshed");
+  CHECK(seen.url == recipe.url);
+  CHECK(seen.headers.size() == 2 && seen.headers[0] == std::make_pair(std::string("X-Kind"), std::string("renew")));
+  CHECK(seen.headers[1].first == "Cookie" && seen.headers[1].second == "Access=aaa; Renew=bbb");
+  CHECK(Read(file) == R"({"version":1,"obtained_at":1760001000,"refreshed_at":1760002000,"state":"signed_in",)"
+                      R"("display":"Player","blob":{"Name":"Player","token":")" + kRenewed +
+                          R"(","Session":{"Access":"ccc","Renew":"ddd"},"keep":[1,{"x":true}],"n":1.50,"Ticket":"t-1"}})");
+  CHECK(Mode(file) == 0600);
+  account = LoadPublisherAccount(state, Publisher::kRockstar);
+  CHECK(account.state == PublisherAccountState::kSignedIn && account.display == "Player");
+  CHECK(account.obtained_at == 1760001000 && account.renewed_at == 1760002000);
+  CHECK(PublisherStageValue(state, Publisher::kRockstar, spec, &value, &reason) && value == kRenewed);
+  // The next refresh sends the renewed pair.
+  next = good_answer();
+  CHECK(refresh(1760003000).result == PublisherRefreshResult::kRefreshed);
+  CHECK(seen.headers[1].second == "Access=ccc; Renew=ddd");
+  CHECK(LoadPublisherAccount(state, Publisher::kRockstar).renewed_at == 1760003000);
+
+  // A sign-in that was never renewed reports its sign-in time.
+  sign_in(1760004000);
+  CHECK(LoadPublisherAccount(state, Publisher::kRockstar).renewed_at == 1760004000);
+  const auto unrenewed = Read(file);
+  // Failures change nothing: no answer, another status, a refusal in the answer, a cookie not renewed,
+  // a token Playden can't use, an answer that isn't JSON.
+  next = PublisherRefreshAnswer{};
+  outcome = refresh(1760005000);
+  CHECK(outcome.result == PublisherRefreshResult::kFailed && Read(file) == unrenewed);
+  next = good_answer();
+  next.status = 500;
+  CHECK(refresh(1760005000).result == PublisherRefreshResult::kFailed && Read(file) == unrenewed);
+  next = good_answer();
+  next.body = R"({"ok":false,"token":")" + kRenewed + R"("})";
+  CHECK(refresh(1760005000).result == PublisherRefreshResult::kFailed && Read(file) == unrenewed);
+  next = good_answer();
+  next.headers.erase(next.headers.begin() + 2);  // Renew isn't set again
+  outcome = refresh(1760005000);
+  CHECK(outcome.result == PublisherRefreshResult::kFailed && outcome.reason.find("Renew") != std::string::npos);
+  CHECK(Read(file) == unrenewed);
+  next = good_answer();
+  next.headers[1].second = "Access=bad value; secure";  // a space: not a value Playden keeps
+  CHECK(refresh(1760005000).result == PublisherRefreshResult::kFailed && Read(file) == unrenewed);
+  next = good_answer();
+  next.body = R"({"ok":true,"token":"short"})";
+  CHECK(refresh(1760005000).result == PublisherRefreshResult::kFailed && Read(file) == unrenewed);
+  next = good_answer();
+  next.body = "<html>busy</html>";
+  CHECK(refresh(1760005000).result == PublisherRefreshResult::kFailed && Read(file) == unrenewed);
+  // Nothing in the outcome holds a secret.
+  CHECK(outcome.reason.find("aaa") == std::string::npos && outcome.reason.find(kRenewed) == std::string::npos);
+
+  // A sign-in in the meantime wins: the refresh doesn't write over it.
+  next = good_answer();
+  const auto racing = [&](const PublisherRefreshRequest&) {
+    sign_in(1760006000);
+    return good_answer();
+  };
+  outcome = RefreshPublisherAccount(state, Publisher::kRockstar, spec, recipe, racing, 1760007000);
+  CHECK(outcome.result == PublisherRefreshResult::kFailed);
+  account = LoadPublisherAccount(state, Publisher::kRockstar);
+  CHECK(account.obtained_at == 1760006000 && account.renewed_at == 1760006000);
+  CHECK(PublisherStageValue(state, Publisher::kRockstar, spec, &value, &reason) && value == kToken);
+
+  // An expired status: the account becomes Expired.
+  next = good_answer();
+  next.status = 403;
+  next.body = "{}";
+  outcome = refresh(1760008000);
+  CHECK(outcome.result == PublisherRefreshResult::kExpired && outcome.status == 403);
+  CHECK(LoadPublisherAccount(state, Publisher::kRockstar).state == PublisherAccountState::kExpired);
+  // Not signed in: nothing is sent.
+  calls = 0;
+  CHECK(refresh(1760009000).result == PublisherRefreshResult::kSignedOut && calls == 0);
+  // A sign-in without the cookies (a pasted one) is not refreshable: nothing is sent.
+  CHECK(AcceptPublisherCredential(state, Publisher::kRockstar, blob, spec, 1760010000, &display, &reason));
+  CHECK(refresh(1760011000).result == PublisherRefreshResult::kNotRefreshable && calls == 0);
+
   fs::remove_all(root);
   return 0;
 }

@@ -318,6 +318,105 @@ bool ParseStatus(const Value& root, std::optional<PublisherStatusSpec>* status, 
   return true;
 }
 
+// A credential field: "Name" or "Object.Name", each part [A-Za-z0-9_] (1-64 characters).
+bool BlobField(std::string_view field) {
+  const auto part = [](std::string_view text) {
+    return !text.empty() && text.size() <= 64 &&
+           std::all_of(text.begin(), text.end(), [](unsigned char c) { return std::isalnum(c) || c == '_'; });
+  };
+  const auto dot = field.find('.');
+  if (dot == std::string_view::npos) return part(field);
+  return part(field.substr(0, dot)) && part(field.substr(dot + 1));
+}
+
+// An HTTP header or cookie name: a token (RFC 9110), 1-64 characters.
+bool TokenName(std::string_view name) {
+  static constexpr std::string_view kExtra = "!#$%&'*+-.^_`|~";
+  return !name.empty() && name.size() <= 64 && std::all_of(name.begin(), name.end(), [](unsigned char c) {
+    return std::isalnum(c) || kExtra.find(static_cast<char>(c)) != std::string_view::npos;
+  });
+}
+
+bool ParseRefresh(const Value& root, const PublisherAccountSpec& account, std::optional<PublisherRefreshSpec>* refresh,
+                  std::string* reason) {
+  const Value* object = nullptr;
+  if (!Object(root, "refresh", false, &object, "", reason)) return false;
+  if (!object) return true;
+  static const std::set<std::string_view> kKeys = {"url", "headers", "cookies", "fields", "ok_field",
+                                                   "expired_statuses", "every_hours", "before_launch_minutes"};
+  for (const auto& entry : object->object())
+    if (!kKeys.count(entry.first)) return Fail(reason, "refresh." + entry.first + " is not a refresh setting");
+  PublisherRefreshSpec spec;
+  if (!String(*object, "url", true, &spec.url, "refresh.", reason)) return false;
+  if (spec.url.size() > 2048 || spec.url.rfind("https://", 0) != 0 || spec.url.size() == 8 || HasControl(spec.url) ||
+      spec.url.find(' ') != std::string::npos)
+    return Fail(reason, "refresh.url must be an https:// address without spaces");
+
+  const Value* headers = nullptr;
+  if (!Object(*object, "headers", false, &headers, "refresh.", reason)) return false;
+  if (headers) {
+    if (headers->object().size() > kMaxFieldNames) return Fail(reason, "refresh.headers holds more than 16 headers");
+    for (const auto& [name, value] : headers->object()) {
+      const auto lower = Lower(name);
+      if (!TokenName(name) || lower == "cookie" || lower == "host" || lower == "content-length")
+        return Fail(reason, "refresh.headers can't hold " + name);
+      if (!value.is_string() || value.text().size() > 1024 || HasControl(value.text()))
+        return Fail(reason, "refresh.headers." + name + " must be a single line");
+      spec.headers.emplace_back(name, value.text());
+    }
+  }
+
+  const Value* cookies = nullptr;
+  if (!Object(*object, "cookies", false, &cookies, "refresh.", reason)) return false;
+  if (cookies) {
+    if (cookies->object().size() > kMaxFieldNames) return Fail(reason, "refresh.cookies holds more than 16 cookies");
+    for (const auto& [name, field] : cookies->object()) {
+      if (!TokenName(name)) return Fail(reason, "refresh.cookies has a cookie name the runtime refuses: " + name);
+      if (!field.is_string() || !BlobField(field.text()))
+        return Fail(reason, "refresh.cookies." + name + " must name a sign-in field (Name or Object.Name)");
+      spec.cookies.emplace_back(name, field.text());
+    }
+  }
+
+  if (!Names(*object, "fields", 1, &spec.fields, "refresh.", reason)) return false;
+  for (const auto& field : spec.fields)
+    if (field.find('.') != std::string::npos || !BlobField(field))
+      return Fail(reason, "refresh.fields must name top-level answer fields");
+  // The credential Playden places comes from the answer, so it is checked like a sign-in.
+  if (std::none_of(account.stage_fields.begin(), account.stage_fields.end(), [&](const std::string& stage) {
+        return std::find(spec.fields.begin(), spec.fields.end(), stage) != spec.fields.end();
+      }))
+    return Fail(reason, "refresh.fields must hold one of account.stage_fields");
+
+  if (!String(*object, "ok_field", false, &spec.ok_field, "refresh.", reason)) return false;
+  if (object->Find("ok_field") && (spec.ok_field.find('.') != std::string::npos || !BlobField(spec.ok_field)))
+    return Fail(reason, "refresh.ok_field must name a top-level answer field");
+
+  const auto* statuses = object->Find("expired_statuses");
+  if (!statuses || !statuses->is_array() || statuses->array().empty() || statuses->array().size() > kMaxFieldNames)
+    return Fail(reason, "refresh.expired_statuses must be a list of 1 to 16 HTTP statuses");
+  for (const auto& status : statuses->array()) {
+    const auto code = status.AsUint64();
+    if (!code || *code < 400 || *code > 599) return Fail(reason, "refresh.expired_statuses holds a status outside 400-599");
+    spec.expired_statuses.push_back(static_cast<long>(*code));
+  }
+
+  const auto bounded = [&](const char* key, std::uint64_t low, std::uint64_t high, std::uint32_t* out, bool required) {
+    const auto* value = object->Find(key);
+    if (!value) return !required || Fail(reason, std::string("refresh.") + key + " is missing");
+    const auto number = value->AsUint64();
+    if (!number || *number < low || *number > high)
+      return Fail(reason, std::string("refresh.") + key + " must be " + std::to_string(low) + "-" + std::to_string(high));
+    *out = static_cast<std::uint32_t>(*number);
+    return true;
+  };
+  if (!bounded("every_hours", 1, 168, &spec.every_hours, true) ||
+      !bounded("before_launch_minutes", 0, 1440, &spec.before_launch_minutes, false))
+    return false;
+  *refresh = std::move(spec);
+  return true;
+}
+
 bool ParseHelper(const Value& root, std::optional<PublisherHelperSpec>* helper, std::string* reason) {
   const Value* object = nullptr;
   if (!Object(root, "helper", false, &object, "", reason)) return false;
@@ -355,7 +454,7 @@ bool ParsePublisherStageManifest(std::string_view text, PublisherStageManifest* 
   const auto parsed = json::Parse(text, limits);
   if (!parsed) return Fail(reason, "not valid JSON");
   if (!parsed->is_object() || !UniqueKeys(*parsed)) return Fail(reason, "must be a JSON object");
-  static const std::set<std::string_view> kKeys = {"version", "account", "signin", "runtime", "titles",
+  static const std::set<std::string_view> kKeys = {"version", "account", "signin", "refresh", "runtime", "titles",
                                                    "files", "ini", "credential_file", "status",
                                                    "covered_installers", "helper"};
   for (const auto& entry : parsed->object())
@@ -368,6 +467,7 @@ bool ParsePublisherStageManifest(std::string_view text, PublisherStageManifest* 
   const Value* signin = nullptr;
   if (!Object(*parsed, "signin", false, &signin, "", reason)) return false;
   if (signin && !Path(*signin, "page", true, &result.signin_page, "signin.", reason)) return false;
+  if (!ParseRefresh(*parsed, result.account, &result.refresh, reason)) return false;
   if (!ParseRuntime(*parsed, &result.runtime, reason) || !ParseTitles(*parsed, &result.titles, reason) ||
       !ParseFiles(*parsed, &result.files, reason) || !ParseIni(*parsed, result, &result.ini, reason) ||
       !Path(*parsed, "credential_file", true, &result.credential_file, "", reason) ||

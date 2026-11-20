@@ -219,6 +219,12 @@ struct RuntimeHostConfig {
   std::string publisher_cache_root;
   // Where publisher accounts are kept (the Steam state root, host path); empty: state_root.
   std::filesystem::path publisher_account_root;
+  // Sends a pack's sign-in refresh (stage manifest "refresh") and returns the answer; called on the
+  // worker, so it must give up within seconds. Empty: sign-ins are never refreshed.
+  runtime::PublisherRefreshTransport publisher_refresh;
+  // When the worker first checks whether a sign-in needs renewing, and how often after that.
+  std::chrono::milliseconds publisher_renew_first_check{std::chrono::minutes(1)};
+  std::chrono::milliseconds publisher_renew_interval{std::chrono::hours(1)};
   // Finds and verifies the pack and unpacks one publisher's release (worker only). Empty: the
   // pinned pack under publisher_root, hashed once while it passes, unpacked into the cache root.
   std::function<PublisherReleaseResult(runtime::Publisher publisher)> publisher_release;
@@ -753,6 +759,10 @@ class RuntimeHost {
   RuntimePublisherSignIn SubmitPublisherSignInNow(runtime::Publisher publisher, std::string credential,
                                                   std::chrono::milliseconds timeout);
   void SignOutPublisher(runtime::Publisher publisher);
+  // Checks a signed-in publisher account with the server when its pack can renew it and the last renewal
+  // is older than the pack's before_launch_minutes: a renewal that the server refuses marks it expired
+  // (RuntimeSnapshot::publishers). For a page showing the account (a game's details).
+  void CheckPublisher(runtime::Publisher publisher);
   // Checks the publisher pack again (an upload while Playden runs) and reloads the accounts.
   void RefreshPublishers();
   // Application thread only: starts the title of a prepared launch session.
@@ -1143,6 +1153,11 @@ class RuntimeHost {
                                        std::string* code, bool* placed, std::string* failure = nullptr);
   // Places the credential for a start outside Play (from Home); logs when it cannot.
   void PlacePublisherCredentialForHome(Composition& composition, const runtime::RuntimeInstall& record);
+  // Renews the publisher's sign-in with its pack's refresh recipe when the last renewal is old enough. A renewed sign-in replaces the credential already placed in
+  // its games' folders (a start from Home reads it); an expired one takes it out of them.
+  // before_launch: the recipe's before_launch_minutes is the age that counts (0: not renewed then),
+  // otherwise its every_hours.
+  void RenewPublisher(Composition& composition, runtime::Publisher publisher, bool before_launch);
   void RemovePublisherCredentialFor(Composition& composition, const runtime::RuntimeInstall& record);
   // Takes the credential out of every staged game folder of publisher.
   void RemovePublisherCredentialsOf(Composition& c, runtime::Publisher publisher);
@@ -1230,6 +1245,9 @@ class RuntimeHost {
   // More games to publish for a USB drive that changed places, and when to try next. Guarded by mutex_.
   bool drive_updates_pending_ = false;
   std::chrono::steady_clock::time_point drive_update_not_before_{};
+  // When the worker next checks whether a publisher sign-in needs renewing (RenewPublisher): a minute
+  // after startup, then hourly. Guarded by mutex_.
+  std::chrono::steady_clock::time_point renew_check_at_{};
   std::uint32_t report_home_start_ = 0;  // guarded by mutex_: the app ReportHomeStartsAtQuit names
   bool cleanup_requested_ = false;
   bool measure_requested_ = false;

@@ -398,7 +398,7 @@ struct RuntimeHost::InstallPublisher {
 
 // A publisher account request for the worker. The credential is wiped when the request goes.
 struct RuntimeHost::PublisherRequest {
-  enum class Kind { kSignIn, kSignOut, kRefresh } kind = Kind::kRefresh;
+  enum class Kind { kSignIn, kSignOut, kRefresh, kRenew } kind = Kind::kRefresh;
   rt::Publisher publisher = rt::Publisher::kRockstar;
   std::string credential;
   std::uint64_t serial = 0;
@@ -490,6 +490,7 @@ RuntimeHost::RuntimeHost(RuntimeHostConfig config) : config_(std::move(config)) 
     };
   if (!config_.finish_games_move)
     config_.finish_games_move = [state = config_.state_root](std::string* error) { return rt::MarkLayoutDone(state, error); };
+  renew_check_at_ = std::chrono::steady_clock::now() + config_.publisher_renew_first_check;
   application_thread_ = pthread_self();
 }
 RuntimeHost::~RuntimeHost() { Shutdown(); }
@@ -962,6 +963,22 @@ void RuntimeHost::SignOutPublisher(rt::Publisher publisher) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopping_) return;
+    publisher_requests_.push_back(std::move(request));
+  }
+  wake_.notify_all();
+}
+
+void RuntimeHost::CheckPublisher(rt::Publisher publisher) {
+  if (!config_.publisher_refresh || !Staged(publisher)) return;
+  auto request = std::make_unique<PublisherRequest>();
+  request->kind = PublisherRequest::Kind::kRenew;
+  request->publisher = publisher;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) return;
+    // One waiting check is enough.
+    for (const auto& queued : publisher_requests_)
+      if (queued->kind == PublisherRequest::Kind::kRenew && queued->publisher == publisher) return;
     publisher_requests_.push_back(std::move(request));
   }
   wake_.notify_all();
@@ -7237,6 +7254,8 @@ std::string RuntimeHost::PlacePublisherCredential(Composition& c, const rt::Runt
   }
   const auto name = PublisherDisplayName(game->publisher);
   const auto root = PublisherAccountRoot().string();
+  // The game gets a credential only minutes old when the pack can renew it (an expired one is refused below).
+  RenewPublisher(c, game->publisher, true);
   const auto account = rt::LoadPublisherAccount(root, game->publisher);
   if (account.state != rt::PublisherAccountState::kSignedIn) {
     *code = kPlayRefusalPublisherSignIn;
@@ -7286,6 +7305,53 @@ void RuntimeHost::RemovePublisherCredentialsOf(Composition& c, rt::Publisher pub
     const auto* game = PublisherOf(c, record);
     if (game && game->publisher == publisher) RemovePublisherCredentialFor(c, record);
   }
+}
+
+void RuntimeHost::RenewPublisher(Composition& c, rt::Publisher publisher, bool before_launch) {
+  if (!config_.publisher_refresh || !LoadPublisher(c, publisher).empty()) return;
+  const auto& manifest = c.publishers.at(publisher).manifest;
+  if (!manifest.refresh) return;
+  const auto& recipe = *manifest.refresh;
+  const std::uint64_t max_age =
+      before_launch ? static_cast<std::uint64_t>(recipe.before_launch_minutes) * 60 : std::uint64_t(recipe.every_hours) * 3600;
+  if (before_launch && max_age == 0) return;
+  const auto root = PublisherAccountRoot().string();
+  const auto account = rt::LoadPublisherAccount(root, publisher);
+  if (account.state != rt::PublisherAccountState::kSignedIn) return;
+  const auto now = static_cast<std::uint64_t>(std::max<std::int64_t>(0, config_.unix_time()));
+  // A clock set back makes the last renewal look new: renewing then is harmless.
+  if (now >= account.renewed_at && now - account.renewed_at < max_age) return;
+  const auto outcome = rt::RefreshPublisherAccount(root, publisher, manifest.account, recipe, config_.publisher_refresh, now);
+  const auto slug = std::string(rt::PublisherSlug(publisher));
+  // Only the result and status are logged: the request and answer hold the sign-in's secrets.
+  Log("publisher refresh publisher=" + slug + (before_launch ? " before=launch" : " before=schedule") +
+      " age_s=" + std::to_string(now >= account.renewed_at ? now - account.renewed_at : 0) +
+      " result=" + rt::PublisherRefreshResultName(outcome.result) +
+      (outcome.status ? " status=" + std::to_string(outcome.status) : std::string()) +
+      (outcome.reason.empty() ? std::string() : " reason=" + outcome.reason));
+  if (outcome.result == rt::PublisherRefreshResult::kExpired) {
+    RemovePublisherCredentialsOf(c, publisher);
+    PublishPublishers(c);
+    return;
+  }
+  if (outcome.result != rt::PublisherRefreshResult::kRefreshed) return;
+  // A start from Home reads the credential a game's folder already holds: those get the renewed one.
+  for (const auto& record : c.repository.Snapshot()) {
+    const auto* game = PublisherOf(c, record);
+    if (!game || game->publisher != publisher) continue;
+    struct stat info {};
+    if (::lstat((std::filesystem::path(game->title_folder) / manifest.credential_file).c_str(), &info) != 0 ||
+        !S_ISREG(info.st_mode))
+      continue;
+    std::string value, reason;
+    if (rt::PublisherStageValue(root, publisher, manifest.account, &value, &reason) &&
+        rt::WritePublisherCredential(manifest, game->title_folder, value, &reason))
+      Log("publisher credential app=" + std::to_string(record.runtime_number) + " renewed");
+    else
+      Log("publisher credential app=" + std::to_string(record.runtime_number) + " not renewed: " + reason);
+    playden::steam::ZeroizeSecret(value);
+  }
+  PublishPublishers(c);
 }
 
 void RuntimeHost::ApplyPublisherStatus(Composition& c, const rt::RuntimeInstall& record, bool from_home) {
@@ -7426,6 +7492,10 @@ void RuntimeHost::RunPublisherRequest(Composition* c, PublisherRequest& request)
     PublishPublishers(*c);
     // Starts from the PS5 Home screen since Playden last ran left their statuses.
     if (Staged(request.publisher)) ApplyHomeStatuses(*c, request.publisher);
+    return;
+  }
+  if (request.kind == PublisherRequest::Kind::kRenew) {
+    if (c) RenewPublisher(*c, request.publisher, true);
     return;
   }
   if (request.kind == PublisherRequest::Kind::kSignOut) {
@@ -7826,6 +7896,7 @@ bool RuntimeHost::RunServices() {
     bool clear_prepared = false;
     std::vector<std::shared_ptr<PendingRelocation>> relocations;
     std::vector<std::uint32_t> home_handoffs;
+    bool renew_check = false;
     {
       std::unique_lock<std::mutex> lock(mutex_);
       // Preparation changes install records that Handoff reads on the
@@ -7847,11 +7918,18 @@ bool RuntimeHost::RunServices() {
                (!relocation_requests_.empty() && !snapshot_.handoff_ready) ||
                (kit_reload_requested_ && !snapshot_.handoff_ready && !launch_poll_) ||
                (drive_updates_pending_ && !snapshot_.handoff_ready && !launch_poll_ && !PreparesHeldLocked() &&
-                std::chrono::steady_clock::now() >= drive_update_not_before_);
+                std::chrono::steady_clock::now() >= drive_update_not_before_) ||
+               (config_.publisher_refresh && !snapshot_.handoff_ready && !launch_poll_ &&
+                std::chrono::steady_clock::now() >= renew_check_at_);
+      };
+      // The next sign-in renewal check wakes the worker too (no check while a launch is handed off or followed).
+      const auto deadline = [&](std::chrono::steady_clock::time_point other) {
+        return config_.publisher_refresh ? std::min(other, renew_check_at_) : other;
       };
       // A held or paused queue holds the drive update too: its deadline wakes nothing until the hold ends.
       if (launch_poll_) wake_.wait_for(lock, kLaunchPollInterval, ready);
-      else if (drive_updates_pending_ && !PreparesHeldLocked()) wake_.wait_until(lock, drive_update_not_before_, [&] { return ready() || launch_poll_; });
+      else if (drive_updates_pending_ && !PreparesHeldLocked()) wake_.wait_until(lock, deadline(drive_update_not_before_), [&] { return ready() || launch_poll_; });
+      else if (config_.publisher_refresh) wake_.wait_until(lock, renew_check_at_, [&] { return ready() || launch_poll_; });
       else wake_.wait(lock, [&] { return ready() || launch_poll_; });
       if (stopping_) {
         // A sign-out not acted on yet still takes the kept sessions with it.
@@ -7908,6 +7986,11 @@ bool RuntimeHost::RunServices() {
       dismissals.swap(prepared_dismissals_);
       clear_prepared = prepared_clear_requested_;
       prepared_clear_requested_ = false;
+      if (config_.publisher_refresh && !snapshot_.handoff_ready && !launch_poll_ &&
+          std::chrono::steady_clock::now() >= renew_check_at_) {
+        renew_check = true;
+        renew_check_at_ = std::chrono::steady_clock::now() + config_.publisher_renew_interval;
+      }
     }
     // Work that may hand a game the Steam session (OnlineSessionStep) reads it now, before the hold: the session
     // store takes the hold under its own lock, and a sign-in in progress holds that lock. Wiped after the batch.
@@ -7937,6 +8020,9 @@ bool RuntimeHost::RunServices() {
     if (account_changed && composition) SyncOnlineSessions(*composition, false);
     for (auto& request : publisher_requests) RunPublisherRequest(composition.get(), *request);
     publisher_requests.clear();
+    if (renew_check && composition)
+      for (const auto publisher : kStagedPublishers)
+        if (Staged(publisher)) RenewPublisher(*composition, publisher, false);
     for (const auto& [app, install_path] : scans) {
       const auto kit = composition && composition->kit
           ? rt::KitCapabilitiesFromManifest(composition->kit->capabilities, true) : rt::KitCapabilities{};

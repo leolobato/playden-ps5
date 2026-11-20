@@ -10703,6 +10703,127 @@ unsigned FileMode(const fs::path& path) {
 }
 }  // namespace
 
+// A pack with a refresh recipe: Play renews a sign-in older than before_launch_minutes and places the renewed
+// credential; a check (a game's details page) that the server refuses marks the account expired and takes the
+// credential out of the game's folder; the worker renews on its own once every_hours have passed.
+struct RenewalServer {
+  std::mutex mutex;
+  int calls = 0;
+  std::string cookie;  // the last Cookie header sent
+  long status = 200;
+  std::string token = "bmV3dG9rZW4xMjM=";
+  std::string access = "access-2";
+};
+
+void PlaceRenewalRecipe(PublisherFixture& f, std::shared_ptr<RenewalServer> server,
+                        std::shared_ptr<std::atomic<std::int64_t>> clock) {
+  auto manifest = PublisherManifest("220");
+  const std::string signin = R"("signin": { "page": "page/index.html" },)";
+  const auto at = manifest.find(signin);
+  CHECK(at != std::string::npos);
+  manifest.insert(at + signin.size(), R"(
+  "refresh": { "url": "https://accounts.example.test/renew", "headers": { "X-Kind": "renew" },
+               "cookies": { "Access": "Session.Access" }, "fields": ["token"], "ok_field": "ok",
+               "expired_statuses": [401], "every_hours": 20, "before_launch_minutes": 30 },)");
+  Write(f.pack / "stage.json", manifest, 0644);
+  f.config.unix_time = [clock] { return clock->load(); };
+  f.config.publisher_refresh = [server](const PublisherRefreshRequest& request) {
+    std::lock_guard<std::mutex> lock(server->mutex);
+    ++server->calls;
+    CHECK(request.url == "https://accounts.example.test/renew");
+    for (const auto& [name, value] : request.headers)
+      if (name == "Cookie") server->cookie = value;
+    PublisherRefreshAnswer answer;
+    answer.reached = true;
+    answer.status = server->status;
+    answer.headers = {{"Set-Cookie", "Access=" + server->access + "; secure"}};
+    answer.body = R"({"ok":true,"token":")" + server->token + R"("})";
+    return answer;
+  };
+}
+
+const char* kRenewableSignIn = R"({"token":"c2VjcmV0dG9rZW4=","name":"Player","Session":{"Access":"access-1"}})";
+
+void RenewsPublisherSignInBeforePlayAndOnCheck() {
+  PublisherFixture f;
+  auto server = std::make_shared<RenewalServer>();
+  auto clock = std::make_shared<std::atomic<std::int64_t>>(1760000000);
+  PlaceRenewalRecipe(f, server, clock);
+  f.config.publisher_renew_first_check = std::chrono::hours(1);  // no scheduled check in this test
+  RuntimeHost host(f.config);
+  f.host = &host;
+  f.PrepareReady(host);
+  CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, kRenewableSignIn, std::chrono::seconds(30)).ok);
+
+  // Signed in 31 minutes ago: Play renews first and places the renewed credential.
+  clock->store(1760000000 + 31 * 60);
+  host.Play(220);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+  CHECK(Read(f.title / "credential.txt") == "bmV3dG9rZW4xMjM=\n");
+  {
+    std::lock_guard<std::mutex> lock(server->mutex);
+    CHECK(server->calls == 1 && server->cookie == "Access=access-1");
+  }
+  CHECK(f.Logged("publisher refresh publisher=rockstar before=launch age_s=1860 result=refreshed status=200"));
+  CHECK(!f.Logged("access-1") && !f.Logged("access-2") && !f.Logged("bmV3dG9rZW4xMjM="));
+  CHECK(host.Handoff());
+
+  // A check soon after does nothing; the account stays signed in.
+  host.CheckPublisher(Publisher::kRockstar);
+  clock->store(1760000000 + 3 * 3600);
+  // Hours later the server no longer takes the sign-in: the check marks it expired and takes the
+  // credential out of the game's folder.
+  {
+    std::lock_guard<std::mutex> lock(server->mutex);
+    server->status = 401;
+  }
+  host.CheckPublisher(Publisher::kRockstar);
+  auto snapshot = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return s.publishers.count(Publisher::kRockstar) &&
+           s.publishers.at(Publisher::kRockstar).account == PublisherAccountState::kExpired;
+  }, 30);
+  CHECK(snapshot.publishers.at(Publisher::kRockstar).display == "Player");
+  CHECK(!fs::exists(f.title / "credential.txt"));
+  CHECK(f.Logged("publisher refresh publisher=rockstar before=launch") && f.Logged("result=expired status=401"));
+  {
+    std::lock_guard<std::mutex> lock(server->mutex);
+    CHECK(server->calls == 2 && server->cookie == "Access=access-2");  // the renewed cookie was sent
+  }
+  host.Shutdown();
+}
+
+void RenewsPublisherSignInOnSchedule() {
+  PublisherFixture f;
+  auto server = std::make_shared<RenewalServer>();
+  auto clock = std::make_shared<std::atomic<std::int64_t>>(1760000000);
+  PlaceRenewalRecipe(f, server, clock);
+  f.config.publisher_renew_first_check = std::chrono::milliseconds(20);
+  f.config.publisher_renew_interval = std::chrono::milliseconds(20);
+  RuntimeHost host(f.config);
+  f.host = &host;
+  f.PrepareReady(host);
+  CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, kRenewableSignIn, std::chrono::seconds(30)).ok);
+  // Not due yet: the checks send nothing.
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  {
+    std::lock_guard<std::mutex> lock(server->mutex);
+    CHECK(server->calls == 0);
+  }
+  // Twenty hours later the next check renews it.
+  clock->store(1760000000 + 20 * 3600);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (!f.Logged("before=schedule age_s=72000 result=refreshed status=200") && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  CHECK(f.Logged("publisher refresh publisher=rockstar before=schedule age_s=72000 result=refreshed status=200"));
+  // Renewed now: the next checks don't send again.
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  {
+    std::lock_guard<std::mutex> lock(server->mutex);
+    CHECK(server->calls == 1);
+  }
+  host.Shutdown();
+}
+
 // A Rockstar game gets the pack's files when it is prepared; Play asks for the publisher's account
 // and places the credential last; a session that ends with the expired status asks again; the
 // maintenance action takes the files out and puts them back.
@@ -11483,6 +11604,8 @@ int main(int argc, char** argv) {
   ImportedGameTakesItsSteamAppIdsRecipe();
   LinkedRecipeAppliesUnderItsAlias();
   StagesPublisherGameAndPlaysWithAccount();
+  RenewsPublisherSignInBeforePlayAndOnCheck();
+  RenewsPublisherSignInOnSchedule();
   ExtractsPublisherRuntimeFromTheGamesInstaller();
   PublisherGamesThePackDoesNotCoverAreUntouched();
   PublisherProgramStartsAFreshlyPreparedGame();

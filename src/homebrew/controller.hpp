@@ -295,6 +295,8 @@ class Controller {
   // and sign-in page projected for Settings, the game page and the sign-in screen.
   void TickPublishers();
   PublisherAccounts* publisher_accounts_ = nullptr;
+  // The publisher game whose details page last asked the runtime to check its account: asked once per opening.
+  std::pair<std::string, GameId> checked_publisher_details_;
   Simulation& model_;
   std::unique_ptr<stores::Registry> owned_stores_;
   stores::Registry& stores_;

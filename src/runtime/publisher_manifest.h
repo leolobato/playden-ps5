@@ -1,10 +1,12 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace playden::runtime {
@@ -84,9 +86,25 @@ struct PublisherHelperSpec {
   std::string identity;
 };
 
+// How Playden renews a sign-in before it runs out: one HTTPS GET whose answer replaces some of the
+// sign-in's fields. Names refer to the credential blob: "Field" or "Object.Field" (one level).
+struct PublisherRefreshSpec {
+  std::string url;                                           // https://, no spaces or control characters
+  std::vector<std::pair<std::string, std::string>> headers;  // sent as is (not Cookie, Host or Content-Length)
+  // Cookie name -> blob field: sent from the sign-in, and the answer must set each of them again
+  // (Set-Cookie); the new values are stored back in the same fields.
+  std::vector<std::pair<std::string, std::string>> cookies;
+  std::vector<std::string> fields;      // answer fields copied into the sign-in; a stage field is among them
+  std::string ok_field;                 // a boolean the answer must hold true; "" = none
+  std::vector<long> expired_statuses;   // HTTP statuses that mean the sign-in is gone
+  std::uint32_t every_hours = 24;       // 1-168: renew when the last renewal is older
+  std::uint32_t before_launch_minutes = 0;  // 0-1440: renew before placing the credential; 0 = not then
+};
+
 struct PublisherStageManifest {
   PublisherAccountSpec account;
   std::string signin_page;  // "" = none
+  std::optional<PublisherRefreshSpec> refresh;
   std::optional<PublisherRuntimeSpec> runtime;
   std::map<std::string, PublisherTitleSpec> titles;  // Steam app id (decimal) -> title
   std::vector<PublisherStageFile> files;             // in placement order
@@ -100,7 +118,7 @@ struct PublisherStageManifest {
 };
 
 // Parses and validates a manifest. Required: version (1), account, titles, files and
-// credential_file; signin, runtime, ini, status, covered_installers and helper are optional. Paths are relative with '/'
+// credential_file; signin, refresh, runtime, ini, status, covered_installers and helper are optional. Paths are relative with '/'
 // separators and no empty, "." or ".." parts, drive, backslash or control characters. On
 // failure, reason says what is wrong.
 bool ParsePublisherStageManifest(std::string_view text, PublisherStageManifest* manifest, std::string* reason);

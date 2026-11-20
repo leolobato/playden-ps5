@@ -1060,6 +1060,14 @@ void Controller::TickPublishers() {
       case PublisherRequestKind::SignOut: runtime_->SignOutPublisher(publisher->publisher); break;
     }
   }
+  // A publisher game's details page shows its account: the runtime checks it with the server (when the
+  // pack can renew it and it wasn't renewed lately), so an account the server dropped shows as expired.
+  auto details = model_.DetailsPublisherCheck();
+  if (details != checked_publisher_details_) {
+    if (const auto* publisher = details.first.empty() ? nullptr : find(details.first))
+      runtime_->CheckPublisher(publisher->publisher);
+    checked_publisher_details_ = std::move(details);
+  }
   LivePublishers live;
   for (const auto& [publisher, view] : snapshot.publishers) {
     LivePublisher item;

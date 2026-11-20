@@ -3338,6 +3338,14 @@ const LivePublisher* Simulation::publisher_of(GameId id) const {
     return game == state_.publishers.games.end() ? nullptr : find_publisher(game->second);
 }
 
+std::pair<std::string, GameId> Simulation::DetailsPublisherCheck() const {
+    if (state_.navigation.route != Route::Details) return {};
+    const auto& id = state_.navigation.selected_game_id;
+    const auto* publisher = publisher_of(id);
+    if (!publisher || publisher->account != PublisherAccountState::SignedIn) return {};
+    return {publisher->slug, id};
+}
+
 void Simulation::SetPublishers(LivePublishers publishers) {
     // The controller projects every frame; only a change rebuilds the screen.
     if (publishers == state_.publishers) return;
@@ -10529,7 +10537,8 @@ void Simulation::rebuild_view() {
                     if (const auto* publisher = publisher_of(game->id)) {
                         auto& account = row("details-publisher", RowKind::Status, publisher->name + " account", "");
                         account.value = publisher->account == PublisherAccountState::SignedIn
-                            ? (publisher->display.empty() ? "Signed in" : publisher->display) : "Sign in required";
+                            ? (publisher->display.empty() ? "Signed in" : publisher->display)
+                            : publisher->account == PublisherAccountState::Expired ? "Sign-in expired" : "Sign in required";
                         account.enabled = false;
                     }
                 }

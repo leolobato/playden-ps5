@@ -178,8 +178,67 @@ int main() {
                "stage_pattern":{"charset":"base64","min":1,"max":10},"max_bytes":100},
     "titles":{},"files":[],"credential_file":"credential.txt"})";
   CHECK(ParsePublisherStageManifest(minimal, &manifest, &reason));
-  CHECK(manifest.signin_page.empty() && !manifest.runtime && !manifest.ini && !manifest.status);
+  CHECK(manifest.signin_page.empty() && !manifest.runtime && !manifest.ini && !manifest.status && !manifest.refresh);
   CHECK(ExpandPublisherStageIni(manifest, PublisherTitleSpec{}, "", &lines, &reason) && lines.empty());
+
+  // The refresh recipe.
+  {
+    const std::string kRefresh = R"("refresh": {
+      "url": "https://accounts.example.test/renew?device=%7B%22id%22%3A1%7D",
+      "headers": { "X-Kind": "renew", "Accept": "application/json" },
+      "cookies": { "Access": "Session.Access", "Renew": "Session.Renew" },
+      "fields": ["token", "Ticket"],
+      "ok_field": "ok",
+      "expired_statuses": [401, 403],
+      "every_hours": 20,
+      "before_launch_minutes": 30
+    },)";
+    const auto with = [&](const std::string& refresh) {
+      return Replace(kManifest, "\"signin\": { \"page\": \"page/index.html\" },",
+                     "\"signin\": { \"page\": \"page/index.html\" }, " + refresh);
+    };
+    PublisherStageManifest renewing;
+    CHECK(ParsePublisherStageManifest(with(kRefresh), &renewing, &reason));
+    CHECK(renewing.refresh && renewing.refresh->url == "https://accounts.example.test/renew?device=%7B%22id%22%3A1%7D");
+    CHECK(renewing.refresh->headers.size() == 2 && renewing.refresh->headers[0].first == "X-Kind" &&
+          renewing.refresh->headers[0].second == "renew");
+    CHECK(renewing.refresh->cookies.size() == 2 && renewing.refresh->cookies[1].first == "Renew" &&
+          renewing.refresh->cookies[1].second == "Session.Renew");
+    CHECK((renewing.refresh->fields == std::vector<std::string>{"token", "Ticket"}));
+    CHECK(renewing.refresh->ok_field == "ok" && (renewing.refresh->expired_statuses == std::vector<long>{401, 403}));
+    CHECK(renewing.refresh->every_hours == 20 && renewing.refresh->before_launch_minutes == 30);
+    // Optional parts.
+    const std::string bare = R"("refresh": { "url": "https://a.example.test/r", "fields": ["Token"],
+      "expired_statuses": [401], "every_hours": 1 },)";
+    CHECK(ParsePublisherStageManifest(with(bare), &renewing, &reason));
+    CHECK(renewing.refresh->headers.empty() && renewing.refresh->cookies.empty() && renewing.refresh->ok_field.empty());
+    CHECK(renewing.refresh->before_launch_minutes == 0);
+    // Refused.
+    const auto refused = [&](const std::string& from, const std::string& to) {
+      std::string why;
+      CHECK(!Parses(with(Replace(kRefresh, from, to)), &why));
+      CHECK(why.find("refresh") != std::string::npos);
+    };
+    refused("https://accounts", "http://accounts");                                // not https
+    refused("renew?device", "renew device");                                       // a space
+    refused("\"X-Kind\": \"renew\"", "\"Cookie\": \"a=b\"");                       // Playden sets Cookie
+    refused("\"X-Kind\": \"renew\"", "\"Host\": \"elsewhere\"");
+    refused("\"X-Kind\": \"renew\"", "\"X Kind\": \"renew\"");                     // not a header name
+    refused("\"X-Kind\": \"renew\"", "\"X-Kind\": \"re\\nnew\"");                  // a line break
+    refused("\"Session.Access\"", "\"Session.Access.Deep\"");                      // one level only
+    refused("\"Session.Access\"", "\"Session.\"");
+    refused("\"Access\": \"Session.Access\"", "\"Acc;ess\": \"Session.Access\"");  // not a cookie name
+    refused("[\"token\", \"Ticket\"]", "[\"Ticket\"]");                            // no stage field renewed
+    refused("[\"token\", \"Ticket\"]", "[\"token\", \"A.B\"]");                    // answer fields are top-level
+    refused("[401, 403]", "[]");
+    refused("[401, 403]", "[200]");
+    refused("\"every_hours\": 20", "\"every_hours\": 0");
+    refused("\"every_hours\": 20", "\"every_hours\": 169");
+    refused("\"before_launch_minutes\": 30", "\"before_launch_minutes\": 1441");
+    refused("\"ok_field\": \"ok\"", "\"ok_field\": \"a.b\"");
+    refused("\"ok_field\": \"ok\"", "\"retry\": 3");                               // an unknown setting
+    refused("\"every_hours\": 20,", "");                                           // every_hours is required
+  }
   // No titles: no ${title.<key>} is defined everywhere.
   CHECK(!Parses(Replace(Replace(kManifest, "\"4000\": { \"arch\": \"x86\", \"args\": \"-one -two=4000\" },\n    \"4001\": { \"arch\": \"x64\", \"args\": \"\" }", ""),
                         "\"debug=0\"", "\"debug=${title.mode}\"")));

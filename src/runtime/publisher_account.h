@@ -4,8 +4,11 @@
 #include "runtime/publisher_pack.h"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace playden::runtime {
 
@@ -20,7 +23,37 @@ struct PublisherAccount {
   PublisherAccountState state = PublisherAccountState::kSignedOut;
   std::string display;          // the account's display field ("" when the blob has none)
   std::uint64_t obtained_at = 0;  // unix seconds of the sign-in
+  std::uint64_t renewed_at = 0;   // unix seconds of the last refresh (RefreshPublisherAccount), else obtained_at
 };
+
+// One refresh request and its answer, for the transport the caller provides (HTTPS in Playden, a
+// fake in tests). The request's Cookie header holds secrets: the transport never logs it.
+struct PublisherRefreshRequest {
+  std::string url;
+  std::vector<std::pair<std::string, std::string>> headers;
+};
+struct PublisherRefreshAnswer {
+  bool reached = false;  // false: no HTTP answer (network, TLS, timeout)
+  long status = 0;
+  std::vector<std::pair<std::string, std::string>> headers;  // all of them, Set-Cookie included, in order
+  std::string body;
+};
+using PublisherRefreshTransport = std::function<PublisherRefreshAnswer(const PublisherRefreshRequest&)>;
+
+enum class PublisherRefreshResult {
+  kRefreshed,        // the sign-in now holds the answer's fields and cookies
+  kExpired,          // the server says the sign-in is gone: the account is Expired
+  kFailed,           // nothing changed (no answer, an answer Playden can't use, or a sign-in in the meantime)
+  kNotRefreshable,   // the sign-in lacks the refresh cookies (pasted, or from an older page)
+  kSignedOut,        // no signed-in account
+};
+struct PublisherRefreshOutcome {
+  PublisherRefreshResult result = PublisherRefreshResult::kFailed;
+  long status = 0;     // the HTTP status, when there was an answer
+  std::string reason;  // for the log; never holds a secret
+};
+
+const char* PublisherRefreshResultName(PublisherRefreshResult result);
 
 // "steamhost", "ea", "rockstar" or "ubisoft": the name used in file names and recipes.
 const char* PublisherSlug(Publisher publisher);
@@ -45,6 +78,16 @@ bool PublisherStageValue(const std::string& state_root, Publisher publisher, con
 
 // Drops the blob and keeps the display name and sign-in time. Nothing to do when signed out.
 bool MarkPublisherAccountExpired(const std::string& state_root, Publisher publisher, std::string* reason);
+
+// Renews a signed-in account with the pack's refresh recipe: one request carrying the recipe's
+// cookies (read from the sign-in), then the answer's recipe fields and renewed cookies replace the
+// old ones, and renewed_at becomes now. The display name and sign-in time stay. An answer whose
+// status is one of refresh.expired_statuses marks the account expired. The account is re-read
+// before writing: a sign-in, sign-out or expiry in the meantime wins and the result is kFailed.
+// Every copy of a secret is wiped.
+PublisherRefreshOutcome RefreshPublisherAccount(const std::string& state_root, Publisher publisher,
+                                                const PublisherAccountSpec& account, const PublisherRefreshSpec& refresh,
+                                                const PublisherRefreshTransport& transport, std::uint64_t now);
 
 // Deletes the account. Signed out already is success.
 bool SignOutPublisherAccount(const std::string& state_root, Publisher publisher, std::string* reason);

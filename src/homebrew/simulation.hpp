@@ -1493,6 +1493,9 @@ public:
     // screen two seconds later (and starts the game it was for). Requests are the player's.
     void SetPublishers(LivePublishers publishers);
     [[nodiscard]] std::vector<PublisherRequest> TakePublisherRequests();
+    // The publisher slug of the game whose details page is open with a signed-in account ("" otherwise),
+    // with the game: the controller has the runtime check that sign-in while the page shows it.
+    [[nodiscard]] std::pair<std::string, GameId> DetailsPublisherCheck() const;
     // Play was refused because the game's publisher needs the player to sign in: ask to.
     void NotifyPublisherSignInNeeded(GameId id);
     void UpdateRuntime(RuntimeState runtime, const std::vector<LiveRuntimeGame>& games);
