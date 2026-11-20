@@ -314,10 +314,35 @@ int main() {
         CHECK(result.ok && result.changed == std::vector<std::string>{name});
         CHECK(Read(root / name) == expected && Read(root / (name + ".orig")) == wrapped[i]);
         CHECK(!fs::exists(root / (".playden-" + name + ".tmp")) && !fs::exists(root / (".playden-" + name + ".orig.tmp")));
+        // The next start finds it unpacked and changes nothing, also when it still reads as wrapped (a wrapper
+        // entered from a TLS callback keeps its section).
+        const auto again = UnpackSteamStubPrograms(root.string(), {name}, chunk);
+        CHECK(again.ok && again.changed.empty() && again.found == std::vector<std::string>{name});
+        CHECK(Read(root / name) == expected && Read(root / (name + ".orig")) == wrapped[i]);
+        CHECK(!fs::exists(root / (".playden-" + name + ".check.tmp")));
         fs::remove(root / name);
         fs::remove(root / (name + ".orig"));
       }
     }
+  }
+  {  // A game update brings a newer wrapped program of the same size, entered from a TLS callback: it is not the
+     // unpacked program, so it is kept as the new .orig and unpacked.
+    const auto root = base / "tls-update";
+    fx::Spec first, update;
+    first.tls = update.tls = true;
+    update.app_id = first.app_id + 1;
+    const auto old_wrapped = fx::Build(first), new_wrapped = fx::Build(update);
+    CHECK(old_wrapped.size() == new_wrapped.size() && old_wrapped != new_wrapped);
+    Write(root / "Game.exe", old_wrapped);
+    CHECK(UnpackSteamStubPrograms(root.string(), {"Game.exe"}).changed.size() == 1);
+    Write(root / "Game.exe", new_wrapped);
+    auto expected = new_wrapped;
+    std::string why;
+    CHECK(UnpackSteamStub(&expected, &why));
+    const auto result = UnpackSteamStubPrograms(root.string(), {"Game.exe"});
+    CHECK(result.ok && result.changed == std::vector<std::string>{"Game.exe"});
+    CHECK(Read(root / "Game.exe") == expected && Read(root / "Game.exe.orig") == new_wrapped);
+    CHECK(!fs::exists(root / ".playden-Game.exe.check.tmp"));
   }
   {  // A variant Playden doesn't unpack stops with a sentence and leaves the files alone.
     const auto root = base / "refused";

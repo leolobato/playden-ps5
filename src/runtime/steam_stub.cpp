@@ -926,6 +926,43 @@ bool Commit(int file, const fs::path& temporary, const fs::path& path) {
   return true;
 }
 
+// Unpacks the program open as source into a new temporary file with mode; the open file (read and write) or -1, with
+// the temporary file removed. The caller commits or removes it.
+int UnpackToTemporary(int source, std::uint64_t size, const fs::path& temporary, mode_t mode, std::size_t chunk) {
+  const int file = CopyToTemporary(source, size, temporary, mode, chunk);
+  if (file < 0) return -1;
+  Image image;
+  image.read = [&](std::uint64_t offset, void* buffer, std::size_t count) { return ReadAt(file, offset, buffer, count); };
+  image.write = [&](std::uint64_t offset, const void* buffer, std::size_t count) { return WriteAt(file, offset, buffer, count); };
+  image.truncate = [&](std::uint64_t length) { return ::ftruncate(file, static_cast<off_t>(length)) == 0; };
+  image.size = size;
+  Wrapper wrapper;
+  std::string why;
+  if (Inspect(image.read, image.size, &wrapper).kind == SteamStubKind::kSupported && Apply(image, wrapper, chunk, &why))
+    return file;
+  ::close(file);
+  ::unlink(temporary.c_str());
+  return -1;
+}
+
+// Whether program is what unpacking original gives. A wrapper entered from a TLS callback keeps its section and the
+// callback once unpacked, so the program still reads as wrapped; a newer wrapped program from a game update is not
+// this. The check is left in a temporary file next to program and removed.
+bool UnpackedFrom(const fs::path& original, const fs::path& program, std::size_t chunk) {
+  std::uint64_t size = 0;
+  mode_t mode = 0600;
+  const int source = OpenRegular(original, &size, &mode);
+  if (source < 0) return false;
+  const auto temporary = program.parent_path() / (".playden-" + program.filename().string() + ".check.tmp");
+  const int file = UnpackToTemporary(source, size, temporary, mode, chunk);
+  ::close(source);
+  if (file < 0) return false;
+  ::close(file);
+  const bool same = SameFile(temporary, program, chunk);
+  ::unlink(temporary.c_str());
+  return same;
+}
+
 }  // namespace
 
 SteamStubInfo InspectSteamStub(const std::string& path) {
@@ -1001,8 +1038,13 @@ SteamStubResult UnpackSteamStubPrograms(const std::string& install_root, const s
     mode_t mode = 0755;
     const int source = OpenRegular(path, &size, &mode);
     if (source < 0) return fail("Playden could not read the game's " + relative + ".");
+    const auto kept_size = RegularSize(orig);
+    if (kept_size && *kept_size == size && !SameFile(orig, path, chunk) && UnpackedFrom(orig, path, chunk)) {
+      ::close(source);  // unpacked earlier, though it still reads as wrapped
+      continue;
+    }
     // A first unpack, or a newer wrapped program from a game update: keep it first.
-    if (RegularSize(orig) != size || !SameFile(orig, path, chunk)) {
+    if (kept_size != size || !SameFile(orig, path, chunk)) {
       const auto kept = path.parent_path() / (".playden-" + orig.filename().string() + ".tmp");
       const int copy = CopyToTemporary(source, size, kept, mode, chunk);
       if (copy < 0 || !Commit(copy, kept, orig)) {
@@ -1012,25 +1054,9 @@ SteamStubResult UnpackSteamStubPrograms(const std::string& install_root, const s
     }
     // The unpacked program is made in a copy next to it, then takes its place.
     const auto temporary = path.parent_path() / (".playden-" + path.filename().string() + ".tmp");
-    const int file = CopyToTemporary(source, size, temporary, mode, chunk);
+    const int file = UnpackToTemporary(source, size, temporary, mode, chunk);
     ::close(source);
-    if (file < 0) return fail("Playden could not write the game's unpacked " + relative + ".");
-    Image image;
-    image.read = [&](std::uint64_t offset, void* buffer, std::size_t count) { return ReadAt(file, offset, buffer, count); };
-    image.write = [&](std::uint64_t offset, const void* buffer, std::size_t count) {
-      return WriteAt(file, offset, buffer, count);
-    };
-    image.truncate = [&](std::uint64_t length) { return ::ftruncate(file, static_cast<off_t>(length)) == 0; };
-    image.size = size;
-    Wrapper wrapper;
-    std::string why;
-    const bool unpacked = Inspect(image.read, image.size, &wrapper).kind == SteamStubKind::kSupported &&
-                          Apply(image, wrapper, chunk, &why);
-    if (!unpacked) {
-      ::close(file);
-      ::unlink(temporary.c_str());
-      return fail("Playden could not unpack the game's " + relative + ".");
-    }
+    if (file < 0) return fail("Playden could not unpack the game's " + relative + ".");
     if (!Commit(file, temporary, path)) return fail("Playden could not write the game's unpacked " + relative + ".");
     result.changed.push_back(relative);
   }
