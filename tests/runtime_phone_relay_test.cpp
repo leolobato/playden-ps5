@@ -111,7 +111,7 @@ void ServesThePackPageAndTakesOneCredential() {
   CHECK(relay.Status().phase == PhoneRelayPhase::kWaiting);
   CHECK(calls == 0);
 
-  // The pack's page as is, never cached; opening it is "Phone connected".
+  // The pack's page as is, never cached; opening it is "Page opened".
   const auto page = Get(port, path);
   CHECK(Status(page, 200));
   CHECK(Has(page, "Content-Type: text/html"));
@@ -204,7 +204,9 @@ void ClosesAfterTenWrongCodes() {
   const auto port = PortOf(relay.Address());
   const auto path = PathOf(relay.Address());
   const std::string wrong = path.substr(0, 5) + (path[5] == '2' ? "3" : "2");
-  for (int i = 0; i < 5; ++i) CHECK(Status(Get(port, "/favicon.ico"), 404));
+  // Addresses that aren't a code don't count: the icon, partial or longer codes, an earlier page's address.
+  for (const char* other : {"/favicon.ico", "/Q", "/QKTK", "/QKTK55", "/s/0123456789abcdef0123456789abcdef", "/QKTO5"})
+    for (int i = 0; i < 3; ++i) CHECK(Status(Get(port, other), 404));
   for (int i = 0; i < 9; ++i) CHECK(Status(Get(port, wrong), 404));
   CHECK(relay.Running() && Status(Get(port, path), 200));
   CHECK(Status(Get(port, wrong), 404));

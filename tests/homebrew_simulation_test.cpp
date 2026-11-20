@@ -1460,7 +1460,7 @@ void publisher_sign_in_scenarios(const std::filesystem::path& fixtures, const st
     check(simulation.scenario("publisher-account-expired") && row("settings-publisher-rockstar")->value == "Sign-in expired",
           "publisher: expired");
     const std::pair<const char*, const char*> screens[] = {
-        {"publisher-sign-in", "Waiting for your phone"}, {"publisher-sign-in-connected", "Phone connected"},
+        {"publisher-sign-in", "Waiting for the page to open"}, {"publisher-sign-in-connected", "Page opened"},
         {"publisher-sign-in-checking", "Checking your Rockstar Games account"},
         {"publisher-sign-in-signed-in", "Signed in as FixturePlayer"},
         {"publisher-sign-in-refused", "That sign-in has expired. Sign in on your phone again."},
@@ -1479,7 +1479,7 @@ void publisher_sign_in_scenarios(const std::filesystem::path& fixtures, const st
     check(row("publisher-status")->title == "The code expired" && simulation.state().navigation.focus_key == "publisher-retry",
           "publisher: the fixture code expires after ten minutes");
     simulation.action("cross");
-    check(row("publisher-status")->title == "Waiting for your phone", "publisher: New code starts again");
+    check(row("publisher-status")->title == "Waiting for the page to open", "publisher: New code starts again");
     simulation.action("circle");
     check(simulation.state().navigation.route == Route::Settings &&
               simulation.state().navigation.focus_key == "settings-publisher-rockstar",

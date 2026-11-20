@@ -86,6 +86,16 @@ std::optional<std::string> RandomCode(std::size_t length) {
   return out;
 }
 
+std::string Upper(std::string text);
+
+// "/<code>", "/<code>/…": the first part is kCodeLength characters of kCodeAlphabet, in any case.
+bool LooksLikeCode(const std::string& path) {
+  const auto slash = path.find('/', 1);
+  const auto code = Upper(path.substr(1, slash == std::string::npos ? std::string::npos : slash - 1));
+  return code.size() == kCodeLength &&
+         std::all_of(code.begin(), code.end(), [](char c) { return kCodeAlphabet.find(c) != std::string_view::npos; });
+}
+
 std::string Upper(std::string text) {
   for (auto& c : text)
     if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 32);
@@ -264,9 +274,10 @@ struct PhoneRelay::State {
     if (!known || (rest != "" && rest != "/paste" && rest != "/credential")) {
       Wipe(request);
       Send(client, Response(404, "Not Found", "Not found.", "text/plain"));
-      // A short code can be guessed: after kMaxWrongCodes wrong addresses the page closes. A browser's own
-      // request for the site icon doesn't count.
-      if (!known && path != "/favicon.ico" && ++wrong_codes >= kMaxWrongCodes) {
+      // A short code can be guessed: after kMaxWrongCodes wrong codes the page closes. Only an address that
+      // is a code (kCodeLength characters of kCodeAlphabet, any case) counts: a browser fetches others on its own
+      // (its icon, addresses it suggests while the player types, links from an earlier page).
+      if (!known && LooksLikeCode(path) && ++wrong_codes >= kMaxWrongCodes) {
         stop = true;
         SetPhase(PhoneRelayPhase::kClosed, {}, "Too many wrong codes. Get a new one.");
       }

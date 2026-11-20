@@ -3016,14 +3016,14 @@ void live_publisher_accounts(const std::filesystem::path& base) {
 
     publishers.sign_in = {"rockstar", PublisherSignInState::Waiting, "http://192.168.1.20:8099/s/abc", 1'800'000'600, {}, {}};
     model.SetPublishers(publishers);
-    check(find_row(model, "publisher-status")->title == "Waiting for your phone" &&
+    check(find_row(model, "publisher-status")->title == "Waiting for the page to open" &&
               find_row(model, "publisher-status")->value == "Code expires in 10:00",
           "publisher: waiting, with the countdown");
     model.SetWallClock(1'800'000'061);
     check(find_row(model, "publisher-status")->value == "Code expires in 8:59", "publisher: the countdown runs");
     publishers.sign_in.state = PublisherSignInState::Connected;
     model.SetPublishers(publishers);
-    check(find_row(model, "publisher-status")->title == "Phone connected", "publisher: phone connected");
+    check(find_row(model, "publisher-status")->title == "Page opened", "publisher: phone connected");
     publishers.sign_in.state = PublisherSignInState::Checking;
     model.SetPublishers(publishers);
     check(find_row(model, "publisher-status")->title == "Checking your Rockstar Games account", "publisher: checking");

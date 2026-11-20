@@ -10205,8 +10205,8 @@ void Simulation::rebuild_view() {
         switch (sign_in.state) {
         case SignIn::Idle:
         case SignIn::Starting: status.title = "Opening the sign-in page…"; break;
-        case SignIn::Waiting: status.title = "Waiting for your phone"; break;
-        case SignIn::Connected: status.title = "Phone connected"; break;
+        case SignIn::Waiting: status.title = "Waiting for the page to open"; break;
+        case SignIn::Connected: status.title = "Page opened"; break;
         case SignIn::Checking: status.title = "Checking your " + name + " account"; break;
         case SignIn::SignedIn:
             status.title = sign_in.display.empty() ? "Signed in" : "Signed in as " + sign_in.display;
