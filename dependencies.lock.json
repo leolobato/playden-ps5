@@ -228,9 +228,9 @@
   "prospero_kit": {
     "kit_id": "playden-kit",
     "published": false,
-    "status": "Kit 0.31, installed as playden-kit. Kit 0.30 with wineps5.prx of prospero-win d66bdab (a failed microphone read gives silence for as long as it blocked) and the any-title shell of c3847a3, which opens and closes the microphone once as the title starts, so games hear it. The template, DXVK and Mono are 0.30's, so bottles need no Recreate.",
-    "manifest_sha256": "a3853ffd94a97c409efa38fed3fb07ba1961845ab2585b3974c899ddf643600a",
-    "files_sha256": "c7eaaa4a0b22a0566368e01b9f56205b7997ecb3d89e965038173c79fcbde20e",
+    "status": "Kit 0.32, installed as playden-kit. Kit 0.31 with ws2_32.prx of prospero-win eaccec6 (an IPv6 lookup with AI_V4MAPPED returns IPv4-only hosts as mapped addresses, #1102), libvulkan.prx with RADV from PS5_Mesa 9db3f34 (a swapchain idle for 150 ms gives VideoOut's display to the next one, #1142) and the any-title shell of eaccec6, which keeps a button bound to a key or mouse button off the game's controller (#1139). The template, DXVK and Mono are 0.31's, so bottles need no Recreate.",
+    "manifest_sha256": "4b32a6997e192ffb0575884c58e4fa93fcb53d036b643daeb8a919f6af96e625",
+    "files_sha256": "b38124b16c69abb009e0c3878c10975120f676490e5409cdbf0f421c35b99c86",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"
@@ -271,9 +271,9 @@
       "wine-shared-sections",
       "wow64_i386"
     ],
-    "wrapper_revision": "c3847a3557000b48127c9c563f7a82dee29a7bdc",
-    "runtime_artifact_revision": "c3847a3-kit-0.31",
-    "runtime_inventory_source": "Kit 0.31: staged by kits/kit-0.31/stage.py in the kit archive: kit 0.30 with wineps5.prx (the only .prx that differs in a release cross build of d66bdab, scripts/build-kit-cross.sh --no-reuse, kit-h/work/wine-ps5-031-dev-1; wine/ is the same in c3847a3) and the any-title shell built from a clean clone of c3847a3. Earlier kits: see this file's git history.",
+    "wrapper_revision": "eaccec6d3382fa4ab61e35d8cc72908aa67ac164",
+    "runtime_artifact_revision": "eaccec6-kit-0.32",
+    "runtime_inventory_source": "Kit 0.32: staged by kits/kit-0.32/stage.py in the kit archive: kit 0.31 with ws2_32.prx and libvulkan.prx (the only .prx that differ in a release cross build of eaccec6 with RADV from PS5_Mesa 9db3f34, scripts/build-kit-cross.sh --no-reuse, kit-h/work/wine-ps5-032-1) and the any-title shell built from a clean clone of eaccec6. No PE source changed, so PE modules stay 0.31's. Earlier kits: see this file's git history.",
     "wine_mono": {
       "version": "11.3.0",
       "url": "https://dl.winehq.org/wine/wine-mono/11.3.0/wine-mono-11.3.0-x86.tar.xz",
