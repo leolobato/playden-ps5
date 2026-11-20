@@ -512,12 +512,12 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
           "T08b Change settings opens the list");
     // Rows by topic: the frame-rate rows sit together in Display, and focus steps over the headings.
     const auto& keys = simulation.state().navigation.modals.back().action_keys;
-    const std::vector<std::string> top(keys.begin(), keys.begin() + std::min<std::size_t>(keys.size(), 24));
+    const std::vector<std::string> top(keys.begin(), keys.begin() + std::min<std::size_t>(keys.size(), 25));
     check(top == std::vector<std::string>{"heading-game", "setting-launch_option", "setting-extra_arguments",
                                           "heading-display", "setting-resolution", "setting-refresh", "setting-frame_limit",
                                           "setting-framegen", "setting-vsync", "setting-performance_overlay", "setting-overlay_detail",
                                           "setting-scaling", "setting-window_view", "heading-controls", "setting-controller",
-                                          "setting-controller_preset", "setting-touchpad_hold", "button-mapping", "controller-tuning", "heading-sound",
+                                          "setting-controller_layout", "setting-controller_preset", "setting-touchpad_hold", "button-mapping", "controller-tuning", "heading-sound",
                                           "setting-volume", "setting-microphone", "section-compatibility", "section-advanced"},
           "T08b the sheet groups rows by topic");
     check(keys.back() == "cancel" && find_row(simulation, "cancel")->title == "Back", "T08b the list ends with Back");

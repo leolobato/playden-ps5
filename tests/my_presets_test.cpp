@@ -95,7 +95,8 @@ void Changes() {
                                                    {{"library_overrides", "d3d9=n"}},
                                                    {{"no_such_setting", "x"}},
                                                    {{"resolution", "huge"}},
-                                                   {{"button.cross", "not a key"}}}) {
+                                                   {{"button.cross", "not a key"}},
+                                                   {{"controller_layout", "cross = z"}}}) {
     const auto change = AddMyPreset(&presets, Id(2), "Other", setting, 101);
     refused(change, R::kSettingRefused);
     CHECK(change.detail.find(setting.begin()->first) == 0);
@@ -106,6 +107,12 @@ void Changes() {
   refused(RenameMyPreset(&presets, Id(1), " ", 101), R::kNameEmpty);
   refused(ReplaceMyPresetSettings(&presets, Id(1), {{"graphics", "dxvk"}}, 101), R::kSettingRefused);
   refused(ReplaceMyPresetSettings(&presets, Id(1), {}, 101), R::kNoSettings);
+  // A controller layout travels in a preset like any other row, checked by the same parser.
+  {
+    auto layouts = presets;
+    const Settings layout = {{"controller_layout", FindControllerLayoutTemplate("mouse")->text}, {"controller", "keyboard"}};
+    CHECK(AddMyPreset(&layouts, Id(7), "Layout", layout, 101).ok());
+  }
 
   // 40 characters is the limit, not 40 bytes; a built-in preset's name is allowed.
   const std::string accented = [] {
@@ -403,6 +410,11 @@ void Summary() {
   CHECK(MyPresetSummary({{"refresh", "60"}, {"rumble", "0"}, {"volume", "50"}, {"microphone", "off"}}) ==
         "60 Hz \u00b7 Rumble off \u00b7 Volume 50% \u00b7 +1 more");
   CHECK(MyPresetSummary({{"controller_preset", "none"}}) == "No controller preset");
+  // A controller layout reads as its template's name, never as its text.
+  CHECK(MyPresetSummary({{"controller_layout", FindControllerLayoutTemplate("wasd-mouse")->text}}) ==
+        "Controller layout WASD and mouse");
+  CHECK(MyPresetSummary({{"controller_layout", "cross = pad:b;circle = pad:a"}}) == "Controller layout Custom");
+  CHECK(MyPresetSummary({{"controller_layout", ""}}) == "No controller layout");
 }
 
 int main() {

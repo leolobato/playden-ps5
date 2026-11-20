@@ -364,7 +364,7 @@ void SetStickMode(LayoutStick* stick, StickMode mode) {
 }
 
 bool ControllerLayout::empty() const {
-  return std::none_of(entries.begin(), entries.end(), [](const LayoutEntry& entry) { return entry.set; });
+  return std::none_of(entries.begin(), entries.end(), [](const InputMapping& entry) { return entry.set; });
 }
 
 bool ParseControllerLayout(std::string_view text, ControllerLayout* layout, std::string* reason) {

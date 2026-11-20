@@ -122,6 +122,8 @@ std::string MyPresetSummary(const std::map<std::string, std::string>& settings, 
     for (const auto& choice : definition.choices)
       if (choice.value == value) label = choice.label;
     if (definition.id == "controller_preset" && value == "none") return std::string("No controller preset");
+    if (definition.id == "controller_layout")
+      return value.empty() ? std::string("No controller layout") : definition.label + " " + ControllerLayoutSummary(value);
     if (self_named.count(definition.id)) return label;
     if (label == "On" || label == "Off") label = label == "On" ? "on" : "off";
     return definition.label + " " + label;

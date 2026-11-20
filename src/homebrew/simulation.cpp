@@ -535,6 +535,11 @@ std::string summary_line(const std::string& text) {
     return line;
 }
 
+// A controller layout as a row shows it: its template's name, "Custom", or "None".
+std::string layout_label(const std::string& text) {
+    return text.empty() ? std::string("None") : rt::ControllerLayoutSummary(text);
+}
+
 // "Resolution 3840×2160", "120 Hz on", "Touchpad → M": one setting as a recipe sets it.
 std::string change_item(const rt::SettingDefinition& definition, const rt::EffectiveValue& value) {
     const auto chosen = rt::ChosenValue(value);
@@ -544,6 +549,7 @@ std::string change_item(const rt::SettingDefinition& definition, const rt::Effec
         return definition.label + " → " + key;
     }
     if (definition.id == "refresh") return std::string("120 Hz ") + (chosen == "120" ? "on" : "off");
+    if (definition.id == "controller_layout") return definition.label + " " + layout_label(chosen);
     if (definition.kind == rt::SettingKind::kText) return definition.label + " " + (chosen.empty() ? "empty" : chosen);
     auto label = choice_label(definition, chosen);
     if (label == "On" || label == "Off") label = label == "On" ? "on" : "off";
@@ -583,6 +589,7 @@ int fill_comparison(const rt::EffectiveSettings& current, const rt::EffectiveSet
     const auto label = [&](const rt::SettingDefinition& definition, const rt::EffectiveSettings& values) {
         const auto& value = values.values.at(definition.id);
         if (definition.id == "launch_option") return values.launch ? values.launch->label : value.value;
+        if (definition.id == "controller_layout") return layout_label(rt::ChosenValue(value));
         if (definition.kind == rt::SettingKind::kText) return value.value.empty() ? std::string("Empty") : value.value;
         auto text = choice_label(definition, rt::ChosenValue(value));
         if (value.locked || (definition.id == "graphics" && value.source == rt::ValueSource::kRecipe)) text += " (game)";
@@ -8934,6 +8941,7 @@ void Simulation::rebuild_view() {
                     else if (!settings_values.launch) item.subtitle = "Pick the game's program from its folder.";
                 }
                 else if (id.rfind("button.", 0) == 0) item.value = binding_label(value.value);
+                else if (id == "controller_layout") item.value = layout_label(rt::ChosenValue(value));
                 else if (id == "program_folder")
                     item.value = value.value.empty() ? "Program's folder" : value.value == "." ? "Game folder" : value.value;
                 else if (definition->kind == rt::SettingKind::kText) item.value = value.value.empty() ? "Empty" : value.value;
@@ -17148,6 +17156,7 @@ std::vector<Simulation::SettingsSummaryLine> Simulation::settings_summary(GameId
         const std::string chosen = own != record->second.overrides.end() ? own->second
                                  : current != values.values.end() ? rt::ChosenValue(current->second) : std::string();
         if (definition.id == "program_folder") line.value = chosen.empty() ? "Program's folder" : chosen == "." ? "Game folder" : chosen;
+        else if (definition.id == "controller_layout") line.value = layout_label(chosen);
         else if (definition.kind == rt::SettingKind::kText) line.value = chosen.empty() ? "Empty" : chosen;
         else line.value = choice_label(definition, chosen);
         lines.push_back(std::move(line));
@@ -17413,6 +17422,7 @@ void Simulation::build_preset_comparison(GameId id, const std::string& preset_id
     const auto label = [&](const rt::SettingDefinition& definition, const rt::EffectiveSettings& values) {
         const auto& value = values.values.at(definition.id);
         if (definition.id == "launch_option") return values.launch ? values.launch->label : value.value;
+        if (definition.id == "controller_layout") return layout_label(rt::ChosenValue(value));
         if (definition.kind == rt::SettingKind::kText) return value.value.empty() ? std::string("Empty") : value.value;
         auto text = choice_label(definition, rt::ChosenValue(value));
         if (value.locked || (definition.id == "graphics" && value.source == rt::ValueSource::kRecipe)) text += " (game)";

@@ -3167,6 +3167,8 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
     } else {
       overrides["controller_preset"] = "mouse";
       for (const auto& [id, value] : rt::ControllerPresetInputs().at("mouse")) overrides[id] = value;
+      // No controller layout either: it would replace the Mouse preset.
+      overrides["controller_layout"] = "";
     }
   }
   // A game whose folder moved (RuntimeInstall::moved_from) is published again at its revision, so
@@ -3251,7 +3253,7 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
     std::erase_if(run_recipe->locked, [&](const std::string& id) {
       if (run_launcher_mode) return id == "launch_option" || id == "program" || id == "start_through_launcher";
       static const std::set<std::string> controls = {"launch_option", "program", "controller_preset", "controller",
-                                                     "pointer_stick", "pointer_speed"};
+                                                     "pointer_stick", "pointer_speed", "controller_layout"};
       return controls.count(id) || id.rfind("button.", 0) == 0;
     });
     recipe = &*run_recipe;

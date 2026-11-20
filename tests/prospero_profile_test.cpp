@@ -191,6 +191,33 @@ int main(int argc, char** argv) {
   CHECK(CheckProsperoProfile(base + "[input]\nrumble = 0\n", &reason, {.input_rumble = true}));  // input-rumble alone
   CHECK(!CheckProsperoProfile(base + "[input]\nrumble = 101\n", &reason, {.input_rumble = true}));
   CHECK(!CheckProsperoProfile(base + "[input]\nrumble = -1\n", &reason, {.input_rumble = true}));
+  // [input] map = 1 (input-map): the lines after it are a controller layout, checked as a whole.
+  {
+    const ProsperoProfileFeatures map{.input_map = true};
+    const std::string wasd = "[input]\nmode = keyboard\nmap = 1\ncross = key:space\nleft_stick = keys\n"
+                             "left_stick_keys = w,s,a,d\nright_stick = mouse\n";
+    CHECK(CheckProsperoProfile(base + wasd, &reason, map));
+    CHECK(!CheckProsperoProfile(base + wasd, &reason));  // an older runtime refuses map
+    CHECK(CheckProsperoProfile(base + "[input]\nmap = 1\n", &reason, map));  // every input its default
+    CHECK(CheckProsperoProfile(base + "[input]\nmode = xinput\nrumble = 50\nmap = 1\nr2 = key:space\nr2_threshold = 30\n",
+                               &reason, {.input_rumble = true, .input_map = true}));
+    CHECK(CheckProsperoProfile(base + "[input]\nmap = 1\nleft_stick_deadzone = 10\nmode = xinput\n", &reason, map));
+    for (const char* input : {
+             "[input]\nmap = 2\n", "[input]\nmap = 1\nmap = 1\n",
+             // Old-style lines: before map = 1, or refused after it.
+             "[input]\ncross = z\nmap = 1\n", "[input]\nmouse = none\nmap = 1\n", "[input]\npreset = mouse\nmap = 1\n",
+             "[input]\nmap = 1\npreset = mouse\n", "[input]\nmap = 1\nmouse = left_stick\n",
+             "[input]\nmap = 1\nmouse_speed = 900\n", "[input]\nmap = 1\ncross = z\n",
+             "[input]\nmap = 1\ntouchpad = pad:back\n", "[input]\nmap = 1\nCross = pad:a\n",
+             "[input]\nmap = 1\ncross = pad:a\ncross = pad:b\n",
+             // Lines that only make sense together.
+             "[input]\nmap = 1\nleft_stick = keys\n", "[input]\nmap = 1\nr2_threshold = 30\n",
+             "[input]\nmap = 1\nleft_stick_deadzone = 50\nleft_stick_outer = 41\n"})
+      CHECK(!CheckProsperoProfile(base + input, &reason, map));
+    // Not in [launcher], which keeps the old lines.
+    CHECK(!CheckProsperoProfile(base + "[launcher]\nlabel = Mouse\nmap = 1\n", &reason,
+                                {.launcher_section = true, .input_map = true}));
+  }
   // The dead zone and wheel keys were never in a runtime: Playden doesn't write them.
   for (const char* line : {"stick_deadzone = 5\n", "trigger_deadzone = 50\n", "wheel = left_stick\n"})
     CHECK(!CheckProsperoProfile(base + "[input]\n" + line, &reason, {.input_rumble = true}));

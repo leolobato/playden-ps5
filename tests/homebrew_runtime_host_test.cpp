@@ -3100,7 +3100,10 @@ void RunsSetupProgramOnce() {
   config.package_operations.validate_bottle = [](const fs::path& bottle) {
     return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
   };
-  const auto kit = SyntheticKit(fixture.root / "kit");
+  // A kit with controller layouts, so a layout the game has can be checked to stay out of the run.
+  auto kit = SyntheticKit(fixture.root / "kit");
+  kit.capabilities.push_back(kKitInputMap);
+  std::sort(kit.capabilities.begin(), kit.capabilities.end());
   config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
   unsigned uuids = 0;
   config.uuid = [&uuids]() -> std::optional<std::string> {
@@ -3152,7 +3155,7 @@ void RunsSetupProgramOnce() {
     const auto text = Read(profile);
     return text.find("\\Binaries\\Launcher.exe\n") != std::string::npos && text.find("preset = mouse") != std::string::npos &&
            text.find("cross = ") == std::string::npos && text.find("options = ") == std::string::npos &&
-           text.find("square = ") == std::string::npos &&
+           text.find("square = ") == std::string::npos && text.find("map = 1") == std::string::npos &&
            Read(installs).find("\"setup_program\":\"Binaries/Launcher.exe\"") != std::string::npos;
   };
   const auto restored = [](const RuntimeSnapshot& s) {
@@ -3218,6 +3221,15 @@ void RunsSetupProgramOnce() {
   const auto refused = WaitFor(host, [handled](const RuntimeSnapshot& s) { return s.plays_handled > handled; }, 30);
   CHECK(refused.play_refusals.count(4300) && refused.play_refusals.at(4300).find("missing") != std::string::npos);
   CHECK(game_published() && launches.size() == 4);
+
+  // A game with a controller layout: the run still has the Mouse preset alone. (The game's own profile with the
+  // layout is not published here: the title's profile parser at Playden's prospero-win pin doesn't read map = 1 yet.)
+  saved.overrides["controller_layout"] = FindControllerLayoutTemplate("wasd-mouse")->text;
+  saved.overrides["controller"] = "keyboard";
+  ++saved.revision;
+  host.Play(4300, "Binaries/Launcher.exe");
+  handed_off(host);
+  CHECK(launcher_published() && launches.size() == 5);
   host.Shutdown();
 }
 

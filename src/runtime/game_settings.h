@@ -2,6 +2,7 @@
 
 #include "library/game_ref.h"
 #include "library/store.h"
+#include "runtime/controller_layout.h"
 #include "runtime/prospero_profile.h"
 
 #include <cstdint>
@@ -137,6 +138,10 @@ struct KitCapabilities {
   // Online. Counts only for a title that runs this kit's runtime, like display_120hz.
   bool helper_process = false;
   bool helper_process_needs_update = false;
+  // [input] map = 1 and a controller layout's lines (kKitInputMap): the Controller layout row. Counts only for a title
+  // that runs this kit's runtime, like display_120hz.
+  bool input_map = false;
+  bool input_map_needs_update = false;
 };
 
 struct SettingChoice {
@@ -487,6 +492,34 @@ std::string SettingChoiceUnavailable(const EffectiveSettings& settings, std::str
 // Whether a choice SettingChoiceUnavailable allows applies only once the game's title runs the kit's runtime. It can
 // be saved now; until then the row applies the Playden default (EffectiveValue::after_update).
 bool SettingChoiceWaitsForUpdate(const EffectiveSettings& settings, std::string_view id, std::string_view value);
+
+// The controller layout (controller_layout, runtime/controller_layout.h).
+// What the rows it replaces say while it applies.
+inline constexpr const char* kSetByControllerLayout = "Set by the controller layout.";
+// Whether a layout applies: set, and the game's title runs a runtime kit with input-map. The profile then gets map = 1
+// and the layout's lines, and the rows SetByControllerLayout names are unavailable.
+bool ControllerLayoutInEffect(const EffectiveSettings& settings);
+// The rows a layout replaces: Controller preset, Touchpad hold, Pointer stick, Pointer speed and every button.<name>.
+// Controller and Rumble stay.
+bool SetByControllerLayout(std::string_view id);
+// Why the game's runtime kit can't run a layout (text, possibly empty), naming the runtime kit it needs; empty when it
+// can. kAppliesAfterKitUpdate when the kit can and only the game's title is older. An empty layout is checked for the
+// row itself, which needs input-map.
+std::string ControllerLayoutUnsupported(std::string_view text, const KitCapabilities& kit);
+// A layout to start editing from, and the controller mode it is for: the layout in effect, or else one made from what
+// the game uses now (the controller preset, the button rows, the touchpad binding and the pointer stick), which gives
+// the game the same input. Every input gets a line. Touchpad hold has no part in it.
+struct ControllerLayoutSeed {
+  std::string text;  // canonical
+  std::string mode;  // xinput, playstation or keyboard: the Controller row's value (its chosen value when it waits)
+};
+ControllerLayoutSeed SeedControllerLayout(const EffectiveSettings& settings);
+// Saves a layout as the player's, with the controller mode it is for (empty mode: Controller is left as it is), so
+// the mode travels with the layout into My presets and shares even when it came from a controller preset.
+void SetControllerLayout(GameSettingsRecord* record, const std::string& text, const std::string& mode);
+// Removes the player's layout: the game goes back to its preset and button rows. When the recipe or the preset sets a
+// layout, the player's empty value keeps that one off too.
+void ResetControllerLayout(GameSettingsRecord* record, const GameRecipe& recipe, const SettingsPreset* preset);
 
 // The variables Environment variables accepts (IsProsperoEnvironmentEntry, IsProsperoDebugEnvEntry and
 // IsBottleEnvironmentEntry), as the setting's description and a refusal tell the player.

@@ -1,5 +1,7 @@
 #include "runtime/prospero_profile.h"
 
+#include "runtime/controller_layout.h"
+
 #include <sys/stat.h>
 
 #include <algorithm>
@@ -247,6 +249,10 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
   std::set<std::string> application;
   std::string id, prefix, runtime, executable, working;
   std::size_t start = 0, debug_env_count = 0;
+  // [input] map = 1 (kit capability input-map): the lines after it are a controller layout, read as a whole once the
+  // profile is read. An input line before it would be read the old way, so it may not come after one.
+  bool input_map = false, old_input_line = false;
+  std::string map_lines;
   while (start < text.size()) {
     auto end = text.find_first_of("\r\n", start);
     if (end == std::string_view::npos) end = text.size();
@@ -399,6 +405,20 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
         return fail("unknown [launcher] key " + key);
       }
     } else if (section == "input") {
+      if (key == "map" && features.input_map) {
+        if (value != "1") return bad("not 1");
+        if (old_input_line) return bad("must come before the input lines");
+        input_map = true;
+        continue;
+      }
+      if (input_map && (key == "preset" || key == "mouse" || key == "mouse_speed"))
+        return bad("not with map = 1: the layout's stick lines replace it");
+      if (input_map && key != "mode" && key != "rumble") {
+        if (value.find(';') != std::string_view::npos) return bad("a layout value holds no ;");
+        map_lines += (map_lines.empty() ? "" : ";") + std::string(key_view) + " = " + std::string(value);
+        continue;
+      }
+      if (key != "mode" && key != "rumble") old_input_line = true;
       if (key == "preset") {
         if (!IsIdentifier(value)) return bad("not a preset name");
       } else if (key == "mode") {
@@ -460,6 +480,10 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
     }
   }
   if (sections.empty()) return fail("no [application] section");
+  if (input_map) {
+    std::string why;
+    if (!ParseControllerLayout(map_lines, nullptr, &why)) return fail("[input] layout: " + why);
+  }
   if (std::find(sections.begin(), sections.end(), "helper") != sections.end() && !helper_program)
     return fail("[helper] names no program");
   if (std::find(sections.begin(), sections.end(), "steam") != sections.end() && !steam_install_dir)

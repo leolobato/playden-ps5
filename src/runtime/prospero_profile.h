@@ -89,6 +89,7 @@ struct ProsperoProfileFeatures {
   bool launcher_chain_off = false;   // [launcher] chain = off (kit capability touchpad-switch)
   bool helper_section = false;       // [helper] program, ready, wait (kit capability helper-process)
   bool input_playstation = false;    // [input] mode = playstation (kit capability input-playstation)
+  bool input_map = false;            // [input] map = 1 and a controller layout's lines (kit capability input-map)
   bool runtime_version = false;      // [runtime] version = 1|2 (kit capability profile-version-2)
   bool long_arguments = false;       // arguments up to 4096 bytes, a profile up to 16384 (launch-arguments-4096)
   bool steam_section = false;        // [steam] install_dir (kit capability steam-library-path)

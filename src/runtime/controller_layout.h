@@ -97,7 +97,7 @@ StickValues ResolvedStick(const LayoutStick& stick);
 void SetStickMode(LayoutStick* stick, StickMode mode);
 
 // One input's line. Unset: the input has no line and sends its default (LayoutDefaultTarget, LayoutDefaultStick).
-struct LayoutEntry {
+struct InputMapping {
   bool set = false;
   LayoutTarget target;  // a button or trigger
   int threshold = 0;    // a trigger with a target other than pad:lt, pad:rt or none: 5-100, 0 = the trigger's own click
@@ -105,9 +105,9 @@ struct LayoutEntry {
 };
 
 struct ControllerLayout {
-  std::array<LayoutEntry, kLayoutInputCount> entries;
-  LayoutEntry& operator[](LayoutInput input) { return entries[static_cast<std::size_t>(input)]; }
-  const LayoutEntry& operator[](LayoutInput input) const { return entries[static_cast<std::size_t>(input)]; }
+  std::array<InputMapping, kLayoutInputCount> entries;
+  InputMapping& operator[](LayoutInput input) { return entries[static_cast<std::size_t>(input)]; }
+  const InputMapping& operator[](LayoutInput input) const { return entries[static_cast<std::size_t>(input)]; }
   bool empty() const;  // no input has a line
 };
 

@@ -116,7 +116,7 @@ int main(int argc, char** argv) {
         "steam_features", "steam_sign_in", "game_invites",
         "resolution", "refresh", "frame_limit", "framegen", "vsync", "performance_overlay", "overlay_detail", "scaling",
         "window_view",
-        "controller", "controller_preset", "touchpad_hold",
+        "controller", "controller_layout", "controller_preset", "touchpad_hold",
         "pointer_stick", "pointer_speed", "rumble",
         "volume", "microphone",
         "start_check",
@@ -3988,6 +3988,246 @@ int main(int argc, char** argv) {
     CHECK(DropOnlineSteamSettings(&record) && record.overrides.size() == 1);
     SetOnlineSteamEnabled(true);
     CHECK(SettingChoiceOffered("steam_features", "online"));
+  }
+
+  // The controller layout (controller_layout): one text row the runtime kit's input-map reads.
+  {
+    const auto* row = FindSetting("controller_layout");
+    CHECK(row && row->kind == SettingKind::kText && row->group == SettingGroup::kControls && row->since == "0.13.0" &&
+          row->playden_default.empty() && SettingShown(*row, KitCapabilities{}));
+    CHECK(SettingsSinceJson().find("\"controller_layout\": \"0.13.0\"") != std::string::npos);
+    const std::string wasd = FindControllerLayoutTemplate("wasd-mouse")->text;
+    const std::string gamepad = FindControllerLayoutTemplate("gamepad")->text;
+    // One parser checks it everywhere.
+    CHECK(ValidateSettingValue(hl2, "controller_layout", "", &reason) &&
+          ValidateSettingValue(hl2, "controller_layout", wasd, &reason));
+    CHECK(!ValidateSettingValue(hl2, "controller_layout", "cross = z", &reason) && !reason.empty());
+    CHECK(!ValidateSettingValue(hl2, "controller_layout", "map = 1", &reason));
+    CHECK(!ValidateSettingValue(hl2, "controller_layout", std::string(4097, ' '), &reason));
+    CHECK(ValidatePresetSetting("controller_layout", wasd, &reason) && !ValidatePresetSetting("controller_layout", "x", &reason));
+
+    const auto map_kit = KitCapabilitiesFromManifest({kKitInputMap, kKitInputRumble, kKitTouchpadSwitch, kKitLauncherMode}, false);
+    CHECK(map_kit.input_map && !KitCapabilitiesFromManifest({kKitInputRumble}, false).input_map);
+    CHECK(std::find(SettingsKitCapabilityNames().begin(), SettingsKitCapabilityNames().end(), kKitInputMap) !=
+          SettingsKitCapabilityNames().end());
+    CHECK(KitDependsOnTitleRuntime(map_kit));
+    const std::map<std::string, std::string> chosen = {
+        {"controller_layout", wasd}, {"controller", "keyboard"},     {"controller_preset", "mouse"},
+        {"button.cross", "space"},   {"touchpad_hold", "mouse"},     {"pointer_stick", "right_stick"},
+        {"pointer_speed", "1800"},   {"rumble", "50"}};
+    const char* replaced[] = {"controller_preset", "touchpad_hold", "pointer_stick", "pointer_speed", "button.cross",
+                              "button.touchpad"};
+
+    // Without input-map the row is disabled and names the runtime kit it needs; the old rows apply as before.
+    const auto no_map = KitCapabilitiesFromManifest({kKitInputRumble, kKitTouchpadSwitch}, false);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, no_map, &settings, &error));
+    CHECK(!settings.values.at("controller_layout").available && !ControllerLayoutInEffect(settings) &&
+          settings.values.at("controller_layout").reason == "Needs a newer runtime kit with controller layouts.");
+    CHECK(settings.values.at("controller_preset").available && settings.values.at("touchpad_hold").available &&
+          settings.values.at("button.cross").available);
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("map = 1") == std::string::npos && profile.text.find("\npreset = mouse\n") != std::string::npos &&
+          profile.text.find("\ncross = space\n") != std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {}, no_map, &settings, &error));
+    CHECK(!settings.values.at("controller_layout").available &&
+          settings.values.at("controller_layout").reason == "Needs a newer runtime kit with controller layouts.");
+    CHECK(ControllerLayoutUnsupported("", no_map) == "Needs a newer runtime kit with controller layouts." &&
+          ControllerLayoutUnsupported(wasd, map_kit).empty() && ControllerLayoutUnsupported("", map_kit).empty());
+
+    // A title on an older runtime keeps the layout for its update, and plays with the old rows until then.
+    const auto stale = KitForTitleRuntime(map_kit, false);
+    CHECK(!stale.input_map && stale.input_map_needs_update && KitForTitleRuntime(map_kit, true).input_map);
+    CHECK(!KitForTitleRuntime(KitCapabilities{}, false).input_map_needs_update);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, stale, &settings, &error));
+    const auto& waiting = settings.values.at("controller_layout");
+    CHECK(!waiting.available && waiting.waits_for_update && waiting.after_update == wasd &&
+          waiting.reason == kAppliesAfterKitUpdate && !ControllerLayoutInEffect(settings));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("map = 1") == std::string::npos && profile.text.find("\npreset = mouse\n") != std::string::npos);
+
+    // With input-map the layout replaces the preset, the buttons, Touchpad hold and the pointer stick. Controller
+    // and Rumble stay.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, map_kit, &settings, &error));
+    CHECK(ControllerLayoutInEffect(settings) && settings.values.at("controller_layout").available);
+    for (const char* id : replaced) {
+      const auto& value = settings.values.at(id);
+      CHECK(!value.available && value.reason == kSetByControllerLayout && !value.waits_for_update);
+      CHECK(SetByControllerLayout(id));
+    }
+    CHECK(!SetByControllerLayout("controller") && !SetByControllerLayout("rumble") &&
+          !SetByControllerLayout("controller_layout"));
+    CHECK(settings.values.at("controller").available && Value(settings, "controller") == "keyboard");
+    // The profile: the mode, rumble, then map = 1 and the layout's lines; no preset, pointer or button lines and no
+    // touchpad-hold [launcher]. Rumble is kept out by keyboard mode here.
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    std::string lines;
+    for (const auto& line : ControllerLayoutLines([&] {
+           ControllerLayout parsed;
+           CHECK(ParseControllerLayout(wasd, &parsed, nullptr));
+           return parsed;
+         }()))
+      lines += line + "\n";
+    CHECK(profile.text.find("\n[input]\nmode = keyboard\nmap = 1\n" + lines) != std::string::npos);
+    CHECK(profile.text.find("preset =") == std::string::npos && profile.text.find("\nmouse =") == std::string::npos &&
+          profile.text.find("[launcher]") == std::string::npos && profile.text.find("cross = space") == std::string::npos);
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.input_map = true}));
+    CHECK(!CheckProsperoProfile(profile.text, &reason));  // an older runtime refuses map = 1
+    // Xbox controller with rumble.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller_layout", gamepad}, {"rumble", "50"}}, map_kit, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\n[input]\nmode = xinput\nrumble = 50\nmap = 1\ncross = pad:a\ncircle = pad:b\n") !=
+          std::string::npos);
+    // The profile carries the canonical text, whatever spacing the value had.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller_layout", "circle=pad:a ; cross=pad:b"}}, map_kit, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.ends_with("\n[input]\nmode = xinput\nmap = 1\ncross = pad:b\ncircle = pad:a\n"));
+    // An invalid saved value is ignored, as any other row's: the game plays with its old rows.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller_layout", "cross = z"}, {"controller_preset", "mouse"}}, map_kit,
+                                 &settings, &error));
+    CHECK(Value(settings, "controller_layout").empty() && !ControllerLayoutInEffect(settings) &&
+          settings.values.at("controller_preset").available);
+    // A recipe's invalid layout is refused with the recipe.
+    {
+      GameRecipe bad = hl2;
+      bad.defaults["controller_layout"] = "touchpad = pad:back";
+      CHECK(!BuildEffectiveSettings(bad, nullptr, {}, map_kit, &settings, &error) && error.setting_id == "controller_layout");
+      CHECK(!ParseGameRecipe(SerializeGameRecipe(bad), &bad, &reason) && reason.find("controller_layout") != std::string::npos);
+    }
+    // Start through a launcher keeps its own old-style [launcher] lines; the game's [input] is the layout.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller_layout", gamepad}, {"start_through_launcher", "on"}}, map_kit,
+                                 &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("map = 1\n") != std::string::npos &&
+          profile.text.find("\n[launcher]\nlabel = Mouse\ngame_label = Game controls\nmode = keyboard\nmouse = left_stick\n") !=
+              std::string::npos);
+    // The plan names no input preset file with a layout.
+    {
+      SettingsLaunchInput input;
+      input.recipe = &hl2;
+      input.record.overrides = {{"controller_layout", wasd}, {"controller", "keyboard"}, {"controller_preset", "mouse"}};
+      input.kit = map_kit;
+      input.target = target;
+      input.runtime_dir = (source / "runtime").string();
+      SettingsLaunchPlan layout_plan;
+      CHECK(BuildSettingsLaunchPlan(input, &layout_plan, &reason));
+      CHECK(layout_plan.input_presets.empty() && layout_plan.profile_bytes.find("\nmap = 1\n") != std::string::npos);
+    }
+
+    // S4: a first edit starts from what the game uses now, so nothing changes until the player changes something.
+    // Each controller preset gives its template, line for line (Half-Life 2's recipe binds Options to Escape, so a
+    // copy without it).
+    GameRecipe unbound = hl2;
+    std::erase_if(unbound.defaults, [](const auto& entry) { return entry.first.rfind("button.", 0) == 0; });
+    for (const char* preset : {"gamepad", "mouse", "arrows"}) {
+      CHECK(BuildEffectiveSettings(unbound, nullptr, {{"controller_preset", preset}}, map_kit, &settings, &error));
+      const auto seed = SeedControllerLayout(settings);
+      const auto* same = FindControllerLayoutTemplate(preset);
+      if (seed.text != same->text) std::fprintf(stderr, "seed %s: %s\n", preset, seed.text.c_str());
+      CHECK(seed.text == same->text && seed.mode == same->mode);
+    }
+    // The button rows win over the preset's, the touchpad binding is both halves, and old names become new ones.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller_preset", "arrows"}, {"button.cross", "Space"},
+                                                {"button.touchpad", "vk:0x1b"}, {"button.options", "none"}},
+                                 map_kit, &settings, &error));
+    {
+      const auto seed = SeedControllerLayout(settings);
+      CHECK(seed.mode == "keyboard");
+      CHECK(seed.text.find("cross = key:space;circle = key:x;") == 0);
+      CHECK(seed.text.find(";options = none;create = none;touchpad_left = key:escape;touchpad_right = key:escape;") !=
+            std::string::npos);
+    }
+    // Xbox controller: unbound buttons and sticks stay the controller's; the pointer stick becomes a mouse stick.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"button.r2", "mouse_left"}, {"pointer_stick", "right_stick"},
+                                                {"pointer_speed", "1800"}},
+                                 map_kit, &settings, &error));
+    {
+      const auto seed = SeedControllerLayout(settings);
+      CHECK(seed.mode == "xinput");
+      CHECK(seed.text.find(";r2 = mouse:left;") != std::string::npos &&
+            seed.text.find(";touchpad_left = pad:back;touchpad_right = pad:guide;left_stick = pad:left_stick;"
+                           "right_stick = mouse;right_stick_speed = 1800") != std::string::npos);
+    }
+    // A PlayStation controller that waits for the title's update is the mode the layout is for.
+    {
+      const auto playstation = KitForTitleRuntime(KitCapabilitiesFromManifest({kKitInputMap, kKitInputPlaystation}, false), false);
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller", "playstation"}}, playstation, &settings, &error));
+      const auto seed = SeedControllerLayout(settings);
+      CHECK(seed.mode == "playstation" &&
+            seed.text.find("touchpad_left = pad:touchpad;touchpad_right = pad:touchpad") != std::string::npos);
+    }
+    // With a layout in effect, the seed is that layout.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, map_kit, &settings, &error));
+    CHECK(SeedControllerLayout(settings).text == wasd && SeedControllerLayout(settings).mode == "keyboard");
+
+    // Saving a layout with its mode, then Reset.
+    GameSettingsRecord record;
+    record.overrides = {{"controller_preset", "mouse"}};
+    CHECK(BuildEffectiveSettings(unbound, nullptr, record.overrides, map_kit, &settings, &error));
+    auto seed = SeedControllerLayout(settings);
+    SetControllerLayout(&record, seed.text, seed.mode);
+    CHECK(record.overrides.at("controller_layout") == FindControllerLayoutTemplate("mouse")->text &&
+          record.overrides.at("controller") == "keyboard");
+    CHECK(BuildEffectiveSettings(unbound, nullptr, record.overrides, map_kit, &settings, &error));
+    CHECK(ControllerLayoutInEffect(settings) && settings.values.at("controller").source == ValueSource::kUser);
+    // The same input as the preset gave: keyboard mode and the Mouse template's lines.
+    CHECK(RenderProsperoProfile(unbound, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\nmode = keyboard\nmap = 1\ncross = mouse:left\n") != std::string::npos);
+    // R1: My presets carry the layout and its mode, and a fresh game gets both.
+    for (const auto capture : {PresetCapture::kSave, PresetCapture::kOwnChanges}) {
+      const auto kept = PresetSettingsFromGame(unbound, settings, capture);
+      CHECK(kept.at("controller_layout") == record.overrides.at("controller_layout") && kept.at("controller") == "keyboard");
+      CHECK(!kept.count("controller_preset") && !kept.count("pointer_stick"));
+      SettingsPreset mine{"my-0000000000000001", "Mine", "", "", kept};
+      EffectiveSettings fresh;
+      CHECK(BuildEffectiveSettings(unbound, &mine, {}, map_kit, &fresh, &error));
+      CHECK(RenderProsperoProfile(unbound, fresh, target, &profile, &reason));
+      CHECK(profile.text.find("\nmode = keyboard\nmap = 1\ncross = mouse:left\n") != std::string::npos);
+    }
+    ResetControllerLayout(&record, unbound, nullptr);
+    CHECK(!record.overrides.count("controller_layout") && record.overrides.at("controller_preset") == "mouse");
+    CHECK(BuildEffectiveSettings(unbound, nullptr, record.overrides, map_kit, &settings, &error));
+    CHECK(!ControllerLayoutInEffect(settings) && settings.values.at("controller_preset").available);
+    // A recipe's or preset's layout stays off after Reset.
+    {
+      GameRecipe with_layout = hl2;
+      with_layout.defaults["controller_layout"] = gamepad;
+      record.overrides["controller_layout"] = wasd;
+      ResetControllerLayout(&record, with_layout, nullptr);
+      CHECK(record.overrides.at("controller_layout").empty());
+      CHECK(BuildEffectiveSettings(with_layout, nullptr, record.overrides, map_kit, &settings, &error));
+      CHECK(!ControllerLayoutInEffect(settings));
+      SettingsPreset preset{"p", "P", "", "", {{"controller_layout", gamepad}}};
+      record.overrides.erase("controller_layout");
+      ResetControllerLayout(&record, hl2, &preset);
+      CHECK(record.overrides.at("controller_layout").empty());
+    }
+
+    // R1: shares carry a layout a player or a recipe set, and leave it out otherwise.
+    const auto ref = playden::GameRef::Steam(220);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller_preset", "mouse"}}, map_kit, &settings, &error));
+    CHECK(!BuildCommunityRecipe(hl2, settings, ref, "Half-Life 2").recipe.defaults.count("controller_layout"));
+    CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, map_kit, &settings, &error));
+    {
+      const auto shared = BuildCommunityRecipe(hl2, settings, ref, "Half-Life 2");
+      CHECK(shared.recipe.defaults.at("controller_layout") == wasd && shared.recipe.defaults.at("controller") == "keyboard");
+      // The rows the layout replaces don't travel with it.
+      for (const char* id : replaced) CHECK(!shared.recipe.defaults.count(id));
+      CommunityRecipe reread;
+      CHECK(ParseCommunityRecipe(SerializeCommunityRecipe(shared), &reread, &reason) &&
+            reread.recipe.defaults.at("controller_layout") == wasd);
+      // A settings-only share from it carries the layout the player added.
+      EffectiveSettings before;
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {}, map_kit, &before, &error));
+      const auto only = BuildSettingsOnlyRecipe(shared, before, settings, ref, "Half-Life 2");
+      CHECK(only.recipe.defaults.at("controller_layout") == wasd);
+      const auto unchanged = BuildSettingsOnlyRecipe(reread, before, before, ref, "Half-Life 2");
+      CHECK(unchanged.recipe.defaults.at("controller_layout") == wasd);  // the base's own rows stay
+    }
+    // A sidecar preset may name the runtime kit's input-map.
+    CommunityPreset needs_map;
+    needs_map.requires_prospero_win = {"input-map"};
+    CHECK(CommunityPresetSupported(needs_map, map_kit) && CommunityPresetSupported(needs_map, stale) &&
+          !CommunityPresetSupported(needs_map, no_map));
   }
 
   std::puts("game settings tests passed");

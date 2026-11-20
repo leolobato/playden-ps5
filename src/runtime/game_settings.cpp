@@ -187,6 +187,15 @@ std::vector<SettingDefinition> BuildCatalogue() {
                           "For games that show PlayStation buttons. Games that only read Xbox controllers see none."},
                          {"keyboard", "Keyboard and mouse mapping", "Buttons send keys and mouse clicks."}},
                         "xinput"));
+  // What each DualSense input sends (runtime/controller_layout.h): the runtime kit's input-map lines joined by ';'.
+  // While one is set and the runtime kit reads it, it replaces the preset, the buttons, Touchpad hold and the pointer
+  // stick.
+  {
+    auto layout = Text("controller_layout", "Controller layout", "What each button and stick sends to the game.", "",
+                       G::kControls);
+    layout.since = "0.13.0";
+    list.push_back(std::move(layout));
+  }
   list.push_back(Choice("controller_preset", "Controller preset", "Ready-made button layout for this kind of game.",
                         "", G::kControls,
                         {{"none", "None", "Only the buttons set here."},
@@ -685,6 +694,12 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
     if (id == "launcher_controller_preset" && values.at("start_through_launcher").value != "on")
       return "Turn on Start through a launcher first.";
   }
+  if (id == "controller_layout") {
+    const auto layout = values.find("controller_layout");
+    if (auto why = ControllerLayoutUnsupported(layout == values.end() ? std::string() : layout->second.value, kit);
+        !why.empty())
+      return why;
+  }
   if (id == "touchpad_hold") {
     if (kit.touchpad_switch_needs_update) return kAppliesAfterKitUpdate;
     if (!kit.touchpad_switch) return "Needs a newer runtime kit that switches presets with the touchpad.";
@@ -921,6 +936,97 @@ bool SettingChoiceWaitsForUpdate(const EffectiveSettings& settings, std::string_
   return settings.graphics != "dxvk" || value == "120" || value == "40";
 }
 
+bool ControllerLayoutInEffect(const EffectiveSettings& settings) {
+  const auto& layout = OptionalValue(settings, "controller_layout");
+  return layout.available && !layout.value.empty();
+}
+
+bool SetByControllerLayout(std::string_view id) {
+  return id == "controller_preset" || id == "touchpad_hold" || id == "pointer_stick" || id == "pointer_speed" ||
+         id.substr(0, 7) == "button.";
+}
+
+std::string ControllerLayoutUnsupported(std::string_view text, const KitCapabilities& kit) {
+  ControllerLayout layout;
+  std::vector<std::string> needs;
+  if (ParseControllerLayout(text, &layout, nullptr)) needs = ControllerLayoutCapabilities(layout);
+  if (needs.empty()) needs.push_back(kKitInputMap);
+  for (const auto& capability : needs) {
+    if (capability == kKitInputMap) {
+      if (kit.input_map) continue;
+      if (kit.input_map_needs_update) return kAppliesAfterKitUpdate;
+      return "Needs a newer runtime kit with controller layouts.";
+    }
+    return "Needs a newer runtime kit that reads " + capability + ".";
+  }
+  return {};
+}
+
+ControllerLayoutSeed SeedControllerLayout(const EffectiveSettings& settings) {
+  ControllerLayoutSeed seed;
+  const auto& controller = OptionalValue(settings, "controller");
+  seed.mode = ChosenValue(controller);
+  if (seed.mode.empty()) seed.mode = FindSetting("controller")->playden_default;
+  if (ControllerLayoutInEffect(settings)) {
+    CanonicalControllerLayout(settings.values.at("controller_layout").value, &seed.text, nullptr);
+    return seed;
+  }
+  const auto value = [&](const char* id) { return ChosenValue(OptionalValue(settings, id)); };
+  const bool keyboard = seed.mode == "keyboard";
+  // A binding from a button row, or else from the controller preset: the preset file's lines come first and the
+  // profile's button lines override them.
+  const auto preset = ControllerPresetButtons().find(value("controller_preset"));
+  const auto binding = [&](const std::string& button) -> std::optional<LayoutTarget> {
+    std::string bound = value(("button." + button).c_str());
+    if (bound.empty() && preset != ControllerPresetButtons().end()) {
+      const auto found = preset->second.find(button);
+      if (found != preset->second.end()) bound = found->second;
+    }
+    if (bound.empty()) return std::nullopt;
+    return LayoutTargetFromBinding(bound);
+  };
+  ControllerLayout layout;
+  for (const auto input : LayoutInputs()) {
+    auto& entry = layout[input];
+    entry.set = true;
+    if (LayoutInputKindOf(input) == LayoutInputKind::kStick) continue;
+    const std::string name(LayoutInputName(input));
+    // The old touchpad binding is either half's click.
+    const auto bound = binding(input == LayoutInput::kTouchpadLeft || input == LayoutInput::kTouchpadRight
+                                   ? std::string("touchpad") : name);
+    // An unbound button reaches the game's controller, and keyboard mode has none.
+    entry.target = bound ? *bound : keyboard ? LayoutTarget{} : LayoutDefaultTarget(input, seed.mode);
+  }
+  const auto& pointer = OptionalValue(settings, "pointer_stick");
+  const std::string pointer_stick = pointer.available ? pointer.value : std::string("none");
+  for (const auto input : {LayoutInput::kLeftStick, LayoutInput::kRightStick}) {
+    auto& stick = layout[input].stick;
+    if (pointer_stick == LayoutInputName(input)) {
+      stick.mode = StickMode::kMouse;
+      const auto& speed = OptionalValue(settings, "pointer_speed");
+      if (speed.available && !speed.value.empty()) stick.speed = std::atoi(speed.value.c_str());
+    } else {
+      stick.mode = keyboard ? StickMode::kNone : LayoutDefaultStick(input);
+    }
+  }
+  seed.text = SerializeControllerLayout(layout);
+  return seed;
+}
+
+void SetControllerLayout(GameSettingsRecord* record, const std::string& text, const std::string& mode) {
+  record->overrides["controller_layout"] = text;
+  if (!mode.empty()) record->overrides["controller"] = mode;
+}
+
+void ResetControllerLayout(GameSettingsRecord* record, const GameRecipe& recipe, const SettingsPreset* preset) {
+  const auto sets = [](const std::map<std::string, std::string>& values) {
+    const auto found = values.find("controller_layout");
+    return found != values.end() && !found->second.empty();
+  };
+  if (sets(recipe.defaults) || (preset && sets(preset->settings))) record->overrides["controller_layout"] = "";
+  else record->overrides.erase("controller_layout");
+}
+
 bool ValidateSettingValue(const GameRecipe& recipe, std::string_view id, std::string_view value, std::string* reason) {
   const auto fail = [&](std::string why) {
     if (reason) *reason = std::move(why);
@@ -989,6 +1095,7 @@ bool ValidateSettingValue(const GameRecipe& recipe, std::string_view id, std::st
     return IsProsperoDllOverrides(value) ? true : fail("not a list like name=n;other=n,b");
   }
   if (id.substr(0, 7) == "button.") return IsProsperoBinding(value) ? true : fail("not a key, mouse button or none");
+  if (id == "controller_layout") return ParseControllerLayout(value, nullptr, reason);
   return fail("unknown setting");
 }
 
@@ -1148,6 +1255,19 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
       if (value.value != definition.playden_default) value.after_update = value.value;
     }
     value.value = definition.playden_default;
+  }
+  // A controller layout in effect sends every input itself: the preset, the buttons, Touchpad hold and the pointer
+  // stick don't apply, and say so. A layout that waits for the title's update leaves them as they are until then.
+  if (ControllerLayoutInEffect(out)) {
+    for (const auto& definition : SettingsCatalogue()) {
+      if (!SetByControllerLayout(definition.id)) continue;
+      auto& value = out.values[definition.id];
+      value.available = false;
+      value.waits_for_update = false;
+      value.after_update.clear();
+      value.reason = kSetByControllerLayout;
+      value.value = definition.playden_default;
+    }
   }
   // Without online-steam the emulator stays off the network, as it did before the Steam network row.
   if (!OnlineSteamEnabled()) out.values["steam_network"].value = "offline";
@@ -1511,7 +1631,17 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   if (fps_counter) text += "fps_counter = true\n";
 
   text += "\n[input]\n";
-  if (value("controller_preset") != "none") text += "preset = " + value("controller_preset") + "\n";
+  // A controller layout: the controller mode, rumble, then map = 1 and the layout's lines. No preset, pointer stick or
+  // button line goes with it (BuildEffectiveSettings made those rows unavailable).
+  const bool input_map = ControllerLayoutInEffect(settings);
+  std::vector<std::string> layout_lines;
+  if (input_map) {
+    ControllerLayout layout;
+    std::string why;
+    if (!ParseControllerLayout(value("controller_layout"), &layout, &why)) return fail("controller layout: " + why);
+    layout_lines = ControllerLayoutLines(layout);
+  }
+  if (!input_map && value("controller_preset") != "none") text += "preset = " + value("controller_preset") + "\n";
   // A controller preset brings its own mode, pointer stick and speed. A row overrides them only when it was
   // set at least as deliberately as the preset (player over settings preset over recipe over Playden), or when
   // the recipe locks it: BuildEffectiveSettings keeps a locked row over the preset's value too.
@@ -1523,15 +1653,19 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
            (row.source != ValueSource::kPlayden && row.source >= preset_source);
   };
   if (chosen("controller")) text += "mode = " + value("controller") + "\n";
-  if (chosen("pointer_stick")) text += "mouse = " + value("pointer_stick") + "\n";
-  if (settings.values.at("pointer_speed").available && chosen("pointer_speed"))
+  if (!input_map && chosen("pointer_stick")) text += "mouse = " + value("pointer_stick") + "\n";
+  if (!input_map && settings.values.at("pointer_speed").available && chosen("pointer_speed"))
     text += "mouse_speed = " + value("pointer_speed") + "\n";
   // Written only when it differs from the runtime's default (full rumble).
   const bool tuned_rumble = settings.values.at("rumble").available && value("rumble") != "100";
   if (tuned_rumble) text += "rumble = " + value("rumble") + "\n";
+  if (input_map) {
+    text += "map = 1\n";
+    for (const auto& line : layout_lines) text += line + "\n";
+  }
   for (const auto& button : ProsperoButtons()) {
     const auto& binding = settings.values.at("button." + button).value;
-    if (!binding.empty()) text += button + " = " + binding + "\n";
+    if (!input_map && !binding.empty()) text += button + " = " + binding + "\n";
   }
 
   // Starting through a launcher: the launcher's preset written out, since a title reads one preset file, and the
@@ -1740,6 +1874,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   features.display_framegen = display_framegen;
   features.display_fps_counter = fps_counter;
   features.input_playstation = value("controller") == "playstation";
+  features.input_map = input_map;
   features.runtime_version = settings.profile_version == 2;
   features.runtime_locale = !system_locale.empty() || !user_locale.empty();
   // BuildEffectiveSettings let arguments past 512 bytes through only for a runtime that takes them; such a runtime
@@ -2231,7 +2366,8 @@ bool ValidatePresetSetting(std::string_view id, std::string_view value, std::str
   const auto* definition = FindSetting(id);
   const bool button = id.compare(0, 7, "button.") == 0;
   if (!definition || id == "launch_option" || id == "graphics" || id == "architecture" || id == "start_check" ||
-      id == "steam_library_path" || (definition->kind == SettingKind::kText && !button)) {
+      id == "steam_library_path" ||
+      (definition->kind == SettingKind::kText && !button && id != "controller_layout")) {
     if (reason) *reason = "unsupported setting";
     return false;
   }
@@ -3539,7 +3675,8 @@ bool ParseProfileSidecar(std::string_view text, CommunityPreset* community, std:
   for (const auto& [id, value] : settings) {
     const auto* definition = FindSetting(id);
     const bool button = id.compare(0, 7, "button.") == 0;
-    if (!definition || id == "launch_option" || id == "graphics" || (definition->kind == SettingKind::kText && !button))
+    if (!definition || id == "launch_option" || id == "graphics" ||
+        (definition->kind == SettingKind::kText && !button && id != "controller_layout"))
       continue;
     if (ValidateSettingValue(GameRecipe{}, id, value, nullptr)) out.preset.settings[id] = value;
   }
@@ -4153,7 +4290,7 @@ const std::vector<std::string>& SettingsKitCapabilityNames() {
   // Sorted, as a kit manifest lists them.
   static const std::vector<std::string> names = {kKitAudioMicrophone, kKitDisplay120Hz, kKitDisplayFpsCounter,
                                                  kKitDisplayFramegen,
-                                                 kKitHelperProcess, kKitInputPlaystation, kKitInputRumble,
+                                                 kKitHelperProcess, kKitInputMap, kKitInputPlaystation, kKitInputRumble,
                                                  kKitLauncherMode, kKitAudioVolume, kKitDxvkConfig, kKitDxvkPresent,
                                                  kKitInputTuning, kKitEnvironment,
                                                  kKitTitleNotify, kKitTouchpadSwitch};
@@ -4193,6 +4330,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.launcher_mode = has(kKitLauncherMode);
   kit.touchpad_switch = has(kKitTouchpadSwitch);
   kit.input_playstation = has(kKitInputPlaystation);
+  kit.input_map = has(kKitInputMap);
   kit.title_notify = has(kKitTitleNotify);
   kit.helper_process = has(kKitHelperProcess);
   kit.launch_arguments_4096 = has(kKitLaunchArguments4096);
@@ -4260,6 +4398,11 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   if (!title_runtime_current && kit.touchpad_switch) {
     kit.touchpad_switch = false;
     kit.touchpad_switch_needs_update = true;
+  }
+  // An older title refuses map = 1: a layout waits for the title's update.
+  if (!title_runtime_current && kit.input_map) {
+    kit.input_map = false;
+    kit.input_map_needs_update = true;
   }
   if (!title_runtime_current && kit.input_playstation) {
     kit.input_playstation = false;
@@ -4685,6 +4828,9 @@ bool CommunityPresetSupported(const CommunityPreset& community, const KitCapabil
     }
     else if (feature == "display-fps-counter") {
       if (!kit.display_fps_counter && !kit.display_fps_counter_needs_update) return false;
+    }
+    else if (feature == "input-map") {
+      if (!kit.input_map && !kit.input_map_needs_update) return false;
     }
     else if (feature == "input-playstation") {
       if (!kit.input_playstation && !kit.input_playstation_needs_update) return false;
