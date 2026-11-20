@@ -1623,7 +1623,11 @@ std::string RuntimeHost::InstallScriptsStep(const GameFiles& files) {
     for (const auto& name : script.found) names += (names.empty() ? "" : ",") + name;
     Log("install script app=" + std::to_string(record.runtime_number) + " found=" + names +
         " values=" + std::to_string(script.values) + " skipped=" + std::to_string(script.skipped.size()) +
-        (script.ok ? std::string() : " failed=" + script.message));
+        " dropped=" + std::to_string(script.dropped_count) + (script.ok ? std::string() : " failed=" + script.message));
+    // Each value left out, so a game that misses one shows why in its report (a few; the count says if there were more).
+    constexpr std::size_t kDroppedShown = 8;
+    for (std::size_t index = 0; index < script.dropped.size() && index < kDroppedShown; ++index)
+      Log("install script app=" + std::to_string(record.runtime_number) + " dropped " + script.dropped[index]);
   }
   if (!script.ok) return "The game's install script could not be applied: " + script.message + ".";
   // The redistributables those scripts run (PhysX and the like): packages Playden can install

@@ -573,7 +573,7 @@ void TestScripts() {
     CHECK(data("Software\\Wow6432Node\\Wow6432Node", "Node") == "missing");
     CHECK(data("Software", "Top") == "missing");
     CHECK(data("Software\\Classes\\Vendor.Save", "") == "\"Save\"");
-    CHECK(data("Software\\Wow6432Node\\Classes\\Vendor.Save", "") == "\"Save\"");
+    CHECK(data("Software\\Classes\\Wow6432Node\\Vendor.Save", "") == "\"Save\"");
     // Applied to a hive, each view keeps its value, and applying it again changes nothing.
     std::string hive = "WINE REGISTRY Version 2\n;; All keys relative to REGISTRY\\\\Machine\n\n#arch=win64\n";
     CHECK(ApplyRegistryValues(&hive, viewed.machine, 1760000000, &reason));
@@ -591,6 +591,152 @@ void TestScripts() {
           !section_has("Software\\\\Wow6432Node\\\\Vendor", "\"Path\"=\"plain\""));
     const auto once = hive;
     CHECK(ApplyRegistryValues(&hive, viewed.machine, 1760000001, &reason));
+    CHECK(hive == once);
+  }
+  // Every token Steam documents (and common Windows variables) becomes the folder Steam, a 32-bit program, would see
+  // in the bottle, in any case; a lone % stays as it is. HKEY_CLASSES_ROOT is HKLM\Software\Classes in both views, and
+  // HKCU's view names are HKCU. Names and strings past ASCII are written as Wine writes them: \x and the UTF-16 code,
+  // four digits when a hex digit follows. What can't be written is left out and named.
+  {
+    const std::string generic = R"vdf("InstallScript"
+{
+	"Registry"
+	{
+		"HKEY_LOCAL_MACHINE\\Software\\Studio\\%InstallDir%"
+		{
+			"string"
+			{
+				"Saves"		"%USER_MYDOCS%\\Studio"
+				"Roaming"		"%appdata%\\Studio"
+				"Local"		"%LOCALAPPDATA%"
+				"Shared"		"%COMMON_MYDOCS%"
+				"Windows"		"%WinDir%\\system32"
+				"Steam"		"%STEAMPATH%"
+				"Root"		"%ROOTDRIVE%:\\"
+				"Open"		"\"%InstallDir%\\Game.exe\" \"%1\" \"%2\""
+				"Programs"		"%ProgramFiles%|%ProgramW6432%"
+				"Share"		"100%"
+				"Café"		"Ça va"
+				"Hex"		"éa"
+				"Wide"		"日本"
+				"Smile"		"😀"
+				"Quote\"d"		"x"
+				"Odd"		"%NOT_A_TOKEN%"
+			}
+			"dword"
+			{
+				"Hex"		"0x10"
+				"Huge"		"4294967296"
+				"Spaced"		" 5"
+			}
+			"qword"
+			{
+				"Big"		"1"
+			}
+		}
+		"HKEY_CLASSES_ROOT\\.rrsave" { "string" { "(Default)" "RoadRash.Save" } }
+		"HKEY_CLASSES_ROOT\\CLSID\\{1}" { "string" { "(Default)" "Studio" } }
+		"HKEY_CURRENT_USER\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers" { "string" { "%INSTALLDIR%\\Game.exe" "WINXPSP3" "%NOPE%\\x.exe" "1" } }
+		"HKEY_LOCAL_MACHINE\\Software\\Bad]Key" { "string" { "a" "b" } }
+		"HKEY_CURRENT_USER_WOW64_32\\Software\\Studio" { "string" { "User" "%USERPROFILE%" } }
+		"HKEY_USERS\\.DEFAULT\\Studio" { "string" { "a" "b" "c" "d" } }
+		"HKEY_LOCAL_MACHINE\\Software\\%MISSING%" { "string" { "a" "b" } }
+		"HKEY_LOCAL_MACHINE\\Software\\Ünicode" { "string" { "a" "b" } }
+	}
+}
+)vdf";
+    InstallScriptValues parsed;
+    CHECK(ParseInstallScript(generic, "Z:\\games\\7", "", &parsed, &reason));
+    const auto key = std::string("Software\\Studio\\Z:\\games\\7");
+    const auto data = [&](const std::string& in, const std::string& name) {
+      const auto* found = FindValue(parsed.machine, in, name);
+      return found ? found->data : std::string("missing");
+    };
+    CHECK(data(key, "Saves") == "\"C:\\\\users\\\\prospero\\\\Documents\\\\Studio\"");
+    CHECK(data(key, "Roaming") == "\"C:\\\\users\\\\prospero\\\\AppData\\\\Roaming\\\\Studio\"");
+    CHECK(data(key, "Local") == "\"C:\\\\users\\\\prospero\\\\AppData\\\\Local\"");
+    CHECK(data(key, "Shared") == "\"C:\\\\users\\\\Public\\\\Documents\"");
+    CHECK(data(key, "Windows") == "\"C:\\\\windows\\\\system32\"");
+    CHECK(data(key, "Steam") == "missing");  // the Steam client folder depends on the game's Steam mode
+    CHECK(data(key, "Root") == "\"Z:\\\\\"");  // the game folder's drive
+    // Only %NAME% is a token: a shell command's "%1" and "%2" stay as they are.
+    CHECK(data(key, "Open") == "\"\\\"Z:\\\\games\\\\7\\\\Game.exe\\\" \\\"%1\\\" \\\"%2\\\"\"");
+    CHECK(data(key, "Programs") == "\"C:\\\\Program Files (x86)|C:\\\\Program Files\"");
+    CHECK(data(key, "Share") == "\"100%\"");
+    CHECK(data(key, "Caf\\xe9") == "\"\\x00c7a va\"");  // four digits: a hex digit follows
+    CHECK(data(key, "Hex") == "dword:00000010");  // the dword of the same name comes later and replaces the string
+    CHECK(data(key, "Wide") == "\"\\x65e5\\x672c\"");
+    CHECK(data(key, "Smile") == "\"\\xd83d\\xde00\"");
+    CHECK(data("Software\\Wow6432Node\\Studio\\Z:\\games\\7", "Saves") == data(key, "Saves"));
+    const auto* save = FindValue(parsed.machine, "Software\\Classes\\.rrsave", "");
+    CHECK(save && save->default_value && save->data == "\"RoadRash.Save\"");
+    CHECK(FindValue(parsed.machine, "Software\\Classes\\Wow6432Node\\.rrsave", ""));
+    // HKCR's CLSID goes to the 32-bit node Wine keeps under Classes too.
+    CHECK(FindValue(parsed.machine, "Software\\Classes\\CLSID\\{1}", "") &&
+          FindValue(parsed.machine, "Software\\Classes\\Wow6432Node\\CLSID\\{1}", ""));
+    CHECK(parsed.user.size() == 2 && FindValue(parsed.user, "Software\\Studio", "User") &&
+          FindValue(parsed.user, "Software\\Studio", "User")->data == "\"C:\\\\users\\\\prospero\"");
+    // A value's name takes tokens too: a program's compatibility layer is named by its full path.
+    CHECK(FindValue(parsed.user, "Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers",
+                    "Z:\\\\games\\\\7\\\\Game.exe"));
+    const std::vector<std::string> dropped = {
+        "HKEY_LOCAL_MACHINE\\Software\\Studio\\%InstallDir% Steam: unknown %STEAMPATH%",
+        "HKEY_LOCAL_MACHINE\\Software\\Studio\\%InstallDir% Quote\"d: name isn't text Playden can write",
+        "HKEY_LOCAL_MACHINE\\Software\\Studio\\%InstallDir% Odd: unknown %NOT_A_TOKEN%",
+        "HKEY_LOCAL_MACHINE\\Software\\Studio\\%InstallDir% Huge: dword isn't a 32-bit number",
+        "HKEY_LOCAL_MACHINE\\Software\\Studio\\%InstallDir% Spaced: dword isn't a 32-bit number",
+        "HKEY_LOCAL_MACHINE\\Software\\Studio\\%InstallDir%: type qword not supported",
+        "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers %NOPE%\\x.ex...: unknown %NOPE%",  // cut at 96
+        "HKEY_LOCAL_MACHINE\\Software\\Bad]Key: key isn't plain ASCII without [ or ]",
+        "HKEY_USERS\\.DEFAULT\\Studio: root not supported (2 values)",
+        "HKEY_LOCAL_MACHINE\\Software\\%MISSING%: unknown %MISSING%",
+        "HKEY_LOCAL_MACHINE\\Software\\??nicode: key isn't plain ASCII without [ or ]"};
+    CHECK(parsed.dropped_count == 12);
+    CHECK(parsed.dropped == dropped);
+    // A string whose bytes aren't UTF-8 is left out too.
+    InstallScriptValues latin;
+    CHECK(ParseInstallScript("\"InstallScript\" { \"Registry\" { \"HKEY_CURRENT_USER\\\\Software\\\\S\" { \"string\" { "
+                             "\"Name\" \"Caf\xe9\" } } } }",
+                             "Z:\\g", "", &latin, &reason));
+    CHECK(latin.user.empty() && latin.dropped == std::vector<std::string>{"HKEY_CURRENT_USER\\Software\\S Name: string isn't UTF-8 text"});
+    // A UTF-16 script keeps a character past the Basic Multilingual Plane; a lone surrogate leaves its value out.
+    // A control character in a name leaves it out too, and its note in the log has no line break.
+    {
+      std::string utf16 = "\xff\xfe";
+      const auto put = [&utf16](unsigned unit) { utf16 += std::string{static_cast<char>(unit & 0xff), static_cast<char>(unit >> 8)}; };
+      const auto put_text = [&put](std::string_view text) { for (const char c : text) put(static_cast<unsigned char>(c)); };
+      put_text("\"InstallScript\" { \"Registry\" { \"HKEY_CURRENT_USER\\\\Software\\\\S\" { \"string\" { \"Save");
+      put(0xd83d);
+      put(0xde00);
+      put_text("\" \"1\" \"Lone\" \"");
+      put(0xd800);
+      put_text("\" \"a\\nb\" \"2\" } } } }");
+      InstallScriptValues wide;
+      CHECK(ParseInstallScript(utf16, "Z:\\g", "", &wide, &reason));
+      CHECK(wide.user.size() == 1 && wide.user[0].name == "Save\\xd83d\\xde00" && wide.user[0].data == "\"1\"");
+      CHECK(wide.dropped == std::vector<std::string>({"HKEY_CURRENT_USER\\Software\\S Lone: string isn't UTF-8 text",
+                                                       "HKEY_CURRENT_USER\\Software\\S a?b: name isn't text Playden can write"}));
+    }
+    // Only the first 16 values left out are named; all are counted.
+    {
+      std::string many = "\"InstallScript\" { \"Registry\" { \"HKEY_CURRENT_USER\\\\Software\\\\S\" { \"dword\" { ";
+      for (int index = 0; index < 20; ++index) many += "\"V" + std::to_string(index) + "\" \"x\" ";
+      many += "} } } }";
+      InstallScriptValues capped;
+      CHECK(ParseInstallScript(many, "Z:\\g", "", &capped, &reason));
+      CHECK(capped.user.empty() && capped.dropped.size() == 16 && capped.dropped_count == 20);
+    }
+    // The escaped forms go into a hive as they are, and applying them again changes nothing. A 32-bit CLSID key Wine
+    // already saved (in Software\Classes\Wow6432Node) gets the new value in its own section, not a second one.
+    std::string hive = "WINE REGISTRY Version 2\n;; All keys relative to REGISTRY\\\\Machine\n\n#arch=win64\n\n"
+                       "[Software\\\\Classes\\\\Wow6432Node\\\\CLSID\\\\{1}] 1750000000\n@=\"Old\"\n";
+    CHECK(ApplyRegistryValues(&hive, parsed.machine, 1760000000, &reason));
+    const auto clsid = std::string("[Software\\\\Classes\\\\Wow6432Node\\\\CLSID\\\\{1}]");
+    CHECK(hive.find(clsid) != std::string::npos && hive.find(clsid, hive.find(clsid) + 1) == std::string::npos);
+    CHECK(hive.find("@=\"Studio\"") != std::string::npos && hive.find("@=\"Old\"") == std::string::npos);
+    CHECK(hive.find("\"Caf\\xe9\"=\"\\x00c7a va\"\n") != std::string::npos);
+    const auto once = hive;
+    CHECK(ApplyRegistryValues(&hive, parsed.machine, 1760000001, &reason));
     CHECK(hive == once);
   }
   // A language's value replaces a plain one of the same name, any case: a registry key holds one of each.

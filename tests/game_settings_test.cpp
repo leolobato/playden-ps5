@@ -1994,7 +1994,7 @@ int main(int argc, char** argv) {
     const std::string mixed =
         "\"InstallScript\" { \"Registry\" { \"HKEY_CURRENT_USER\\\\Software\\\\Studio\\\\Game\" { "
         "\"dword\" { \"Installed\" \"1\" \"Bad\" \"x\" } \"string\" { \"Lang\" \"%LANGUAGE%\" \"Ok\" \"yes\" } "
-        "\"binary\" { \"Blob\" \"00ff\" } } \"HKEY_CLASSES_ROOT\\\\.sav\" { \"string\" { \"\" \"Game.Save\" } } } }";
+        "\"binary\" { \"Blob\" \"00ff\" } } \"HKEY_USERS\\\\.DEFAULT\\\\Game\" { \"string\" { \"Save\" \"1\" } } } }";
     std::string utf16 = "\xff\xfe";
     for (const char value : mixed) utf16 += std::string{value, '\0'};
     values = {};
@@ -2003,6 +2003,11 @@ int main(int argc, char** argv) {
     CHECK(values.user[0].key == "Software\\Studio\\Game" && values.user[0].name == "Installed" &&
           values.user[0].data == "dword:00000001");
     CHECK(values.user[1].name == "Ok" && values.user[1].data == "\"yes\"");
+    // Each value left out is named, with why.
+    CHECK(values.dropped == std::vector<std::string>({"HKEY_CURRENT_USER\\Software\\Studio\\Game Bad: dword isn't a 32-bit number",
+                                                     "HKEY_CURRENT_USER\\Software\\Studio\\Game Lang: unknown %LANGUAGE%",
+                                                     "HKEY_CURRENT_USER\\Software\\Studio\\Game: type binary not supported",
+                                                     "HKEY_USERS\\.DEFAULT\\Game: root not supported"}));
     values = {};
     CHECK(!ParseInstallScript("\"InstallScript\" {", "Z:\\g", "", &values, &reason));
 

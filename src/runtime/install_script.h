@@ -15,28 +15,34 @@ namespace playden::runtime {
 // "Installed Path"). Playden writes them into the bottle instead. Run Process entries
 // (redistributable installers) are not run: Wine's built-ins stand in for them.
 
-// The values a script's Registry section sets, by hive. %INSTALLDIR% becomes install_dir (the
-// game folder's Windows path). HKLM\Software keys go to both registry views, as Steam, a
-// 32-bit program, writes them where 32-bit and 64-bit games find them; HKEY_LOCAL_MACHINE_WOW64_32
-// and _WOW64_64 keys go to that one view (Software\Wow6432Node, or the key), and such a value wins
-// over a plain HKLM key's copy for the same view. Only "string" and
-// "dword" values are taken; a value with another %TOKEN% or non-ASCII text, and keys under
-// other roots, are skipped. Text may be UTF-8 or UTF-16 with a byte order mark. A language subkey
-// of "string" or "dword" gives its values only for that language: language (Steam's name, like
-// "russian"; empty for none) is used, then "english". A value named (Default) is the key's unnamed one.
+// The values a script's Registry section sets, by hive. Steam's %TOKEN%s become the bottle's folders
+// (%INSTALLDIR% is install_dir, the game folder's Windows path; %APPDATA%, %USER_MYDOCS%, %WinDir% and the
+// like the folders Steam, a 32-bit program, would see). HKLM\Software keys go to both registry views, as
+// Steam writes them where 32-bit and 64-bit games find them; HKEY_LOCAL_MACHINE_WOW64_32 and _WOW64_64 keys
+// go to that one view (Software\Wow6432Node, or the key), and such a value wins over a plain HKLM key's copy
+// for the same view. HKEY_CLASSES_ROOT is HKLM\Software\Classes, and HKCU's view names are HKCU. Steam takes
+// "string" and "dword" values; names and strings may be any UTF-8 text, written as Wine writes it, while keys
+// stay ASCII. Text may be UTF-8 or UTF-16 with a byte order mark. A language subkey of "string" or "dword"
+// gives its values only for that language: language (Steam's name, like "russian"; empty for none) is used,
+// then "english". A value named (Default) is the key's unnamed one. What can't be written (another root, an
+// unknown %TOKEN%, another type, a dword that isn't a number) is left out and named in dropped, with why.
 struct InstallScriptValues {
   std::vector<RegistryValue> machine;  // system.reg (HKEY_LOCAL_MACHINE)
   std::vector<RegistryValue> user;     // user.reg (HKEY_CURRENT_USER)
+  std::vector<std::string> dropped;    // "<key> [<name>]: <reason>", the first 16, log-safe
+  std::size_t dropped_count = 0;       // every value left out
 };
 bool ParseInstallScript(std::string_view text, const std::string& install_dir, const std::string& language,
                         InstallScriptValues* values, std::string* reason);
 
 // The keys a value under `subkey` goes to. An HKLM Software key (any case) goes to both registry views, as Steam,
-// a 32-bit program, writes it where 32-bit and 64-bit games find it: the key itself and Software\Wow6432Node\<rest>.
+// a 32-bit program, writes it where 32-bit and 64-bit games find it: the key itself and Software\Wow6432Node\<rest>
+// (Software\Classes\Wow6432Node\<rest> for a Classes key, where Wine keeps those).
 // Any other key, and any HKCU key, is the key alone. Used for Steam's scripts and GOG's alike.
 std::vector<std::string> InstallScriptKeys(bool machine, const std::string& subkey);
 
-// Wine's text form of a REG_SZ: quoted, with backslashes and quotes escaped.
+// Wine's text form of a REG_SZ: quoted, with backslashes and quotes escaped, and UTF-8 text past ASCII as Wine's
+// \x escapes (server/unicode.c dump_strW). Bytes that aren't UTF-8 are kept as they are.
 std::string RegistryString(std::string_view text);
 
 // Adds value to list, replacing one of the same key and name (any case, named or unnamed): a registry key holds one
@@ -47,10 +53,14 @@ void SetRegistryValue(std::vector<RegistryValue>* list, RegistryValue value);
 // starting with "installscript" and ending ".vdf", any case) to the stopped bottle at
 // prefix_dir, backing each hive up first. A later script's value replaces an earlier one's of
 // the same key and name. An unchanged hive is not written. found lists the scripts read; a
-// script that cannot be read or parsed is skipped and named in skipped.
+// script that cannot be read or parsed is skipped and named in skipped; dropped names the values
+// left out of the scripts that were read ("<script>: <key> [<name>]: <reason>", the first 16), and dropped_count
+// counts them all.
 struct InstallScriptResult {
   std::vector<std::string> found;
   std::vector<std::string> skipped;
+  std::vector<std::string> dropped;
+  std::size_t dropped_count = 0;
   std::size_t values = 0;
   bool ok = true;
   std::string message;  // on failure
