@@ -147,7 +147,7 @@ class PublisherUploadTests(unittest.TestCase):
     def test_the_lock_names_the_pinned_pack(self):
         lock = json.loads((ROOT / 'dependencies.lock.json').read_text())
         pack = lock['publisher_pack']
-        self.assertEqual(pack['version'], '20261120.2')
+        self.assertEqual(pack['version'], '20261120.3')
         self.assertEqual(len(pack['archives']), 4)
 
 
