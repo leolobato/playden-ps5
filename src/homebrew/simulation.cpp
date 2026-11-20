@@ -336,7 +336,9 @@ const Installation* find_installation(const State& state, GameId id) {
 bool is_installed(const State& state, GameId id) {
     const auto found = std::find_if(state.installations.begin(), state.installations.end(),
                                     [id](const Installation& installation) { return installation.game_id == id; });
-    return found != state.installations.end() && found->installed_bytes > 0;
+    // The same rule the tiles use (view.cpp): on a console a record is enough, because the size is
+    // measured after it loads, and asking before that measurement hid a game's rows on first open.
+    return found != state.installations.end() && (found->installed_bytes > 0 || !state.simulation_mode);
 }
 
 int next_queue_order(const State& state) {
