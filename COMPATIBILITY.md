@@ -1,6 +1,6 @@
 # Compatibility
 
-Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-20.
+Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-21.
 
 > [!NOTE]
 > Games were checked on runtime kit **0.10**, the first stable kit, unless the Kit column names a newer one.
@@ -93,6 +93,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Blood: Fresh Supply](https://store.steampowered.com/app/1010750) | ✅ Works | 0.29 | — | With changed Game settings; see the reports. (player reports, firmware 13.60) | 1 |
 | [BLUE REVOLVER](https://store.steampowered.com/app/439490) | ✅ Works | 0.10 | LÖVE · OpenGL · 64-bit | Default settings. The intro, the language menu and the story opening work with the controller. The earlier PhysFS start-up failure no longer happens; its cause is unknown. Gameplay not tested on r6. |
 | Blur | ✅ Works | 0.19 | — | Imported copy. Default settings, DualSense. A second controller is not detected. If it stays on the first loading screen with the music playing, turn off the console's network. ([#330](https://github.com/leolobato/playden-ps5/issues/330), [#702](https://github.com/leolobato/playden-ps5/issues/702)) |
+| [Booster Pack Heroes Demo](https://store.steampowered.com/app/4659940) | ✅ Works | 0.28 | Unity · D3D11 · DXVK · 64-bit | Community recipe: Game settings › Resolution 3840×2160, DualSense. ([recipes#68](https://github.com/leolobato/playden-ps5-recipes/pull/68), firmware 9.60) | 1 |
 | [Borderlands 2](https://store.steampowered.com/app/49520) | ✅ Works | 0.20 | — | Default settings, DualSense. It starts at 640×480: set the resolution in its own options. ([#709](https://github.com/leolobato/playden-ps5/issues/709), firmware 12.20) | 2 |
 | [Borderlands Game of the Year Enhanced](https://store.steampowered.com/app/729040) | ✅ Works | 0.19 | — | Default settings, DualSense. ([#680](https://github.com/leolobato/playden-ps5/issues/680), firmware 12.20) | 2 |
 | [Borderlands GOTY](https://store.steampowered.com/app/8980) | ✅ Works | 0.30 | — | Default settings. (player reports, firmware 12.20) | 1 |
@@ -321,7 +322,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Headliner: NoviNews](https://store.steampowered.com/app/918820) | ✅ Works | 0.18 | — | Default settings, DualSense. ([#529](https://github.com/leolobato/playden-ps5/issues/529), firmware 12.20) | 1 |
 | [Heavy Bullets](https://store.steampowered.com/app/297120) | ✅ Works | 0.18 | — | Default settings. Reaches the menu; gameplay not tested. ([#654](https://github.com/leolobato/playden-ps5/issues/654), firmware 12.20) | 1 |
 | [Hedon Bloodrite](https://store.steampowered.com/app/1072150) | ✅ Works | 0.25 | — | With changed Game settings; see the reports. (player reports, firmware 13.60) | 1 |
-| [Hell Clock](https://store.steampowered.com/app/1782460) | ✅ Works | 0.25 | — | With changed Game settings; see the reports. (player reports, firmware 13.20) | 1 |
+| [Hell Clock](https://store.steampowered.com/app/1782460) | ✅ Works | 0.29 | — | With changed Game settings; see the reports. (player reports, firmware 13.20; [recipes#69](https://github.com/leolobato/playden-ps5-recipes/pull/69), firmware 13.60: Resolution 3840×2160) | 2 |
 | [Hexcells](https://store.steampowered.com/app/265890) | ✅ Works | 0.10 | Unity · D3D11 · 32-bit | Reaches the main menu with the Unity `-force-d3d9` option. |
 | [Himno](https://store.steampowered.com/app/931690) | ✅ Works | 0.25 | — | Default settings. (player reports, firmware 4.03) | 1 |
 | [HITMAN World of Assassination](https://store.steampowered.com/app/1659040) | ✅ Works | 0.28 | — | With changed Game settings; see the reports. (player reports, firmware 13.60) | 1 |
@@ -548,6 +549,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Shank 2](https://store.steampowered.com/app/102840) | ✅ Works | 0.13 | — | Default settings. (player reports, firmware 10.60) | 1 |
 | [Shovel Knight: Treasure Trove](https://store.steampowered.com/app/250760) | ✅ Works | 0.12 | Custom · D3D9 · DXVK · 32-bit | USB, v4.2: Shovel of Hope opening level verified: movement, jumping, shovel attacks/downward bounce, enemy defeat, gold pickup and damage, with clean rendering. Tested in-game Video: Fullscreen Off, Resolution 1280×720. At 1920×1080 HDMI capture stalled during gameplay in both fullscreen/windowed mode although game input continued; 720p restored live capture. Later levels, other campaigns and multiplayer untested. |
 | [SHRED A BILLION Demo](https://store.steampowered.com/app/5472090) | ✅ Works | 0.25 | — | With changed Game settings; see the reports. (player reports, firmware 10.60) | 1 |
+| [Shroom and Gloom](https://store.steampowered.com/app/3271280) | ✅ Works | 0.31 | Unity · D3D11 · DXVK · 64-bit | Community recipe: Game settings › Steam features = Online (experimental), 120 Hz, DualSense. ([recipes#70](https://github.com/leolobato/playden-ps5-recipes/pull/70), firmware 11.60) | 1 |
 | [Silent Breath](https://store.steampowered.com/app/2796180) | ✅ Works | 0.18 | — | The multiplayer and start tape menus need a pointer: right stick as mouse and R1 as left click. ([#610](https://github.com/leolobato/playden-ps5/issues/610), firmware 10.01) |
 | [SILENT HILL f](https://store.steampowered.com/app/2947440) | ✅ Works | 0.15 | — | Default settings, DualSense. ([#297](https://github.com/leolobato/playden-ps5/issues/297), firmware 11.60) | 1 |
 | [Silent Hill: Homecoming](https://store.steampowered.com/app/19000) | ✅ Works | 0.25 | — | Game settings › Graphics = DXVK, frame limit 60. Set up the controls in Button mapping: WASD on the D-pad, left and right click on L2 and R2, Pointer stick = Right stick. (player reports, firmware 13.60) | 1 |
@@ -629,6 +631,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [The Incredible Adventures of Van Helsing](https://store.steampowered.com/app/215530) | ✅ Works | 0.25 | — | With changed Game settings; see the reports. (player reports, firmware 11.20) | 1 |
 | [The Isle](https://store.steampowered.com/app/376210) | ✅ Works | 0.31 | — | With changed Game settings; see the reports. (player reports, firmware 13.60) | 1 |
 | [The Karters 2: Turbo Charged](https://store.steampowered.com/app/2269950) | ✅ Works | 0.25 | — | Resolution 3840×2160 with 120 Hz on. The menu reaches 120 fps, but races stay at 75 to 80 fps with any graphics preset. (player reports, firmware 13.60) | 1 |
+| The King of Fighters XV (imported) | ✅ Works | 0.32 | Unreal · D3D11 · DXVK · 64-bit | Imported copy. Community recipe: Program = `KOFXV-Win64-Shipping.exe` with `-dx11`, 120 Hz, frame generation 2×. ([recipes#76](https://github.com/leolobato/playden-ps5-recipes/pull/76), firmware 13.60) | 1 |
 | [The Messenger](https://store.steampowered.com/app/764790) | ✅ Works | 0.25 | — | Default settings. (player reports, firmware 13.40) | 1 |
 | [The Red Lantern](https://store.steampowered.com/app/1053710) | ✅ Works | 0.18 | — | Default settings. (player reports, firmware 13.60) | 1 |
 | [The Riftbreaker](https://store.steampowered.com/app/780310) | ✅ Works | 0.17 | — · 64-bit | Default settings, DualSense. ([#567](https://github.com/leolobato/playden-ps5/issues/567), firmware 13.42) | 1 |
