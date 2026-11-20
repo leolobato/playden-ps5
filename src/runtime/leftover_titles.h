@@ -46,8 +46,15 @@ std::optional<std::vector<LeftoverTitleCandidate>> ListLeftoverTitleCandidates(
     const std::unordered_set<std::string>& excluded_title_ids);
 
 // An unread repository is never interpreted as an empty one. Any record,
-// including an interrupted removal, reserves its title regardless of state.
+// including an interrupted removal, reserves its title regardless of state,
+// except one in gone_titles: its game's files are gone (#1167), so its title is
+// listed as a leftover despite the record. A title reserved_titles names stays reserved.
 // reserved_titles: titles held without a record listed here (a later build's games).
+std::vector<LeftoverTitle> FindLeftoverTitles(
+    const std::filesystem::path& homebrew_root, bool repository_loaded,
+    const std::vector<RuntimeInstall>& records, const std::unordered_set<std::string>& reserved_titles,
+    const std::unordered_set<std::string>& gone_titles, const LeftoverTitleActivity& activity,
+    uid_t effective_uid, const LeftoverTitleLister& lister = ListLeftoverTitleCandidates);
 std::vector<LeftoverTitle> FindLeftoverTitles(
     const std::filesystem::path& homebrew_root, bool repository_loaded,
     const std::vector<RuntimeInstall>& records, const std::unordered_set<std::string>& reserved_titles,

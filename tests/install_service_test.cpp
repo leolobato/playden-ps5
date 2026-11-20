@@ -1236,6 +1236,33 @@ void DamagedRegistryRecoversFromTitles(const std::filesystem::path& root) {
           snapshot.installed.front().record);
     CHECK(service.Recover({{SteamId(310), (root / "310").string()}}) == 0);  // already listed
     CHECK(!Installed(service.Snapshot(), SteamId(320)) && !Installed(service.Snapshot(), SteamId(330)));
+    // Files gone while the PS5 title stays (#1167): 350's folder is not there. 310 and 340 are listed, 320's title
+    // names another folder, 330's folder is there without its install record, 370's has the game's files without it,
+    // and 360's can't be checked: none of those is gone.
+    std::filesystem::create_directories(root / "360");
+    std::ofstream(root / "360" / ".playden-install.json") << "{}";
+    std::filesystem::create_directories(root / "370" / "bin");
+    std::ofstream(root / "370" / "bin" / "game.exe") << "game";
+    std::filesystem::permissions(root, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+    CHECK((service.Gone({{SteamId(310), (root / "310").string()},
+                         {SteamId(320), (root / "elsewhere" / "320").string()},
+                         {SteamId(330), (root / "330").string()},
+                         {SteamId(340), (root / "340").string()},
+                         {SteamId(350), (root / "350").string()},
+                         {SteamId(360), (root / "360").string()},
+                         {GameId{}, (root / "350").string()},
+                         {SteamId(350), ""}}).empty()));  // the games root can't be searched: nothing is certain
+    std::filesystem::permissions(root, std::filesystem::perms::owner_all);
+    CHECK((service.Gone({{SteamId(310), (root / "310").string()},
+                         {SteamId(320), (root / "elsewhere" / "320").string()},
+                         {SteamId(330), (root / "330").string()},
+                         {SteamId(340), (root / "340").string()},
+                         {SteamId(350), (root / "350").string()},
+                         {SteamId(370), (root / "370").string()},
+                         {GameId{}, (root / "350").string()},
+                         {SteamId(350), ""}}) == std::vector<GameId>{SteamId(350)}));
+    std::filesystem::remove_all(root / "360");
+    std::filesystem::remove_all(root / "370");
     service.Shutdown();
   }
   {
@@ -1249,6 +1276,22 @@ void DamagedRegistryRecoversFromTitles(const std::filesystem::path& root) {
     CHECK(logged("registry games=2 skipped=0"));
     CHECK(Installed(service.Snapshot(), SteamId(310)) && Installed(service.Snapshot(), SteamId(340)) &&
           !Installed(service.Snapshot(), SteamId(320)));
+    service.Shutdown();
+  }
+  // 310's folder goes while Playden is closed (#1167): the registry lists it as unavailable, and with its drive
+  // connected and its folder not there it is gone. Uninstalling it forgets it without touching another folder.
+  std::filesystem::remove_all(root / "310");
+  {
+    InstallService service(runner, root.string());
+    const auto listed = service.Snapshot();
+    const auto game = std::find_if(listed.installed.begin(), listed.installed.end(),
+                                   [](const InstalledGame& entry) { return entry.id == SteamId(310); });
+    CHECK(game != listed.installed.end() && !game->available);
+    CHECK((service.Gone({{SteamId(310), (root / "310").string()}, {SteamId(340), (root / "340").string()}}) ==
+           std::vector<GameId>{SteamId(310)}));
+    service.Uninstall(SteamId(310));
+    AwaitAt(__LINE__, service, [](const InstallSnapshot& s) { return !Installed(s, SteamId(310)); });
+    CHECK(Installed(service.Snapshot(), SteamId(340)) && std::filesystem::exists(root / "340" / ".playden-install.json"));
     service.Shutdown();
   }
   std::filesystem::remove(root / ".playden-games");
@@ -2023,6 +2066,10 @@ void UsbDrivesChangePlaces(const std::filesystem::path& base) {
   CHECK(game(42).volume_id == "usb0" && !game(42).available);
   CHECK(game(43).volume_id == "usb0" && !game(43).available);
   CHECK(game(44).volume_id == "internal" && !game(44).available);
+  // #1167: a listed game whose folder is missing on a USB port is never gone (another disk may be on that port; 43's
+  // files are on two others), while one on console storage is: 44's folder isn't there.
+  CHECK((service.Gone({{SteamId(42), (usb0 / "42").string()}, {SteamId(43), (usb0 / "43").string()},
+                       {SteamId(44), (primary / "44").string()}}) == std::vector<GameId>{SteamId(44)}));
   const auto snapshot = service.Snapshot();
   const auto* download = JobOf(snapshot, SteamId(45));
   CHECK(download && download->volume_id == "usb1");

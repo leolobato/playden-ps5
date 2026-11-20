@@ -1254,6 +1254,32 @@ std::size_t InstallService::Recover(const std::vector<std::pair<GameId, std::str
   return listed;
 }
 
+std::vector<GameId> InstallService::Gone(const std::vector<std::pair<GameId, std::string>>& titles) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<GameId> gone;
+  for (const auto& [id, install_path] : titles) {
+    // A game listed as installed counts only while its folder is missing on a drive that is connected: the registry
+    // keeps such a game listed as unavailable, so it comes back if the folder does. Not on USB, whose volume names a
+    // port: another disk there doesn't have the game's folder, and the game's own disk may come back.
+    if (!id.valid() || install_path.empty() || Find(id) ||
+        std::any_of(installed_.begin(), installed_.end(), [id](const InstalledGame& game) {
+          return game.id == id && (game.available || platform::IsUsbVolumeId(game.volume_id));
+        }) ||
+        std::any_of(uninstalling_.begin(), uninstalling_.end(), [id](const InstalledGame& game) { return game.id == id; }))
+      continue;
+    const bool on_volume = std::any_of(volumes_.begin(), volumes_.end(), [&](const InstallVolume& candidate) {
+      return candidate.available && RootOn(candidate.id, id) == install_path;
+    });
+    if (!on_volume) continue;
+    // Only a folder that is certainly not there: one left with files but no install record, or an error other than
+    // "no such file", leaves the game alone.
+    struct stat info {};
+    if (lstat(install_path.c_str(), &info) == 0 || errno != ENOENT) continue;
+    if (std::find(gone.begin(), gone.end(), id) == gone.end()) gone.push_back(id);
+  }
+  return gone;
+}
+
 void InstallService::SetLog(std::function<void(const std::string&)> log) {
   std::lock_guard<std::mutex> lock(mutex_);
   log_ = std::move(log);

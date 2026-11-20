@@ -1316,7 +1316,7 @@ void t12_stress_dataset_keeps_logical_focus(const std::filesystem::path& fixture
 void t13_settings_links_land_in_their_section(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
     const std::vector<std::tuple<std::string, std::string, std::string>> links{
         {"account-link", "settings-account-link", "Accounts"},
-        {"leftover-titles", "settings-leftovers", "Games"},
+        {"leftover-titles", "settings-kept", "Games"},
         {"manage-settings", "settings-game-updates", "Games"},
         {"import-empty", "settings-import", "Games"},
         {"download-servers", "settings-download-server", "Downloads"},
@@ -2261,20 +2261,24 @@ void leftover_titles_simulation_uses_controller_navigation(const std::filesystem
     }
     check(simulation.scenario("leftover-titles"), "leftover title scenario exists");
     check(simulation.state().leftover_titles.size() == 2 &&
-              simulation.state().navigation.focus_key == "settings-leftovers", "the Leftover PS5 titles row starts focused");
+              simulation.state().navigation.focus_key == "settings-kept", "the Kept game data row starts focused");
     simulation.action("cross");
-    check(simulation.state().navigation.focus_key == "leftover-select-all", "the manager opens on Select all");
+    check(simulation.state().navigation.focus_key == "kept-select-all" &&
+              simulation.state().navigation.modals.back().id == "kept-data",
+          "Kept game data lists the leftover titles and opens on Select all");
+    simulation.action("down");
+    check(simulation.state().navigation.focus_key == "kept-selection-delete", "Delete selected sits under Select all");
     simulation.action("down");
     simulation.action("down");
     check(simulation.state().navigation.focus_key == "leftover-toggle-FAKE78002", "Down reaches the second title");
     simulation.action("cross");
-    simulation.action("focus:leftover-selection-delete");
+    simulation.action("focus:kept-selection-delete");
     simulation.action("cross");
     check(simulation.state().navigation.focus_key == "cancel", "deletion starts on Cancel");
     simulation.action("circle");
-    check(simulation.state().navigation.modals.back().id == "leftover-titles" &&
+    check(simulation.state().navigation.modals.back().id == "kept-data" &&
               simulation.state().leftover_deletions.empty(), "Circle returns to the manager without deleting");
-    simulation.action("focus:leftover-selection-delete");
+    simulation.action("focus:kept-selection-delete");
     simulation.action("cross");
     simulation.action("focus:confirm-destructive");
     simulation.action("cross");

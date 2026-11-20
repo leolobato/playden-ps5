@@ -490,8 +490,12 @@ struct RuntimeSnapshot {
   bool removing_playden = false;
   std::optional<PlaydenRemovalOutcome> playden_removal;
   std::uint64_t playden_removals_handled = 0;  // one more for each outcome, so none is missed between looks
-  // Game data kept when a game was uninstalled (bottles with no install record).
+  // Game data kept when a game was uninstalled (bottles with no install record), and their queued/running deletion or
+  // latest failure (by runtime number).
   std::vector<KeptBottleView> kept_bottles;
+  std::vector<std::uint32_t> queued_kept_deletes;
+  std::optional<std::uint32_t> deleting_kept;
+  std::map<std::uint32_t, std::string> kept_delete_failures;
   // Unrecorded PS5 titles, and their queued/running deletion or latest failure (keyed by title ID).
   std::vector<runtime::LeftoverTitle> leftover_titles;
   std::vector<std::string> queued_leftover_deletes;
@@ -688,7 +692,9 @@ class RuntimeHost {
   // unless delete_saves; an interrupted removal continues with its first choice.
   void Remove(std::uint32_t runtime_number, bool delete_saves);
   // Queues deletion of a game's kept bottle.
-  void DeleteKeptBottle(std::uint32_t runtime_number);
+  // `kept_at`, when not 0, is the kept data the player chose (its marker's time): data kept since then under the same
+  // number (a leftover title deleted in the same batch) is left alone.
+  void DeleteKeptBottle(std::uint32_t runtime_number, std::int64_t kept_at = 0);
   // Uninstall Playden (#868): removes every game's PS5 title (keeping each bottle as <id>.kept with
   // keep_saves), every leftover title of Playden's, then every file Playden made on the console
   // (runtime/playden_removal.h). Refused while a game runs. The outcome is RuntimeSnapshot::playden_removal;
@@ -696,6 +702,9 @@ class RuntimeHost {
   void RemovePlayden(bool keep_saves);
   // Deletes only a scanned leftover's PS5 title and registration; its game files and saves stay.
   bool DeleteLeftoverTitle(const std::string& title_id, std::string* error = nullptr);
+  // The installs (by install ID) whose game files are gone while their PS5 title stays (InstallService::Gone).
+  // Their titles are listed as leftovers, and deleting one uninstalls it as Remove does, keeping its saves.
+  void SetGoneInstalls(std::set<std::string> install_ids);
   // Queues a scan of a game folder for the Program picker (RuntimeSnapshot::game_setups).
   void ScanPrograms(std::uint32_t runtime_number, std::string install_path);
   // Measures each game's Windows user folders (where saves of games without Steam Cloud live).
@@ -1058,6 +1067,8 @@ class RuntimeHost {
   std::string RunDeleteLeftover(Composition& composition, LeftoverDelete request);
   std::string SaveLeftoverDelete(Composition& composition, const LeftoverDelete& request);
   void ResumeLeftoverDeletes(Composition& composition);
+  // The game of this record has no files left (SetGoneInstalls), and isn't moving.
+  bool FilesGone(const runtime::RuntimeInstall& record);
   void PublishLeftoverTitles(Composition& composition);
   // Whether the console still lists the title (app.db or /user/app); unknown counts as listed.
   bool TitleListed(Composition& composition, const std::string& title_id);
@@ -1199,6 +1210,7 @@ class RuntimeHost {
   std::uint64_t next_work_order_ = 0;
   std::map<std::uint32_t, std::uint64_t> prepare_order_;
   std::vector<std::uint32_t> kept_delete_requests_;
+  std::map<std::uint32_t, std::int64_t> kept_delete_expected_;  // the kept_at each request was made for
   std::optional<bool> playden_removal_request_;  // keep_saves; guarded by mutex_
   std::vector<std::pair<std::uint32_t, std::string>> scan_requests_;
   std::vector<std::pair<std::uint32_t, RuntimeMaintenance>> maintenance_requests_;
@@ -1221,6 +1233,8 @@ class RuntimeHost {
   std::uint32_t report_home_start_ = 0;  // guarded by mutex_: the app ReportHomeStartsAtQuit names
   bool cleanup_requested_ = false;
   bool measure_requested_ = false;
+  std::set<std::string> gone_installs_;  // guarded by mutex_
+  bool gone_installs_changed_ = false;    // guarded by mutex_
   bool kit_reload_requested_ = false;  // guarded by mutex_
   bool prepares_held_ = false;    // guarded by mutex_
   bool prepares_paused_ = false;  // guarded by mutex_

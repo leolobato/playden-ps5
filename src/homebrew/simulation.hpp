@@ -541,6 +541,13 @@ struct LiveLeftoverDelete {
     std::string failure;
     bool operator==(const LiveLeftoverDelete&) const = default;
 };
+// A kept game data deletion the player confirmed: waiting its turn (no step), running, or stopped with a failure.
+struct LiveKeptDelete {
+    GameId game_id;
+    std::string step;  // empty while queued
+    std::string failure;
+    bool operator==(const LiveKeptDelete&) const = default;
+};
 // A game that plays in place from a folder Playden doesn't manage (an imported game on a drive):
 // never in Installed games, its files never deleted.
 struct LiveExternalGame {
@@ -1135,6 +1142,8 @@ struct State {
     std::vector<LiveLeftoverDelete> leftover_deletions;
     LivePublishers publishers;                          // publisher accounts and their phone sign-in
     std::vector<LiveKeptBottle> kept_bottles;           // live: saves kept from uninstalled games
+    std::vector<LiveKeptDelete> kept_deletions;         // live: their queued, running or failed deletions
+    std::set<GameId> gone_games;                        // live: files gone, PS5 title left (#1167); Uninstall removes it
     std::vector<LiveExternalGame> external_games;       // live: games playing in place (imported)
     std::map<GameId, std::string> also_on_drives;       // live: a game's folder is on this USB volume too
     std::vector<LiveImportCandidate> import_candidates; // live: folders on the drives that could be imported
@@ -1430,7 +1439,10 @@ public:
     [[nodiscard]] bool TakeRuntimeCleanupRequest();
     // Live mode: kept game data, deletions the player confirmed, and why an uninstall stopped.
     void UpdateKeptBottles(std::vector<LiveKeptBottle> kept);
+    void UpdateKeptDeletions(std::vector<LiveKeptDelete> deletions);
     void UpdateLeftoverTitles(std::vector<LiveLeftoverTitle> titles);
+    // Games whose files are gone while their PS5 title stays: their page offers Uninstall, which removes the title.
+    void UpdateGoneGames(std::set<GameId> games);
     void UpdateLeftoverDeletions(std::vector<LiveLeftoverDelete> deletions);
     [[nodiscard]] std::vector<std::string> TakeLeftoverDeleteRequests();
     // Live mode: games playing in place, and what the drives offer to import.
@@ -2198,6 +2210,7 @@ private:
     std::optional<bool> playden_removal_request_;  // Uninstall Playden asked for: keep_saves
     bool remove_playden_delete_saves_ = false;  // its dialog's "Delete saves too"
     std::set<GameId> kept_selected_;  // the kept game data manager's checked games
+    std::set<GameId> kept_batch_;     // kept data deletions the corner notice counts, until they all end
     std::set<std::string> leftover_selected_;  // the leftover titles manager's checked title IDs
     // Manage installed games: each tab's checked games, order and focus, kept while the screen is open.
     struct ManageTabState {
@@ -2417,9 +2430,14 @@ private:
         playden::runtime::SettingGroup group = playden::runtime::SettingGroup::kGame;
     };
     [[nodiscard]] std::vector<SettingsSummaryLine> settings_summary(GameId id) const;
+    // Kept game data: kept saves and leftover PS5 titles in one manager (Settings › Games › Kept game data).
     [[nodiscard]] std::vector<std::string> kept_manager_actions() const;
-    [[nodiscard]] std::vector<std::string> leftover_manager_actions() const;
+    void refresh_kept_manager();
+    void update_kept_notice();
+    void queue_kept_delete(GameId id);
+    void open_kept_delete_confirmation();
     [[nodiscard]] bool leftover_queued(const std::string& title_id) const;
+    [[nodiscard]] bool kept_queued(GameId id) const;
     // The Import sheet: Look for games, then the candidates grouped by drive (headings never take
     // the focus), then Close. Opened from Startup, Home's empty state and Settings › Games.
     [[nodiscard]] std::vector<std::string> import_sheet_actions() const;

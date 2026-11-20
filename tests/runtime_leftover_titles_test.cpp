@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "runtime/leftover_titles.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -94,6 +95,39 @@ void TitlesReservedWithoutARecordAreNotLeftovers() {
   CHECK(!scanned);
 }
 
+// A record whose game's files are gone (#1167) holds its title no more: the title is listed, while the other
+// records and reserved titles stay held, and a title another record also names stays held too.
+void TitlesOfGamesWhoseFilesAreGoneAreLeftovers() {
+  std::unordered_set<std::string> excluded;
+  const auto lister = [&](const fs::path&, uid_t, const std::unordered_set<std::string>& excluded_title_ids) {
+    excluded = excluded_title_ids;
+    std::vector<LeftoverTitleCandidate> listed;
+    for (const auto* id : {"FAKE78001", "FAKE78002", "FAKE78003", "FAKE78007"})
+      if (!excluded_title_ids.count(id)) listed.push_back(Candidate(id));
+    return listed;
+  };
+  RuntimeInstall gone; gone.install_id = "steam-220"; gone.title_id = "FAKE78001";
+  RuntimeInstall installed; installed.install_id = "steam-240"; installed.title_id = "FAKE78002";
+  auto found = FindLeftoverTitles("/data/homebrew", true, {gone, installed}, {"FAKE78007"}, {"FAKE78001"}, Stopped,
+                                  kOwner, lister);
+  CHECK(found.size() == 2 && found[0].title_id == "FAKE78001" && found[1].title_id == "FAKE78003");
+  CHECK((excluded == std::unordered_set<std::string>{"FAKE78002", "FAKE78007"}));
+  // Still running or of unknown activity: not listed.
+  CHECK(FindLeftoverTitles("/data/homebrew", true, {gone}, {}, {"FAKE78001"},
+      [](const std::string& id) { return id == "FAKE78001" ? NativeActivity::kActive : NativeActivity::kStopped; },
+      kOwner, lister).size() == 3);
+  // A title reserved_titles names, or one a second record names, is held whatever gone_titles says.
+  found = FindLeftoverTitles("/data/homebrew", true, {gone}, {"FAKE78001"}, {"FAKE78001"}, Stopped, kOwner, lister);
+  CHECK(excluded.count("FAKE78001") && std::none_of(found.begin(), found.end(),
+                                                    [](const auto& title) { return title.title_id == "FAKE78001"; }));
+  RuntimeInstall twin; twin.install_id = "steam-221"; twin.title_id = "FAKE78001";
+  found = FindLeftoverTitles("/data/homebrew", true, {gone, twin}, {}, {"FAKE78001"}, Stopped, kOwner, lister);
+  CHECK(excluded.count("FAKE78001"));
+  // Without gone_titles every record holds its title, as before.
+  found = FindLeftoverTitles("/data/homebrew", true, {gone}, {}, {}, Stopped, kOwner, lister);
+  CHECK(excluded.count("FAKE78001"));
+}
+
 struct TemporaryDirectory {
   TemporaryDirectory() {
     auto pattern = (fs::temp_directory_path() / "playden-leftovers-XXXXXX").string();
@@ -150,5 +184,6 @@ int main() {
   FindsOnlyUnrecordedOwnedStoppedTitles();
   DoesNotScanAnUnreadRepositoryOrUseFailedListings();
   TitlesReservedWithoutARecordAreNotLeftovers();
+  TitlesOfGamesWhoseFilesAreGoneAreLeftovers();
   ReadsRealDirectoriesWithoutFollowingLinks();
 }

@@ -353,6 +353,13 @@ class InstallService {
   // job and no files being deleted. An update found on disk comes back as Scan brings it back (locked while it puts
   // its files in place). The registry is saved once. Returns how many were listed.
   std::size_t Recover(const std::vector<std::pair<GameId, std::string>>& titles);
+  // Of games named as for Recover (call it first), those whose files are gone while their PS5 title stays: the
+  // folder the title starts is the game's folder on an available volume (`<games root>/<key>`), that folder isn't
+  // there, and the game isn't listed as available (one listed as unavailable is: the registry keeps it while its folder
+  // is missing), has no job and no files being deleted. A folder that is there (even without
+  // its install record) or can't be checked, another drive's or one named elsewhere (a game played in place) is
+  // never gone.
+  std::vector<GameId> Gone(const std::vector<std::pair<GameId, std::string>>& titles);
   // Receives one line about the registry the service started from (how many games it named, or that it was
   // missing), at once, and one per game Recover lists again.
   void SetLog(std::function<void(const std::string&)> log);

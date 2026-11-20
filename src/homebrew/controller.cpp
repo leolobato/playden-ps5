@@ -1169,9 +1169,16 @@ void Controller::TickRuntime() {
     WithApp(done.game_id, [this, done](std::uint32_t app) { runtime_->DismissPrepared(app, done.finished_at); });
   if (model_.TakePreparedClear()) runtime_->ClearPrepared();
   if (model_.TakeRuntimeCleanupRequest()) runtime_->CleanUpRequests();
-  for (const auto& id : model_.TakeKeptDeleteRequests())
-    WithApp(id, [this](std::uint32_t app) { runtime_->DeleteKeptBottle(app); });
+  for (const auto& id : model_.TakeKeptDeleteRequests()) {
+    // The kept data the player saw, so other data kept under the same number since then is left alone.
+    std::int64_t kept_at = 0;
+    for (const auto& kept : kept_projected_)
+      if (kept.game_id == id) kept_at = kept.kept_at;
+    WithApp(id, [this, kept_at](std::uint32_t app) { runtime_->DeleteKeptBottle(app, kept_at); });
+    force_kept_deletions_ = true;  // the model shows it queued: what the runtime says next replaces that
+  }
   for (const auto& id : model_.TakeLeftoverDeleteRequests()) {
+    force_leftover_deletions_ = true;  // as for kept data: the runtime's next list replaces the model's own
     std::string error;
     if (!runtime_->DeleteLeftoverTitle(id, &error)) {
       auto deletions = leftover_deletions_projected_;
@@ -1255,6 +1262,22 @@ void Controller::TickRuntime() {
       std::vector<LiveKeptBottle> kept;
       for (const auto& bottle : current.kept_bottles) kept.push_back({bottle.game, bottle.name, bottle.kept_at, bottle.bytes});
       if (kept != kept_projected_) { kept_projected_ = kept; model_.UpdateKeptBottles(std::move(kept)); }
+      // Kept data waiting to be deleted, being deleted, or whose deletion failed, by game.
+      for (const auto& bottle : current.kept_bottles) kept_games_by_app_[bottle.runtime_number] = bottle.game;
+      std::vector<LiveKeptDelete> kept_deletions;
+      const auto add_kept = [&](std::uint32_t app, std::string step, std::string failure) {
+        if (const auto game = kept_games_by_app_.find(app); game != kept_games_by_app_.end())
+          kept_deletions.push_back({game->second, std::move(step), std::move(failure)});
+      };
+      if (current.deleting_kept) add_kept(*current.deleting_kept, "Deleting…", "");
+      for (const auto app : current.queued_kept_deletes)
+        if (current.deleting_kept != app) add_kept(app, "", "");
+      for (const auto& [app, error] : current.kept_delete_failures) add_kept(app, "", error);
+      if (kept_deletions != kept_deletions_projected_ || force_kept_deletions_) {
+        force_kept_deletions_ = false;
+        kept_deletions_projected_ = kept_deletions;
+        model_.UpdateKeptDeletions(std::move(kept_deletions));
+      }
       std::vector<LiveLeftoverTitle> leftovers;
       for (const auto& title : current.leftover_titles) {
         leftovers.push_back({title.title_id, title.name, title.bytes});
@@ -1273,7 +1296,8 @@ void Controller::TickRuntime() {
         if (current.deleting_leftover_title != id) deletions.push_back({id, leftover_names_[id], "", ""});
       for (const auto& [id, error] : current.leftover_delete_failures)
         deletions.push_back({id, leftover_names_[id], "", error});
-      if (deletions != leftover_deletions_projected_) {
+      if (deletions != leftover_deletions_projected_ || force_leftover_deletions_) {
+        force_leftover_deletions_ = false;
         leftover_deletions_projected_ = deletions;
         model_.UpdateLeftoverDeletions(std::move(deletions));
       }
@@ -1978,6 +2002,9 @@ void Controller::BeginUninstall(GameId id, bool delete_saves) {
   play_after_prepare_.erase(id);
   runtime_updates_.erase(id);
   if (prepare_next_pending_ == id) prepare_next_pending_.reset();
+  // Its files are gone (#1167): only its PS5 title goes. A download that finishes meanwhile stays.
+  if (!location && gone_games_.count(id)) title_only_uninstalls_.insert(id);
+  else title_only_uninstalls_.erase(id);
   // With automatic sync off, nothing moves to or from Steam Cloud unless the player syncs from Saves.
   if (uninstalls_.Begin(id, delete_saves, CloudCapable(id) && game_roots_.count(id) && !saves_root_.empty() &&
                                               model_.state().cloud_saves_auto))
@@ -2038,7 +2065,9 @@ void Controller::TickUninstalls() {
     // The install service lists a game as installed no more once it starts deleting it: the
     // uninstall is over once the deletion is too. Without the service there is nothing to wait for.
     const auto* location = LocationOf(id);
-    facts.download_gone = (!location && std::find(files_deleting_.begin(), files_deleting_.end(), id) == files_deleting_.end()) ||
+    const bool title_only = title_only_uninstalls_.count(id) != 0;
+    facts.download_gone = title_only ||
+                          (!location && std::find(files_deleting_.begin(), files_deleting_.end(), id) == files_deleting_.end()) ||
                           (location && location->managed() && !installs_);
     // As the install service sees it: a game missing from a drive that is gone can't be deleted.
     facts.drive_absent = location && location->managed() && !location->available && !drives_present_.count(location->volume_id);
@@ -2051,7 +2080,9 @@ void Controller::TickUninstalls() {
         break;
       // The title is gone, so no title points at the files about to be deleted.
       case UninstallAction::Kind::kRemoveDownload:
-        if (location && !location->managed()) {
+        if (title_only) {
+          // Nothing to delete: the files were gone when the uninstall was asked for.
+        } else if (location && !location->managed()) {
           // Its outcome is watched: a refusal stops the uninstall (TickImports).
           if (id.store == Store::kLocal && local_) {
             if (const auto number = local_->Remove(id.value)) {
@@ -2066,8 +2097,12 @@ void Controller::TickUninstalls() {
         }
         ++play_notes_revision_;
         break;
-      case UninstallAction::Kind::kStop: StopUninstall(id, action.reason); break;
+      case UninstallAction::Kind::kStop:
+        title_only_uninstalls_.erase(id);
+        StopUninstall(id, action.reason);
+        break;
       case UninstallAction::Kind::kFinished:
+        title_only_uninstalls_.erase(id);
         model_.NotifyUninstallFinished(id);
         // The details of the installed game had its DLC for that install only (Steam: its version and language; GOG:
         // its language): the install sheet asks again with every version's and Settings' language's sizes.
@@ -2713,6 +2748,61 @@ void Controller::TickInstalls() {
   for (const auto& volume : snapshot.volumes)
     if (volume.available) drives_present_.insert(volume.id);
   ProjectLocations(snapshot.installed);
+  // A game whose files are gone while its PS5 title stays (#1167): Settings lists that title with the leftovers, and
+  // the game's page offers Uninstall. Checked again when the titles or the registry change.
+  if (runtime_ && registry_reconciled_)
+    if (const auto runtime = runtime_->Shared();
+        runtime->status == RuntimeHostStatus::kReady && runtime->installs_known) {
+      std::vector<std::pair<GameId, std::string>> titles;
+      for (const auto& view : runtime->installs)
+        if (!view.moving && !view.republish_pending) titles.emplace_back(view.game, view.install_path);
+      // What decides it, without a download's progress: the games listed, at work or being deleted, and the drives.
+      std::vector<std::string> key;
+      for (const auto& game : snapshot.installed) key.push_back("i" + ToKey(game.id) + (game.available ? "+" : "-"));
+      for (const auto& job : snapshot.jobs) key.push_back("j" + ToKey(job.id));
+      for (const auto& id : snapshot.uninstalling) key.push_back("u" + ToKey(id));
+      for (const auto& volume : snapshot.volumes) key.push_back("v" + volume.id + (volume.available ? "+" : "-"));
+      // Looked at again now and then too: files can go without Playden (over FTP).
+      const auto now = std::chrono::steady_clock::now();
+      if (titles != gone_checked_titles_ || key != gone_checked_key_ || now - gone_checked_at_ >= std::chrono::seconds(10)) {
+        gone_checked_titles_ = titles;
+        gone_checked_key_ = std::move(key);
+        gone_checked_at_ = now;
+        // A gone game still listed as installed (unavailable) whose title has since been removed from Settings ›
+        // Leftover titles: the listing goes too, so the game isn't left installed with no title. An uninstall from the
+        // game's page forgets it itself.
+        const auto active = uninstalls_.Active();
+        // Its folder is checked again first: one put back meanwhile keeps the game listed.
+        for (const auto& [id, path] : gone_listed_)
+          if (std::none_of(runtime->installs.begin(), runtime->installs.end(),
+                           [id](const RuntimeInstallView& view) { return view.game == id; }) &&
+              std::find(active.begin(), active.end(), id) == active.end() && !installs_->Gone({{id, path}}).empty())
+            installs_->Uninstall(id);
+        const auto gone = installs_->Gone(titles);
+        gone_listed_.clear();
+        for (const auto& [id, path] : titles)
+          if (std::find(gone.begin(), gone.end(), id) != gone.end() &&
+              std::any_of(snapshot.installed.begin(), snapshot.installed.end(),
+                          [id](const auto& game) { return game.id == id && !game.available; }))
+            gone_listed_[id] = path;
+        std::set<std::string> install_ids;
+        std::set<GameId> games;
+        // Each record by its own folder: another record of the same game whose folder is there is not gone.
+        for (const auto& view : runtime->installs)
+          if (!view.moving && !view.republish_pending && std::find(gone.begin(), gone.end(), view.game) != gone.end() &&
+              std::none_of(runtime->installs.begin(), runtime->installs.end(), [&](const RuntimeInstallView& other) {
+                return other.game == view.game && other.install_path != view.install_path;
+              })) {
+            install_ids.insert(view.install_id);
+            games.insert(view.game);
+          }
+        runtime_->SetGoneInstalls(std::move(install_ids));
+        if (games != gone_games_) {
+          gone_games_ = games;
+          model_.UpdateGoneGames(std::move(games));
+        }
+      }
+    }
   // The programs each installed game's record names, for Prepare (GOG's play tasks). Steam's come from its app
   // details and an imported game's from Game settings.
   if (!record_launches_revision_ || *record_launches_revision_ != snapshot.revision) {

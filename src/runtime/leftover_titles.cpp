@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <limits>
+#include <unordered_map>
 #include <unordered_set>
 #include <dirent.h>
 #include <fcntl.h>
@@ -165,9 +166,22 @@ std::vector<LeftoverTitle> FindLeftoverTitles(
     const fs::path& homebrew_root, bool repository_loaded, const std::vector<RuntimeInstall>& records,
     const std::unordered_set<std::string>& reserved_titles, const LeftoverTitleActivity& activity,
     uid_t effective_uid, const LeftoverTitleLister& lister) {
+  return FindLeftoverTitles(homebrew_root, repository_loaded, records, reserved_titles, {}, activity, effective_uid,
+                            lister);
+}
+
+std::vector<LeftoverTitle> FindLeftoverTitles(
+    const fs::path& homebrew_root, bool repository_loaded, const std::vector<RuntimeInstall>& records,
+    const std::unordered_set<std::string>& reserved_titles, const std::unordered_set<std::string>& gone_titles,
+    const LeftoverTitleActivity& activity, uid_t effective_uid, const LeftoverTitleLister& lister) {
   if (!repository_loaded || !lister || !activity) return {};
   std::unordered_set<std::string> reserved = reserved_titles;
-  for (const auto& record : records) reserved.insert(record.title_id);
+  // A record whose game's files are gone reserves nothing: its title is listed. Another title the record list
+  // or reserved_titles names twice still holds it.
+  std::unordered_map<std::string, std::size_t> holders;
+  for (const auto& record : records) ++holders[record.title_id];
+  for (const auto& record : records)
+    if (!gone_titles.count(record.title_id) || holders[record.title_id] > 1) reserved.insert(record.title_id);
   const auto candidates = lister(homebrew_root, effective_uid, reserved);
   if (!candidates) return {};
   std::vector<LeftoverTitle> leftovers;

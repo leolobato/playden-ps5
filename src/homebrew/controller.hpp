@@ -479,7 +479,19 @@ class Controller {
   std::uint64_t kept_revision_ = 0;
   std::vector<LiveKeptBottle> kept_projected_;
   std::vector<LiveLeftoverTitle> leftovers_projected_;
+  // Games whose files are gone while their PS5 title stays (InstallService::Gone), and what that was checked against.
+  std::set<GameId> gone_games_;
+  std::map<GameId, std::string> gone_listed_;  // of those, the ones the registry still lists (as unavailable), by folder
+  std::vector<std::pair<GameId, std::string>> gone_checked_titles_;
+  std::vector<std::string> gone_checked_key_;
+  std::chrono::steady_clock::time_point gone_checked_at_{};
+  // Uninstalls asked for while the game's files were gone: only the PS5 title goes, never a download made since.
+  std::set<GameId> title_only_uninstalls_;
   std::vector<LiveLeftoverDelete> leftover_deletions_projected_;
+  std::vector<LiveKeptDelete> kept_deletions_projected_;
+  bool force_kept_deletions_ = false;
+  bool force_leftover_deletions_ = false;  // the model added its own queued rows: send the runtime's next list anyway
+  std::map<std::uint32_t, GameId> kept_games_by_app_;  // each kept bottle's game, still known once it is deleted
   std::map<std::string, std::string> leftover_names_;
   std::map<GameId, std::string> play_notes_;
   std::uint64_t play_notes_revision_ = 0;

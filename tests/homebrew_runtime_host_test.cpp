@@ -5151,9 +5151,25 @@ void LocalGameKeepsItsBottle() {
     CHECK(next && *next != number && *next >= 0xF0000000u);
     CHECK(Read(kept / save) == "player-save");
     // Deleted by its number: only its own folder goes.
+    // Asked for data kept at another time (since replaced under the same number): refused, and nothing deleted.
+    host.DeleteKeptBottle(number, found->kept_at + 1);
+    const auto refused = WaitFor(host, [number](const RuntimeSnapshot& s) { return s.kept_delete_failures.count(number) > 0; });
+    CHECK(refused.kept_delete_failures.at(number).find("changed after it was chosen") != std::string::npos);
+    CHECK(fs::exists(kept) && refused.kept_bottles.size() == 2);
+    // It is listed as waiting at once, so the player sees it before the worker gets to it, and asking again
+    // queues nothing more. The data it was chosen as is deleted.
+    host.DeleteKeptBottle(number, found->kept_at);
     host.DeleteKeptBottle(number);
-    const auto deleted = WaitFor(host, [](const RuntimeSnapshot& s) { return s.kept_bottles.size() == 1; });
+    {
+      const auto asked = host.Shared();
+      CHECK((asked->queued_kept_deletes == std::vector<std::uint32_t>{number} || asked->deleting_kept == number ||
+             asked->kept_bottles.size() == 1));
+    }
+    const auto deleted = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return s.kept_bottles.size() == 1 && s.queued_kept_deletes.empty() && !s.deleting_kept;
+    });
     CHECK(deleted.kept_bottles[0].game == playden::GameId::Steam(220));
+    CHECK(deleted.kept_delete_failures.empty());
     CHECK(!fs::exists(kept) && fs::exists(steam_kept));
     host.Shutdown();
   }
@@ -8877,6 +8893,127 @@ void LeftoverDeletionRefusesANewInstallUsingTheId() {
   host.Shutdown();
 }
 
+// A game whose files are gone keeps its record, and with it its PS5 title (#1167). Once Playden knows the files are
+// gone, the title is listed with the leftovers, and deleting it uninstalls the game: the title is removed and
+// unregistered, the record erased, and the bottle kept as Kept game data.
+void LeftoverListsTitleOfGameWhoseFilesAreGone() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-0000000000") + (uuids < 10 ? "0" : "") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  config.removal_confirm_polls = 1;
+  config.removal_poll_interval = std::chrono::milliseconds(1);
+  unsigned removed = 0;
+  config.unregister_title = [&fixture, &removed](const std::string& title, const std::string&) {
+    CHECK(title == "FAKE78001");
+    ++removed;
+    fixture.registered = false; fixture.submitted = false;
+    return TitleRemoverResult{true, 0, "answered"};
+  };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
+  Write(game / "hl2.exe", "existing-game", 0644);
+  const auto bottle = fixture.root / "data/playden/games/steam-220";
+  const auto kept = fixture.root / "data/playden/games/steam-220.kept";
+  const auto save = fs::path("library/prefixes/game/drive_c/users/steamuser/AppData/Roaming/Game/save.dat");
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(Hl2());
+  const auto prepared = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(220) ||
+        (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  CHECK(!prepared.refusals.count(220) && prepared.installs.size() == 1 && prepared.installs[0].title_id == "FAKE78001");
+  Write(bottle / save, "player-save", 0600);
+  const auto install_id = prepared.installs[0].install_id;
+  // The record holds its title while its files are there, and while Playden doesn't know they are gone.
+  CHECK(prepared.leftover_titles.empty());
+  fs::remove_all(game);
+  host.SetGoneInstalls({"steam-999"});  // another game's: this one's title stays held
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  CHECK(host.Snapshot().leftover_titles.empty());
+  host.SetGoneInstalls({install_id});
+  const auto listed = WaitFor(host, [](const RuntimeSnapshot& s) { return !s.leftover_titles.empty(); });
+  CHECK(listed.leftover_titles.size() == 1 && listed.leftover_titles[0].title_id == "FAKE78001");
+  CHECK(listed.leftover_titles[0].bytes > 0 && listed.installs.size() == 1);
+  // Deleting it uninstalls the game, keeping its saves.
+  CHECK(host.DeleteLeftoverTitle("FAKE78001"));
+  const auto done = WaitFor(host, [](const RuntimeSnapshot& s) { return s.leftover_deletes_handled == 1; }, 30);
+  if (!done.leftover_delete_failures.empty())
+    std::fprintf(stderr, "Leftover delete failed: %s\n", done.leftover_delete_failures.begin()->second.c_str());
+  CHECK(done.leftover_delete_failures.empty() && done.leftover_titles.empty() && done.installs.empty());
+  CHECK(removed == 1 && !fs::exists(fixture.root / "data/homebrew/FAKE78001"));
+  CHECK(Read(kept / save) == "player-save" && !fs::exists(bottle));
+  CHECK(done.kept_bottles.size() == 1 && done.kept_bottles[0].runtime_number == 220);
+  CHECK(!fs::exists(config.state_root / "leftover-FAKE78001.json"));
+  host.Shutdown();
+}
+
+// What the list showed changed before the deletion runs, while Playden still counts the files as gone: the files
+// are back (put back over FTP), or another folder took the title's place. The worker looks again and leaves both.
+void LeftoverOfGoneGameRechecksBeforeRemoving() {
+  for (int scenario = 0; scenario < 2; ++scenario) {
+    Fixture fixture;
+    auto config = fixture.Config();
+    config.host_namespace_prefix = fixture.root;
+    config.package_paths.console_data_root = "/data";
+    config.package_paths.host_data_root = fixture.root / "data";
+    config.package_operations.hash_file = HashArtifactFile;
+    config.package_operations.hash_bytes = HashArtifactBytes;
+    config.package_operations.free_space_unverifiable = true;
+    config.package_operations.validate_bottle = [](const fs::path& bottle) {
+      return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+    };
+    const auto kit = SyntheticKit(fixture.root / "kit");
+    config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+    unsigned calls = 0;
+    config.unregister_title = [&calls](const std::string&, const std::string&) { ++calls; return TitleRemoverResult{}; };
+    // The worker waits inside an uninstall batch while the test asks for the deletion and changes things.
+    std::promise<void> paused, resumed;
+    auto resume = resumed.get_future().share();
+    config.log = [&](const std::string& line) {
+      if (line.rfind("remove result app=999", 0) == 0) { paused.set_value(); resume.wait(); }
+    };
+    const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
+    const auto title = fixture.root / "data/homebrew/FAKE78001";
+    Write(game / "hl2.exe", "existing-game", 0644);
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(Hl2());
+    const auto prepared = WaitFor(host, [](const RuntimeSnapshot& s) { return s.prepares_handled == 1; }, 60);
+    CHECK(prepared.installs.size() == 1);
+    fs::rename(game, fixture.root / "away");
+    host.SetGoneInstalls({prepared.installs[0].install_id});
+    CHECK(WaitFor(host, [](const RuntimeSnapshot& s) { return !s.leftover_titles.empty(); }).leftover_titles.size() == 1);
+    host.Remove(999, false);
+    CHECK(paused.get_future().wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(host.DeleteLeftoverTitle("FAKE78001"));
+    if (scenario == 0) fs::rename(fixture.root / "away", game);
+    else { fs::rename(title, fixture.root / "original-title"); fs::create_directories(title); }
+    resumed.set_value();
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) { return s.leftover_deletes_handled == 1; }, 30);
+    const auto failure = done.leftover_delete_failures.count("FAKE78001") ? done.leftover_delete_failures.at("FAKE78001") : "";
+    CHECK(failure.find(scenario == 0 ? "now belongs to an installed game" : "changed since it was found") != std::string::npos);
+    CHECK(done.installs.size() == 1 && calls == 0 && fs::exists(title));
+    host.Shutdown();
+  }
+}
+
 // Bottles with no install record are kept as saves (as Uninstall keeps them) once no unrecorded
 // PS5 title names them. Any doubt (unreadable records or descriptor) keeps every bottle as it is.
 void KeepsUnrecordedBottlesAsKeptSaves() {
@@ -11231,6 +11368,8 @@ int main(int argc, char** argv) {
   LeftoverRemovalRevalidatesBeforeEffects();
   for (int scenario = 0; scenario < 3; ++scenario) LeftoverRemovalRecoversRetireWriteGap(scenario);
   LeftoverScanRequiresLoadedRecordsAndRepeatsAfterUninstall();
+  LeftoverListsTitleOfGameWhoseFilesAreGone();
+  LeftoverOfGoneGameRechecksBeforeRemoving();
   ForeignRecordKeepsItsTitleAtStartup();
   KeepsUnrecordedBottlesAsKeptSaves();
   WorkerMovesGamesUnderPublicationLease();

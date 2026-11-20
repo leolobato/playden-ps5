@@ -26,6 +26,7 @@ using playden::homebrew::GameDlc;
 using playden::homebrew::CloudRequestKind;
 using playden::homebrew::CloudStatus;
 using playden::homebrew::LibraryUpdate;
+using playden::homebrew::LiveKeptDelete;
 using playden::homebrew::ModelMode;
 using playden::homebrew::Route;
 using playden::homebrew::RowKind;
@@ -70,6 +71,12 @@ const playden::homebrew::Game* find_game(const Simulation& model, playden::GameI
 bool has_row(const Simulation& model, const std::string& key) {
     return std::any_of(model.view().rows.begin(), model.view().rows.end(),
                        [&key](const auto& row) { return row.key == key; });
+}
+
+const playden::homebrew::ViewRow* find_row_in(const Simulation& model, const std::string& key) {
+    const auto found = std::find_if(model.view().rows.begin(), model.view().rows.end(),
+                                    [&key](const auto& row) { return row.key == key; });
+    return found == model.view().rows.end() ? nullptr : &*found;
 }
 
 bool has_legend(const Simulation& model, const std::string& legend) {
@@ -285,6 +292,27 @@ void live_details_keep_personal_edits_and_block_fixture_operations() {
     const auto uninstall = std::find_if(model.view().rows.begin(), model.view().rows.end(),
                                         [](const auto& row) { return row.key == "uninstall"; });
     check(uninstall != model.view().rows.end() && !uninstall->enabled, "live Uninstall is disabled until installed");
+    // Its files are gone while its PS5 title stays (#1167): Uninstall removes the title, keeping the saves.
+    model.action("circle");
+    model.UpdateGoneGames({SteamId(7)});
+    check(model.action("details:7") && model.action("focus:details-more") && model.action("cross"), "context opens again");
+    const auto* gone = find_row_in(model, "uninstall");
+    check(gone && gone->enabled && gone->subtitle.empty(), "Uninstall is offered for a game whose files are gone");
+    check(model.action("focus:uninstall") && model.action("cross") && model.view().surface == "confirmation",
+          "Uninstall asks first");
+    const auto& asked = model.state().navigation.modals.back();
+    check(asked.body.find("already gone") != std::string::npos && asked.body.find("saves and settings are kept") != std::string::npos &&
+              std::find(asked.action_keys.begin(), asked.action_keys.end(), "uninstall-delete-saves") == asked.action_keys.end(),
+          "the dialog says only the PS5 title goes and the saves are kept");
+    check(model.action("focus:confirm-destructive") && model.action("cross"), "Uninstall confirms");
+    const auto requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == playden::homebrew::InstallRequestKind::Uninstall &&
+              requests[0].game_id == SteamId(7) && !requests[0].delete_saves,
+          "the uninstall goes to the controller, keeping the saves");
+    model.UpdateGoneGames({});
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    check(model.action("details:7") && model.action("focus:details-more") && model.action("cross"), "context opens once more");
+    check(!find_row_in(model, "uninstall")->enabled, "once the title is gone, Uninstall is disabled again");
 }
 
 const playden::homebrew::ViewRow* find_row(const Simulation& model, const std::string& key) {
@@ -2401,6 +2429,12 @@ void live_uninstall_removes_title_and_keeps_saves() {
     activate(model, "confirm-destructive");
     auto deletes = model.TakeKeptDeleteRequests();
     check(deletes.size() == 1 && deletes[0] == SteamId(42), "the confirmed deletion goes to the runtime");
+    check(model.state().kept_deletions == std::vector<LiveKeptDelete>{{SteamId(42), "", ""}} &&
+              !model.state().notices.empty() && model.state().notices.back().message == "Deleting kept game data" &&
+              model.state().notices.back().detail == "0 of 1 game",
+          "it shows as queued at once, with a notice counting it");
+    model.UpdateKeptDeletions({});
+    check(model.state().notices.back().message == "Kept game data deleted", "the notice says when it is done");
 
     // Settings shows kept game data as one row that opens the manager.
     model.UpdateKeptBottles({{SteamId(42), "Synthetic", 1760000000, 5'000'000}, {SteamId(43), "", 1760000000, 3'000'000},
@@ -2425,8 +2459,23 @@ void live_uninstall_removes_title_and_keeps_saves() {
     check(find_row(model, "kept-select-all")->title == "Clear selection", "with all checked it clears instead");
     activate(model, "kept-select-all");
     check(!find_row(model, "kept-toggle-42")->selected, "Clear selection unchecks every game");
+    // Delete selected sits right under Select all, and Triangle reaches it from any row once something is checked.
+    check(model.state().navigation.modals.back().action_keys[1] == "kept-selection-delete", "Delete selected is near the top");
+    check(model.view().legends == std::vector<std::string>{"Cross Select", "Circle Cancel"}, "no Triangle hint with nothing checked");
+    check(model.action("focus:kept-toggle-44") && model.action("triangle") &&
+              model.state().navigation.modals.back().id == "kept-data",
+          "Triangle with nothing checked does nothing");
     activate(model, "kept-toggle-42");
     activate(model, "kept-toggle-44");
+    check(model.view().legends == std::vector<std::string>{"Cross Select", "Triangle Delete selected", "Circle Cancel"},
+          "the footer offers Triangle once something is checked");
+    check(model.action("triangle") && model.state().navigation.modals.back().title == "Delete kept game data?",
+          "Triangle asks to delete what is checked");
+    model.action("circle");
+    check(model.state().navigation.modals.back().id == "kept-data" && model.state().navigation.focus_key == "kept-toggle-44",
+          "Cancel returns to the row Triangle was pressed on");
+    model.action("up");
+    check(model.state().navigation.focus_key == "kept-toggle-43", "and moving on goes from that row");
     activate(model, "kept-selection-delete");
     const auto& confirm = model.state().navigation.modals.back();
     check(confirm.title == "Delete kept game data?" && confirm.body.find("2 games (6 MB)") != std::string::npos,
@@ -2440,6 +2489,32 @@ void live_uninstall_removes_title_and_keeps_saves() {
     check(deletes == std::vector<playden::homebrew::GameId>{SteamId(42), SteamId(44)}, "the confirmed games go to the runtime");
     check(model.state().navigation.modals.empty() && model.state().navigation.focus_key == "settings-kept",
           "the manager closes and focus returns to its row");
+    // Kept data is deleted one game at a time: each confirmed game shows it waits or is being deleted, can't be chosen
+    // again, and a notice counts them until the last ends.
+    check(find_row(model, "settings-kept")->subtitle == "Deleting 2…", "the Settings row says deletions are running");
+    check(model.state().notices.back().message == "Deleting kept game data" && model.state().notices.back().detail == "0 of 2 games",
+          "a notice counts the games being deleted");
+    model.UpdateKeptDeletions({{SteamId(42), "Deleting…", ""}, {SteamId(44), "", ""}});
+    activate(model, "settings-kept");
+    const auto* deleting = find_row(model, "kept-toggle-42");
+    check(deleting && !deleting->enabled && deleting->subtitle == "Kept 2025-10-09 · Deleting…" &&
+              find_row(model, "kept-toggle-44")->subtitle == "Queued" && !find_row(model, "kept-toggle-44")->enabled,
+          "a game being deleted says so, one waiting says Queued, and neither can be chosen");
+    activate(model, "kept-select-all");
+    check(find_row(model, "kept-toggle-43")->selected && !find_row(model, "kept-toggle-42")->selected &&
+              find_row(model, "kept-select-all")->title == "Clear selection",
+          "Select all checks only what can still be deleted");
+    activate(model, "kept-select-all");
+    model.UpdateKeptBottles({{SteamId(43), "", 1760000000, 3'000'000}, {SteamId(44), "Third", 0, 1'000'000}});
+    model.UpdateKeptDeletions({{SteamId(44), "", "The kept saves could not be deleted: Permission denied"}});
+    check(model.state().notices.back().message == "Kept game data deleted with problems" &&
+              model.state().notices.back().detail == "1 of 2 games deleted",
+          "the notice says when some could not be deleted");
+    const auto* failed = find_row(model, "kept-toggle-44");
+    check(failed && failed->enabled && failed->subtitle == "The kept saves could not be deleted: Permission denied",
+          "a game whose deletion failed says why and can be chosen again");
+    model.UpdateKeptDeletions({});
+    while (!model.state().navigation.modals.empty()) model.action("circle");
 
     // Kept data changes while the manager is open: it lists what is left, and closes when nothing is.
     activate(model, "settings-kept");
@@ -5420,42 +5495,42 @@ void leftover_titles_require_confirmation_and_follow_the_queue() {
     auto model = make_live();
     model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
     model.action("l1");
-    check(!has_row(model, "settings-leftovers"), "no leftover row without titles");
+    check(find_row(model, "settings-kept")->value == "None", "nothing kept and no leftover titles says so");
     model.UpdateLeftoverTitles({{"FAKE78001", "Lost game (Steam)", 12'000'000}, {"FAKE78002", "", 3'000'000}});
-    const auto* row = find_row(model, "settings-leftovers");
-    check(row && row->title == "Leftover PS5 titles" && row->value == "2 titles · 15 MB" && row->section == "Games" &&
-              !has_row(model, "settings-leftover-FAKE78001"),
-          "Games has one Leftover PS5 titles row with their count and size, like Kept game data");
-    activate(model, "settings-leftovers");
-    check(model.state().navigation.modals.back().id == "leftover-titles" && model.view().surface == "leftover-titles",
-          "the row opens the leftover titles manager");
+    const auto* row = find_row(model, "settings-kept");
+    check(row && row->title == "Kept game data" && row->enabled && row->value == "2 PS5 titles · 15 MB" &&
+              row->section == "Games" && !has_row(model, "settings-leftovers") && !has_row(model, "settings-leftover-FAKE78001"),
+          "leftover titles are counted in the Kept game data row, with no row of their own");
+    activate(model, "settings-kept");
+    check(model.state().navigation.modals.back().id == "kept-data" && model.view().surface == "kept-data",
+          "the row opens Kept game data, which lists the leftover titles");
     const auto* named = find_row(model, "leftover-toggle-FAKE78001");
-    check(named && named->title == "Lost game (Steam)" && named->subtitle == "FAKE78001" && named->value == "12 MB" &&
+    check(named && named->title == "Lost game (Steam)" && named->subtitle == "PS5 title FAKE78001" && named->value == "12 MB" &&
               named->kind == RowKind::Toggle && !named->selected,
           "each title is a checkbox with its ID and size");
     check(find_row(model, "leftover-toggle-FAKE78002")->title == "FAKE78002", "an unnamed title uses its ID");
-    check(!find_row(model, "leftover-selection-delete")->enabled, "nothing to delete before choosing");
+    check(!find_row(model, "kept-selection-delete")->enabled, "nothing to delete before choosing");
     activate(model, "leftover-toggle-FAKE78001");
-    check(find_row(model, "leftover-selection-delete")->value == "1 title · 12 MB", "Delete selected counts the choice");
-    activate(model, "leftover-selection-delete");
+    check(find_row(model, "kept-selection-delete")->value == "1 title · 12 MB", "Delete selected counts the choice");
+    activate(model, "kept-selection-delete");
     check(model.TakeLeftoverDeleteRequests().empty(), "opening the confirmation deletes nothing");
     check(model.state().navigation.focus_key == "cancel" &&
               model.state().navigation.modals.back().body.find("Lost game (Steam) (FAKE78001)") != std::string::npos &&
               model.state().navigation.modals.back().body.find("move to Kept game data") != std::string::npos,
           "confirmation starts on Cancel and describes the deletion scope");
     activate(model, "cancel");
-    check(model.TakeLeftoverDeleteRequests().empty() && model.state().navigation.modals.back().id == "leftover-titles",
+    check(model.TakeLeftoverDeleteRequests().empty() && model.state().navigation.modals.back().id == "kept-data",
           "Cancel deletes nothing and returns to the manager");
-    activate(model, "leftover-select-all");
-    activate(model, "leftover-selection-delete");
+    activate(model, "kept-select-all");
+    activate(model, "kept-selection-delete");
     check(model.state().navigation.modals.back().body.find("2 leftover PS5 titles") != std::string::npos,
           "several titles are named by count");
     activate(model, "confirm-destructive");
     check(model.TakeLeftoverDeleteRequests() == std::vector<std::string>{"FAKE78001", "FAKE78002"},
           "every confirmed title is requested, in list order");
     check(model.TakeLeftoverDeleteRequests().empty(), "requests are consumed once");
-    check(model.state().navigation.modals.empty() && model.state().navigation.focus_key == "settings-leftovers",
-          "confirming closes the manager and returns to the Storage row");
+    check(model.state().navigation.modals.empty() && model.state().navigation.focus_key == "settings-kept",
+          "confirming closes the manager and returns to its row");
     model.UpdateLeftoverDeletions({{"FAKE78001", "Lost game (Steam)", "Removing PS5 title…", ""},
                                   {"FAKE78002", "", "", ""}});
     const auto layout = playden::homebrew::BuildQueueLayout(model.state());
@@ -5463,31 +5538,32 @@ void leftover_titles_require_confirmation_and_follow_the_queue() {
               layout.preparation.active->note == "Removing PS5 title…" && layout.preparation.waiting == 1 &&
               playden::homebrew::QueuePending(model.state()) == 2,
           "Queue keeps active and waiting titles distinct with the actual step");
-    activate(model, "settings-leftovers");
+    check(find_row(model, "settings-kept")->subtitle == "Deleting 2…", "the Settings row says deletions are running");
+    activate(model, "settings-kept");
     const auto* queued = find_row(model, "leftover-toggle-FAKE78002");
-    check(queued && !queued->enabled && queued->subtitle == "FAKE78002 · Queued" &&
-              find_row(model, "leftover-toggle-FAKE78001")->subtitle == "FAKE78001 · Removing PS5 title…",
+    check(queued && !queued->enabled && queued->subtitle == "PS5 title FAKE78002 · Queued" &&
+              find_row(model, "leftover-toggle-FAKE78001")->subtitle == "PS5 title FAKE78001 · Removing PS5 title…",
           "a queued title shows its step and cannot be chosen again");
-    check(!find_row(model, "leftover-select-all")->enabled, "Select all has nothing to choose while both are queued");
+    check(!find_row(model, "kept-select-all")->enabled, "Select all has nothing to choose while both are queued");
     model.UpdateLeftoverDeletions({{"FAKE78001", "Lost game (Steam)", "", "The PS5 refused removal."}});
     const auto stopped = playden::homebrew::BuildQueueLayout(model.state());
     check(stopped.preparation.attention == 1 && stopped.preparation.rows.front().note == "The PS5 refused removal.",
           "a failed leftover deletion remains visible in Queue");
     const auto* failed = find_row(model, "leftover-toggle-FAKE78001");
-    check(failed && failed->enabled && failed->subtitle == "FAKE78001 · The PS5 refused removal.",
+    check(failed && failed->enabled && failed->subtitle == "PS5 title FAKE78001 · The PS5 refused removal.",
           "a failed title shows why and can be chosen again");
     activate(model, "leftover-toggle-FAKE78002");
-    activate(model, "leftover-selection-delete");
+    activate(model, "kept-selection-delete");
     model.UpdateLeftoverTitles({{"FAKE78001", "Lost game (Steam)", 12'000'000}});
     activate(model, "confirm-destructive");
     check(model.TakeLeftoverDeleteRequests().empty(), "a title that disappeared while confirming is not requested");
     model.UpdateLeftoverDeletions({});
-    activate(model, "settings-leftovers");
+    activate(model, "settings-kept");
     activate(model, "leftover-toggle-FAKE78001");
-    activate(model, "leftover-selection-delete");
+    activate(model, "kept-selection-delete");
     model.UpdateLeftoverTitles({});
-    check(model.state().navigation.modals.empty() && !has_row(model, "settings-leftovers"),
-          "the manager and its confirmation close and the row disappears when no leftovers remain");
+    check(model.state().navigation.modals.empty() && find_row(model, "settings-kept")->value == "None",
+          "the manager and its confirmation close when nothing is left to list");
     check(model.TakeLeftoverDeleteRequests().empty(), "closing the confirmation requested nothing");
 }
 
