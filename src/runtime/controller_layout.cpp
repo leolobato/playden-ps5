@@ -647,6 +647,8 @@ std::optional<LayoutTarget> LayoutTargetFromBinding(std::string_view binding) {
     // A code that has a name is written by its name.
     return KeyTarget({NameForCode(static_cast<unsigned>(high * 16 + low))});
   }
+  // The old grammar takes F01 for F1.
+  if (value.size() == 3 && value[0] == 'f' && value[1] == '0' && value[2] >= '1' && value[2] <= '9') value.erase(1, 1);
   if (!NamedCode(value)) return std::nullopt;
   return KeyTarget({value});
 }

@@ -4147,6 +4147,10 @@ int main(int argc, char** argv) {
             seed.text.find(";touchpad_left = pad:back;touchpad_right = pad:guide;left_stick = pad:left_stick;"
                            "right_stick = mouse;right_stick_speed = 1800") != std::string::npos);
     }
+    // An old none leaves the button on the game's controller (only keyboard mode has nothing there), and F01 is F1.
+    CHECK(BuildEffectiveSettings(unbound, nullptr, {{"button.cross", "none"}, {"button.circle", "F01"}}, map_kit,
+                                 &settings, &error));
+    CHECK(SeedControllerLayout(settings).text.find("cross = pad:a;circle = key:f1;square = pad:x;") == 0);
     // A PlayStation controller that waits for the title's update is the mode the layout is for.
     {
       const auto playstation = KitForTitleRuntime(KitCapabilitiesFromManifest({kKitInputMap, kKitInputPlaystation}, false), false);

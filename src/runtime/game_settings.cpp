@@ -983,7 +983,8 @@ ControllerLayoutSeed SeedControllerLayout(const EffectiveSettings& settings) {
       const auto found = preset->second.find(button);
       if (found != preset->second.end()) bound = found->second;
     }
-    if (bound.empty()) return std::nullopt;
+    // An old none sends no key, and the button stays on the game's controller as an unbound one does.
+    if (bound.empty() || LayoutTargetFromBinding(bound) == LayoutTarget{}) return std::nullopt;
     return LayoutTargetFromBinding(bound);
   };
   ControllerLayout layout;
@@ -995,7 +996,7 @@ ControllerLayoutSeed SeedControllerLayout(const EffectiveSettings& settings) {
     // The old touchpad binding is either half's click.
     const auto bound = binding(input == LayoutInput::kTouchpadLeft || input == LayoutInput::kTouchpadRight
                                    ? std::string("touchpad") : name);
-    // An unbound button reaches the game's controller, and keyboard mode has none.
+    // An unbound button (or an old none) reaches the game's controller, and keyboard mode has none.
     entry.target = bound ? *bound : keyboard ? LayoutTarget{} : LayoutDefaultTarget(input, seed.mode);
   }
   const auto& pointer = OptionalValue(settings, "pointer_stick");

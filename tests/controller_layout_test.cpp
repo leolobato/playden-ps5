@@ -219,6 +219,8 @@ int main() {
     CHECK(LayoutTargetFromBinding("mouse_middle") == MouseTarget("middle"));
     CHECK(LayoutTargetFromBinding("none") == LayoutTarget{});
     CHECK(LayoutTargetFromBinding("f12") == KeyTarget({"f12"}));
+    CHECK(LayoutTargetFromBinding("F01") == KeyTarget({"f1"}) && LayoutTargetFromBinding("f09") == KeyTarget({"f9"}));
+    CHECK(!LayoutTargetFromBinding("f00") && !LayoutTargetFromBinding("f010"));
     CHECK(!LayoutTargetFromBinding("bogus") && !LayoutTargetFromBinding("vk:0x00") && !LayoutTargetFromBinding(""));
   }
 
