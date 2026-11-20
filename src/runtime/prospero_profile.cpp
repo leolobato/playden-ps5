@@ -251,7 +251,7 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
   std::size_t start = 0, debug_env_count = 0;
   // [input] map = 1 (kit capability input-map): the lines after it are a controller layout, read as a whole once the
   // profile is read. An input line before it would be read the old way, so it may not come after one.
-  bool input_map = false, old_input_line = false;
+  bool input_map = false, old_input_line = false, loose_input_line = false;
   std::string map_lines;
   while (start < text.size()) {
     auto end = text.find_first_of("\r\n", start);
@@ -405,9 +405,18 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
         return fail("unknown [launcher] key " + key);
       }
     } else if (section == "input") {
+      // mode and rumble keep their meaning with map = 1, written as strictly as the layout's lines (lower case, a
+      // number without a leading zero), before map = 1 as well as after it.
+      if (features.input_map && (key == "mode" || key == "rumble")) {
+        const bool strict = key_view == key && Lower(value) == value &&
+                            !(key == "rumble" && value.size() > 1 && value.front() == '0');
+        if (!strict && input_map) return bad("not lower case, or a number with a leading zero, with map = 1");
+        if (!strict) loose_input_line = true;
+      }
       if (key == "map" && features.input_map) {
-        if (value != "1") return bad("not 1");
+        if (key_view != "map" || value != "1") return bad("not 1");
         if (old_input_line) return bad("must come before the input lines");
+        if (loose_input_line) return bad("mode and rumble before it must be lower case, without a leading zero");
         input_map = true;
         continue;
       }

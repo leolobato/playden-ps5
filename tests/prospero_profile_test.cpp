@@ -212,8 +212,15 @@ int main(int argc, char** argv) {
              "[input]\nmap = 1\ncross = pad:a\ncross = pad:b\n",
              // Lines that only make sense together.
              "[input]\nmap = 1\nleft_stick = keys\n", "[input]\nmap = 1\nr2_threshold = 30\n",
-             "[input]\nmap = 1\nleft_stick_deadzone = 50\nleft_stick_outer = 41\n"})
-      CHECK(!CheckProsperoProfile(base + input, &reason, map));
+             "[input]\nmap = 1\nleft_stick_deadzone = 50\nleft_stick_outer = 41\n",
+             // As the kit reads them: map, and mode and rumble around it, in lower case and without a leading zero.
+             "[input]\nMAP = 1\n", "[input]\nMap = 1\n", "[input]\nmap = 1\nmode = KEYBOARD\n",
+             "[input]\nmode = KEYBOARD\nmap = 1\n", "[input]\nMODE = xinput\nmap = 1\n",
+             "[input]\nmap = 1\nMode = xinput\n", "[input]\nrumble = 050\nmap = 1\n", "[input]\nmap = 1\nrumble = 050\n"})
+      CHECK(!CheckProsperoProfile(base + input, &reason, {.input_rumble = true, .input_map = true}));
+    // Without map = 1 the old lines stay as loose as before.
+    CHECK(CheckProsperoProfile(base + "[input]\nMODE = KEYBOARD\nrumble = 050\n", &reason,
+                               {.input_rumble = true, .input_map = true}));
     // Not in [launcher], which keeps the old lines.
     CHECK(!CheckProsperoProfile(base + "[launcher]\nlabel = Mouse\nmap = 1\n", &reason,
                                 {.launcher_section = true, .input_map = true}));
