@@ -4,6 +4,7 @@
 
 #undef fsync
 #include "homebrew/simulation.hpp"
+#include "runtime/my_templates.h"
 #include "runtime/game_settings.h"
 
 #include <cerrno>
@@ -326,6 +327,31 @@ void live_controller_panel_follows_runtime_update(const std::filesystem::path& b
     check(model.state().navigation.modals.back().id == "controller-panel" && !has("heading-until-kit-update") &&
               !has("setting-controller_preset") && !has("button-mapping"),
           "after the update the open panel drops the older rows");
+    // My templates in live mode: a save the file can't take is refused, and neither the list nor the file changes.
+    {
+        const auto folder = base / "templates";
+        std::filesystem::create_directories(folder);
+        std::filesystem::permissions(folder, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+        const auto file = playden::runtime::MyTemplatesPath(folder / "game-settings.json");
+        check(model.SetMyTemplatesFile(file).status == playden::runtime::MyTemplatesLoadStatus::kLoaded,
+              "my templates: the live file loads");
+        check(model.action("focus:setting-controller_layout") && model.action("cross"), "my templates: the editor opens");
+        check(model.action("focus:layout-input-cross") && model.action("cross") && model.action("focus:layout-kind-mouse") &&
+                  model.action("cross") && model.action("focus:layout-mouse-right") && model.action("cross"),
+              "my templates: Cross sends the right button");
+        std::filesystem::permissions(folder, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+                                     std::filesystem::perm_options::replace);
+        check(model.action("focus:layout-save-template") && model.action("cross") && model.state().editor.active,
+              "my templates: Save opens the keyboard");
+        model.action("clear");
+        model.text("Refused");
+        model.action("done");
+        check(model.state().navigation.modals.back().title == "The template was not saved" && model.MyTemplates().empty() &&
+                  !std::filesystem::exists(file),
+              "my templates: a write the folder refuses changes nothing");
+        std::filesystem::permissions(folder, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+        model.action("cross");
+    }
     while (!model.state().navigation.modals.empty()) model.action("circle");
 }
 

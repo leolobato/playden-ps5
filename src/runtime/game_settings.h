@@ -142,6 +142,10 @@ struct KitCapabilities {
   // that runs this kit's runtime, like display_120hz.
   bool input_map = false;
   bool input_map_needs_update = false;
+  // [launcher] map = 1 and a layout's lines (kKitLauncherMap): Touchpad hold's Switch to a template…. Counts only for
+  // a title that runs this kit's runtime, like display_120hz.
+  bool launcher_map = false;
+  bool launcher_map_needs_update = false;
 };
 
 struct SettingChoice {
@@ -437,6 +441,11 @@ struct EffectiveSettings {
   // game's own controls by them. Built-in templates are named without it.
   std::map<std::string, std::string> layout_names;
 };
+
+// The mode a held layout plays in: its own, except the PlayStation controller, which only a game that sees the
+// PlayStation controller itself keeps (the runtime gives a game one controller for the whole session: a held
+// PlayStation layout would take an Xbox controller game's controller away). The Xbox controller then.
+std::string HeldLayoutMode(std::string_view held_mode, std::string_view game_mode);
 
 // The key layout_names uses for a layout: its mode, a line break, and its canonical text.
 std::string ControllerLayoutNameKey(std::string_view mode, std::string_view canonical_layout);
@@ -981,6 +990,8 @@ inline constexpr const char* kKitLauncherMode = "launcher-mode";
 // The title reads [launcher] chain = off: no exec chain, the game starts on [input], and holding the touchpad swaps to
 // the [launcher] lines and back (Touchpad hold). Runtimes without it refuse a profile with the key.
 inline constexpr const char* kKitTouchpadSwitch = "touchpad-switch";
+// [launcher] takes map = 1 and a layout's lines: Touchpad hold can swap to a layout template (Touchpad hold layout).
+inline constexpr const char* kKitLauncherMap = "launcher-map";
 // The title takes [input] mode = playstation: the game's Wine finds the DualSense as a wired DualShock 4 on its HID
 // bus, with the controller's own reports, and XInput reports no controller. Runtimes without it refuse the value.
 inline constexpr const char* kKitInputPlaystation = "input-playstation";

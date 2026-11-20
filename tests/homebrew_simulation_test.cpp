@@ -943,6 +943,111 @@ void controller_panel(const std::filesystem::path& fixtures, const std::filesyst
     std::filesystem::remove(settings_file);
 }
 
+// Touchpad hold › Switch to a template…: on a runtime kit that swaps to a layout, the Touchpad hold sheet offers the
+// templates with a preview against the game's controls; the choice is copied into the game, the panel names it and its
+// card shows the held controls; Off clears it. Without launcher-map the row isn't offered.
+void controller_touchpad_hold_template(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    load_settings_data(simulation, fixtures);
+    const auto game = SteamId(900004);
+    const auto top = [&] {
+        return simulation.state().navigation.modals.empty() ? std::string() : simulation.state().navigation.modals.back().id;
+    };
+    const auto override_of = [&](const char* id) -> std::string {
+        const auto record = simulation.state().game_settings.find(game);
+        if (record == simulation.state().game_settings.end()) return "<none>";
+        const auto found = record->second.overrides.find(id);
+        return found == record->second.overrides.end() ? std::string("<none>") : found->second;
+    };
+    simulation.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"input-map", "touchpad-switch", "launcher-map"}, true));
+    simulation.action("details:900004");
+    activate(simulation, "details-more");
+    activate(simulation, "game-settings");
+    activate(simulation, "setting-touchpad_hold");
+    check(top() == "choice-picker" && find_row(simulation, "touchpad-hold-template") &&
+              find_row(simulation, "touchpad-hold-template")->title == "Switch to a template\u2026",
+          "hold template: the Touchpad hold sheet offers Switch to a template");
+    activate(simulation, "touchpad-hold-template");
+    check(top() == "hold-templates" && simulation.state().navigation.modals.back().title == "Switch to",
+          "hold template: the templates open");
+    simulation.action("focus:hold-template-arrows");
+    check(simulation.view().comparison && simulation.view().comparison->current == "Game layout" &&
+              simulation.view().comparison->column == "While held" && simulation.view().comparison->rows.size() == 21,
+          "hold template: the preview compares the game's controls with the held ones");
+    activate(simulation, "hold-template-arrows");
+    const auto* arrows = rt::FindControllerLayoutTemplate("arrows");
+    check(top() == "controller-panel" && override_of("touchpad_hold") == "mouse" &&
+              override_of("touchpad_hold_layout") == arrows->text && override_of("touchpad_hold_controller") == arrows->mode,
+          "hold template: the template is copied into the game and the panel comes back");
+    check(find_row(simulation, "setting-touchpad_hold")->value == "Switch to Arrow keys", "hold template: the panel names it");
+    simulation.action("focus:setting-touchpad_hold");
+    check(simulation.view().comparison && simulation.view().comparison->title == "While the touchpad is held" &&
+              simulation.view().comparison->single,
+          "hold template: the card shows the held controls");
+    // The sheet marks the template, not Switch to Mouse; Off clears it.
+    activate(simulation, "setting-touchpad_hold");
+    check(find_row(simulation, "touchpad-hold-template")->selected && find_row(simulation, "touchpad-hold-template")->value == "Arrow keys",
+          "hold template: the sheet marks the template");
+    activate(simulation, "choice-0");
+    // Off is the inherited value, so no override is left either.
+    check(override_of("touchpad_hold") != "mouse" && override_of("touchpad_hold_layout") == "<none>" &&
+              override_of("touchpad_hold_controller") == "<none>",
+          "hold template: Off clears the template");
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+    // Triangle on Touchpad hold resets the template with it.
+    activate(simulation, "details-more");
+    activate(simulation, "game-settings");
+    activate(simulation, "setting-touchpad_hold");
+    activate(simulation, "touchpad-hold-template");
+    activate(simulation, "hold-template-arrows");
+    simulation.action("focus:setting-touchpad_hold");
+    simulation.action("triangle");
+    check(override_of("touchpad_hold") == "<none>" && override_of("touchpad_hold_layout") == "<none>" &&
+              override_of("touchpad_hold_controller") == "<none>",
+          "hold template: Triangle resets Touchpad hold and its template");
+    check(!simulation.view().comparison || simulation.view().comparison->title != "While the touchpad is held",
+          "hold template: no held card without the switch");
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+    // A template the recipe sets: Switch to Mouse turns it off with an empty value, so the recipe's doesn't come back.
+    {
+        playden::homebrew::Simulation recipe_game(fixtures, profile);
+        std::vector<rt::SettingsPreset> presets;
+        rt::GameRecipe recipe;
+        std::string reason;
+        const auto source = fixtures.parent_path().parent_path();
+        check(rt::ParseSettingsPresets(read_text(source / "runtime/presets.json"), &presets, &reason), "hold template: presets load");
+        check(rt::ParseGameRecipe(read_text(source / "runtime/recipes/steam-220-hl2-v1.json"), &recipe, &reason),
+              "hold template: recipe loads");
+        recipe.app_id = 900004;
+        recipe.defaults["touchpad_hold"] = "mouse";
+        recipe.defaults["touchpad_hold_layout"] = rt::FindControllerLayoutTemplate("arrows")->text;
+        recipe_game.SetSettingsData(std::move(presets), {std::move(recipe)});
+        recipe_game.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"input-map", "touchpad-switch", "launcher-map"}, true));
+        recipe_game.action("details:900004");
+        activate(recipe_game, "details-more");
+        activate(recipe_game, "game-settings");
+        activate(recipe_game, "setting-touchpad_hold");
+        check(find_row(recipe_game, "touchpad-hold-template")->selected, "hold template: the recipe's template is the choice");
+        activate(recipe_game, "choice-1");
+        const auto& overrides = recipe_game.state().game_settings.at(game).overrides;
+        check(overrides.count("touchpad_hold_layout") && overrides.at("touchpad_hold_layout").empty(),
+              "hold template: Switch to Mouse turns the recipe's template off");
+        rt::EffectiveSettings values;
+        check(recipe_game.EffectiveSettingsFor(game, &values) && rt::ChosenValue(values.values.at("touchpad_hold_layout")).empty(),
+              "hold template: no template plays");
+        while (!recipe_game.state().navigation.modals.empty()) recipe_game.action("circle");
+    }
+    // Without launcher-map: no Switch to a template….
+    simulation.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"input-map", "touchpad-switch"}, true));
+    activate(simulation, "details-more");
+    activate(simulation, "game-settings");
+    activate(simulation, "setting-touchpad_hold");
+    check(top() == "choice-picker" && !find_row(simulation, "touchpad-hold-template"),
+          "hold template: not offered without a runtime kit that swaps to a layout");
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+}
+
 // Controller layout › My templates: Save as my template…, the Templates sheet with the player's own first, their menu
 // (Rename…, Update from this game, Delete…), the refusals, and the 50 limit read from my-templates.json.
 void controller_layout_my_templates(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
@@ -5806,6 +5911,7 @@ int main(int argc, char** argv) {
     controller_layout_replaces_rows(fixtures, profile);
     controller_panel(fixtures, profile);
     controller_layout_my_templates(fixtures, profile);
+    controller_touchpad_hold_template(fixtures, profile);
     clean();
     controller_layout_editor(fixtures, profile);
     settings_sheet_details(fixtures, profile);

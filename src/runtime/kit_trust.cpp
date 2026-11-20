@@ -21,7 +21,7 @@ KitAdmissionConfig DevelopmentKitAdmission() {
                                 kKitDisplayVrr, kKitLaunchArguments4096, kKitLargeAddressAware,
                                 kKitEnvironmentFileBudgets, kKitNsiproxySwitch, kKitTitleNotify,
                                 kKitHelperProcess, kKitTouchpadSwitch, kKitSteamLibraryPath,
-                                kKitWindowsLocale, kKitInputMap};
+                                kKitWindowsLocale, kKitInputMap, kKitLauncherMap};
   std::sort(config.known_capabilities.begin(), config.known_capabilities.end());
   return config;
 }

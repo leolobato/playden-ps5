@@ -3223,9 +3223,11 @@ void RunsSetupProgramOnce() {
   config.package_operations.validate_bottle = [](const fs::path& bottle) {
     return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
   };
-  // A kit with controller layouts, so a layout the game has can be checked to stay out of the run.
+  // A kit with controller layouts and Touchpad hold, so a layout or the hold the game has can be checked to stay out of
+  // the run. (A held layout template needs launcher-map, which the pinned title parser doesn't read yet.)
   auto kit = SyntheticKit(fixture.root / "kit");
   kit.capabilities.push_back(kKitInputMap);
+  kit.capabilities.push_back(kKitTouchpadSwitch);
   std::sort(kit.capabilities.begin(), kit.capabilities.end());
   config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
   unsigned uuids = 0;
@@ -3241,7 +3243,8 @@ void RunsSetupProgramOnce() {
     return TitleResult{true, 0, "launch"};
   };
   GameSettingsRecord saved;
-  saved.overrides = {{"controller_preset", "gamepad"}, {"button.square", "e"}};
+  saved.overrides = {{"controller_preset", "gamepad"}, {"button.square", "e"}, {"touchpad_hold", "mouse"},
+                     {"touchpad_hold_layout", FindControllerLayoutTemplate("arrows")->text}};
   config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> { return saved; };
   const auto game = fixture.root / "data/homebrew/FAKE77031/games/4300";
   std::string pe(0x80 + 26, '\0');
@@ -3273,13 +3276,15 @@ void RunsSetupProgramOnce() {
     const auto text = Read(profile);
     return text.find("\\Binaries\\Game.exe\n") != std::string::npos && text.find("preset = gamepad") != std::string::npos &&
            text.find("cross = space\n") != std::string::npos && text.find("options = escape\n") != std::string::npos &&
-           text.find("square = e\n") != std::string::npos && Read(installs).find("setup_program") == std::string::npos;
+           text.find("square = e\n") != std::string::npos && Read(installs).find("setup_program") == std::string::npos &&
+           text.find("\n[launcher]\nchain = off\n") != std::string::npos;
   };
   const auto launcher_published = [&] {
     const auto text = Read(profile);
     return text.find("\\Binaries\\Launcher.exe\n") != std::string::npos && text.find("preset = mouse") != std::string::npos &&
            text.find("cross = ") == std::string::npos && text.find("options = ") == std::string::npos &&
            text.find("square = ") == std::string::npos && text.find("map = 1") == std::string::npos &&
+           text.find("[launcher]") == std::string::npos &&
            Read(installs).find("\"setup_program\":\"Binaries/Launcher.exe\"") != std::string::npos;
   };
   const auto restored = [](const RuntimeSnapshot& s) {

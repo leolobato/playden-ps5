@@ -257,6 +257,9 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
   // profile is read. An input line before it would be read the old way, so it may not come after one.
   bool input_map = false, old_input_line = false, loose_input_line = false;
   std::string map_lines;
+  // [launcher] map = 1 (kit capability launcher-map): the same, for the input the touchpad hold swaps to.
+  bool launcher_map = false, old_launcher_line = false, loose_launcher_line = false;
+  std::string launcher_map_lines;
   while (start < text.size()) {
     auto end = text.find_first_of("\r\n", start);
     if (end == std::string_view::npos) end = text.size();
@@ -392,6 +395,27 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
     } else if (section == "launcher") {
       // The first program's input, written out: as [input], without a preset file. chain = off: no launcher, only
       // the touchpad switch to these lines.
+      // mode keeps its meaning with map = 1, written as strictly as the layout's lines, before map = 1 as well as after.
+      if (features.launcher_map && key == "mode") {
+        const bool strict = key_view == "mode" && Lower(value) == value;
+        if (!strict && launcher_map) return bad("not lower case, with map = 1");
+        if (!strict) loose_launcher_line = true;
+      }
+      if (key == "map" && features.launcher_map) {
+        if (key_view != "map" || value != "1") return bad("not 1");
+        if (old_launcher_line) return bad("must come before the input lines");
+        if (loose_launcher_line) return bad("mode before it must be lower case");
+        launcher_map = true;
+        continue;
+      }
+      if (launcher_map && key != "chain" && key != "label" && key != "game_label" && key != "mode") {
+        if (key == "preset" || key == "mouse" || key == "mouse_speed")
+          return bad("not with map = 1: the layout's stick lines replace it");
+        if (value.find(';') != std::string_view::npos) return bad("a layout value holds no ;");
+        launcher_map_lines += (launcher_map_lines.empty() ? "" : ";") + std::string(key_view) + " = " + std::string(value);
+        continue;
+      }
+      if (key != "chain" && key != "label" && key != "game_label" && key != "mode") old_launcher_line = true;
       if (key == "chain" && features.launcher_chain_off) {
         if (value != "off") return bad("not off");
       } else if (key == "label" || key == "game_label") {
@@ -399,7 +423,9 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
             value.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -") != std::string_view::npos)
           return bad("not a short name");
       } else if (key == "mode") {
-        if (!OneOf(value, {"keyboard", "xinput"})) return bad("not keyboard or xinput");
+        // A map's mode is written as strictly as its lines, and may be the PlayStation controller's.
+        if (!(OneOf(value, {"keyboard", "xinput"}) || (features.input_playstation && value == "playstation")))
+          return bad("not keyboard or xinput");
       } else if (key == "mouse") {
         if (!OneOf(value, {"none", "left_stick", "right_stick"})) return bad("unknown pointer stick");
       } else if (key == "mouse_speed") {
@@ -498,6 +524,10 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
   if (input_map) {
     std::string why;
     if (!ParseControllerLayout(map_lines, nullptr, &why)) return fail("[input] layout: " + why);
+  }
+  if (launcher_map) {
+    std::string why;
+    if (!ParseControllerLayout(launcher_map_lines, nullptr, &why)) return fail("[launcher] layout: " + why);
   }
   if (std::find(sections.begin(), sections.end(), "helper") != sections.end() && !helper_program)
     return fail("[helper] names no program");

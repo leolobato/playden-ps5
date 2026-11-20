@@ -561,7 +561,8 @@ std::string change_item(const rt::SettingDefinition& definition, const rt::Effec
         return definition.label + " → " + key;
     }
     if (definition.id == "refresh") return std::string("120 Hz ") + (chosen == "120" ? "on" : "off");
-    if (definition.id == "controller_layout") return definition.label + " " + layout_label(chosen);
+    if (definition.id == "controller_layout" || definition.id == "touchpad_hold_layout")
+        return definition.label + " " + layout_label(chosen);
     if (definition.kind == rt::SettingKind::kText) return definition.label + " " + (chosen.empty() ? "empty" : chosen);
     auto label = choice_label(definition, chosen);
     if (label == "On" || label == "Off") label = label == "On" ? "on" : "off";
@@ -601,7 +602,8 @@ int fill_comparison(const rt::EffectiveSettings& current, const rt::EffectiveSet
     const auto label = [&](const rt::SettingDefinition& definition, const rt::EffectiveSettings& values) {
         const auto& value = values.values.at(definition.id);
         if (definition.id == "launch_option") return values.launch ? values.launch->label : value.value;
-        if (definition.id == "controller_layout") return layout_label(rt::ChosenValue(value));
+        if (definition.id == "controller_layout" || definition.id == "touchpad_hold_layout")
+            return layout_label(rt::ChosenValue(value));
         if (definition.kind == rt::SettingKind::kText) return value.value.empty() ? std::string("Empty") : value.value;
         auto text = choice_label(definition, rt::ChosenValue(value));
         if (value.locked || (definition.id == "graphics" && value.source == rt::ValueSource::kRecipe)) text += " (game)";
@@ -898,6 +900,24 @@ rt::SettingGroup SheetGroup(const rt::SettingDefinition& definition) {
                                                                                       : definition.group;
 }
 
+std::string TemplateDescription(const std::string& id) {
+    if (id == "gamepad") return "Every input sends its own controller button, as the Gamepad preset does.";
+    if (id == "mouse") return "Left stick moves the pointer, Cross clicks, Circle right-clicks.";
+    if (id == "arrows") return "D-pad sends the arrows, Cross Z, Circle X, Triangle C.";
+    if (id == "wasd-mouse") return "Left stick sends W A S D, right stick moves the pointer.";
+    return {};
+}
+
+// Whether holding the touchpad swaps to a template: Touchpad hold on Switch to Mouse with a held layout. `playing`:
+// both apply now (not waiting for the runtime kit update).
+bool HeldSwitch(const rt::EffectiveSettings& values, bool playing) {
+    const auto& hold = values.values.at("touchpad_hold");
+    const auto& held = values.values.at("touchpad_hold_layout");
+    if (rt::ChosenValue(hold) != "mouse" || rt::ChosenValue(held).empty()) return false;
+    return playing ? hold.available && held.available
+                   : (hold.available || hold.waits_for_update) && (held.available || held.waits_for_update);
+}
+
 // A layout's name as the Controller panel shows it: the built-in template with this text and mode, else "Custom";
 // "None" for no layout. A template's layout in another mode is the player's own.
 std::string LayoutNameFor(const std::string& text, const std::string& mode,
@@ -955,7 +975,7 @@ std::string action_label(const std::string& key) {
         {"my-preset-rename", "Rename…"}, {"my-preset-update", "Update from this game"}, {"my-preset-delete", "Delete…"},
         {"my-preset-delete-confirm", "Delete"}, {"clear-shader-cache", "Clear shader cache"},
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
-        {"heading-online", "Online"}, {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-until-kit-update", "Until the runtime kit update"}, {"controller-reset-confirm", "Reset"}, {"heading-sound", "Sound"},
+        {"heading-online", "Online"}, {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-templates-mine", "My templates \u00b7 made by you"}, {"heading-templates-builtin", "Built-in templates \u00b7 from Playden"}, {"heading-until-kit-update", "Until the runtime kit update"}, {"controller-reset-confirm", "Reset"}, {"heading-sound", "Sound"},
         {"heading-graphics", "Graphics"}, {"heading-steam", "Steam"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"}, {"heading-store", "Store"},
         {"heading-compat", "Compatibility"}, {"compat-filter-any", "Any"}, {"compat-filter-works", "Works"},
         {"compat-filter-partial", "Partial"}, {"compat-filter-broken", "Broken"}, {"compat-filter-refused", "Refused"},
@@ -7699,6 +7719,7 @@ bool Simulation::scenario(const std::string& name) {
         kit_.input_map = !old_kit;
         kit_.input_map_needs_update = old_kit;
         kit_.touchpad_switch = true;
+        kit_.launcher_map = !old_kit;
         state_.game_settings.erase(id);
         auto& record = state_.game_settings[id];
         record.overrides["controller"] = "keyboard";
@@ -8244,7 +8265,7 @@ void Simulation::rebuild_view() {
                                                                                          : state_.navigation.selected_game_id;
         const bool settings_modal = modal.id == "game-settings" || modal.id == "game-settings-list" ||
                                     modal.id == "preset-picker" || modal.id == "button-mapping" ||
-                                    modal.id == "controller-panel" ||
+                                    modal.id == "controller-panel" || modal.id == "hold-templates" ||
                                     modal.id == "game-maintenance" || !modal.setting_id.empty();
         rt::EffectiveSettings settings_values;
         const bool settings_ready = settings_modal && EffectiveSettingsFor(settings_game, &settings_values);
@@ -8267,6 +8288,9 @@ void Simulation::rebuild_view() {
                 : "For a game's launcher, settings or installer: pick it from the game folder. It runs one time with the Mouse preset; Play and Game settings stay as they are.";
         if (modal.id == "game-settings" || modal.id == "game-maintenance") {
             if (const auto* game = find_game(state_, settings_game)) view_.subtitle = game->title;
+        } else if (modal.id == "hold-templates") {
+            view_.subtitle = "What the controls swap to while the touchpad is held. The template is copied: changing it later "
+                             "doesn't change this game.";
         } else if (modal.id == "controller-panel") {
             if (const auto* game = find_game(state_, settings_game)) view_.subtitle = game->title + " \u00b7 ";
             view_.subtitle += "Changes apply the next time the game starts.";
@@ -9350,6 +9374,12 @@ void Simulation::rebuild_view() {
                 }
                 else if (id == "program_folder")
                     item.value = value.value.empty() ? "Program's folder" : value.value == "." ? "Game folder" : value.value;
+                else if (id == "touchpad_hold" &&
+                         !rt::ChosenValue(settings_values.values.at("touchpad_hold_layout")).empty() && value.value == "mouse")
+                    // Switch to a template…: the template's name.
+                    item.value = "Switch to " + LayoutNameFor(rt::ChosenValue(settings_values.values.at("touchpad_hold_layout")),
+                                                              rt::ChosenValue(settings_values.values.at("touchpad_hold_controller")),
+                                                              &my_templates_);
                 else if (definition->kind == rt::SettingKind::kText) item.value = value.value.empty() ? "Empty" : value.value;
                 // A choice that waits for the kit update shows as chosen; the subtitle says when it applies.
                 else item.value = choice_label(*definition, rt::ChosenValue(value));
@@ -9403,6 +9433,25 @@ void Simulation::rebuild_view() {
                            : saved ? std::to_string(saved) : std::string("None");
                 item.subtitle = from_file ? "From the game's steam_appid.txt" : "Only for games that need Steam. Most run without it.";
                 item.modified = saved != 0;
+            } else if (settings_ready && action_key == "touchpad-hold-template") {
+                item.kind = RowKind::Choice;
+                item.title = "Switch to a template\u2026";
+                const auto& held = settings_values.values.at("touchpad_hold_layout");
+                item.subtitle = held.waits_for_update ? held.reason : "A built-in template or one of yours.";
+                if (const auto& text = rt::ChosenValue(held); !text.empty() && HeldSwitch(settings_values, false)) {
+                    item.value = LayoutNameFor(text, rt::ChosenValue(settings_values.values.at("touchpad_hold_controller")), &my_templates_);
+                    item.selected = true;
+                }
+            } else if (settings_ready && modal.id == "hold-templates" && action_key.rfind("hold-template-", 0) == 0) {
+                item.kind = RowKind::Choice;
+                if (const auto chosen = template_choice(action_key.substr(14))) {
+                    item.title = chosen->name;
+                    item.value = layout::ModeLabel(chosen->mode);
+                    if (!chosen->mine) item.subtitle = TemplateDescription(chosen->id);
+                    item.selected = HeldSwitch(settings_values, false) &&
+                                    chosen->text == rt::ChosenValue(settings_values.values.at("touchpad_hold_layout")) &&
+                                    chosen->mode == rt::ChosenValue(settings_values.values.at("touchpad_hold_controller"));
+                }
             } else if (settings_ready && action_key == "controller-panel") {
                 // How the game sees the controller and what plays: "Keyboard and mouse · WASD and mouse layout".
                 item.kind = RowKind::Choice;
@@ -9533,6 +9582,8 @@ void Simulation::rebuild_view() {
                     BottlePath(settings_values.launch->executable) == BottlePath(recipe.launch_entries[index].executable);
                 item.selected = button && index == 0 ? current.source != rt::ValueSource::kUser
                     : (value == rt::ChosenValue(current) || picked_here) && !(button && current.source != rt::ValueSource::kUser);
+                if (modal.setting_id == "touchpad_hold" && value == "mouse" && HeldSwitch(settings_values, false))
+                    item.selected = false;
                 item.value = button ? (item.selected && index != 0 ? "Your choice" : "")
                     : value == rt::ChosenValue(inherited) ? source_label(inherited.source) : item.selected ? "Your choice" : "";
             } else if (settings_ready && action_key == "choice-custom") {
@@ -10162,6 +10213,7 @@ void Simulation::rebuild_view() {
                 if (const auto offer = chooser_offer(settings_game, focused.substr(7))) build_recipe_comparison(settings_game, *offer);
         }
         if (settings_ready && modal.id == "controller-panel") build_controller_card(settings_game, settings_values);
+        if (settings_ready && modal.id == "hold-templates") build_hold_preview(settings_values);
         view_.legends = {"Cross Select", "Circle Cancel"};
         if (modal.id == "game-settings") view_.legends = {"Cross Select", "Circle Close"};
         else if (modal.id == "game-settings-list") view_.legends = {"Cross Change", "Triangle Reset", "L1/R1 Jump", "Circle Back"};
@@ -10171,6 +10223,7 @@ void Simulation::rebuild_view() {
                                 : std::vector<std::string>{"Cross Choose", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "button-mapping") view_.legends = {"Cross Change", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "controller-panel") view_.legends = {"Cross Change", "Triangle Reset", "L1/R1 Jump", "Circle Back"};
+        else if (modal.id == "hold-templates") view_.legends = {"Cross Choose", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "game-maintenance") view_.legends = {"Cross Select", "L1/R1 Jump", "Circle Cancel"};
         else if (modal.id == "import-games" || modal.id == "prep-actions") view_.legends = {"Cross Select", "Circle Close"};
         else if (modal.id == "import-programs" || modal.id == "import-choice") view_.legends = {"Cross Select", "Circle Back"};
@@ -14650,6 +14703,10 @@ void Simulation::activate() {
         auto& record = state_.game_settings[state_.navigation.selected_game_id];
         record.overrides.erase(id);
         record.overrides.erase(rt::kUnlockPrefix + id);
+        if (id == "touchpad_hold") {
+            record.overrides.erase("touchpad_hold_layout");
+            record.overrides.erase("touchpad_hold_controller");
+        }
         if (id == "launch_option") forget_program_choices(&record.overrides);
         if (id == "dll_overrides") record.overrides.erase("library_overrides");
         ++record.revision;
@@ -14681,6 +14738,33 @@ void Simulation::activate() {
         for (const auto& button : rt::ProsperoButtons()) actions.push_back("setting-button." + button);
         actions.push_back("cancel");
         open_modal({"button-mapping", "Button mapping", "button-mapping", std::move(actions), 0, false});
+    } else if (action_name == "touchpad-hold-template") {
+        // Touchpad hold › Switch to a template…: the player's templates and the built-in ones, the template is copied.
+        std::vector<std::string> actions;
+        if (!my_templates_.empty()) {
+            actions.push_back("heading-templates-mine");
+            for (const auto& mine : my_templates_) actions.push_back("hold-template-" + mine.id);
+            actions.push_back("heading-templates-builtin");
+        }
+        for (const auto& item : rt::ControllerLayoutTemplates()) actions.push_back("hold-template-" + item.id);
+        actions.push_back("cancel");
+        int focused = 0;
+        while (focused + 1 < static_cast<int>(actions.size()) && SheetDecoration(actions[static_cast<std::size_t>(focused)])) ++focused;
+        open_modal({"hold-templates", "Switch to", state_.navigation.focus_key, std::move(actions), focused, false});
+    } else if (action_name.rfind("hold-template-", 0) == 0) {
+        if (const auto chosen = template_choice(action_name.substr(14)); chosen && can_change_game_settings()) {
+            auto& record = state_.game_settings[state_.navigation.selected_game_id];
+            record.overrides["touchpad_hold"] = "mouse";
+            record.overrides["touchpad_hold_layout"] = chosen->text;
+            record.overrides["touchpad_hold_controller"] = chosen->mode;
+            ++record.revision;
+            save_profile();
+        }
+        // Back to the Controller panel, past the Touchpad hold sheet.
+        while (!state_.navigation.modals.empty() && (state_.navigation.modals.back().id == "hold-templates" ||
+                                                     state_.navigation.modals.back().id == "choice-picker"))
+            close_modal();
+        refresh_game_settings();
     } else if (action_name == "controller-panel") {
         open_modal({"controller-panel", "Controller", "controller-panel", controller_panel_actions(), 0, false});
     } else if (action_name == "controller-reset-confirm") {
@@ -14716,6 +14800,8 @@ void Simulation::activate() {
                 return;
             }
             set_game_setting(id, launch ? recipe.launch_entries[index].id : definition->choices[index].value);
+            // Off or Switch to Mouse: no template to swap to any more.
+            if (id == "touchpad_hold") clear_held_layout();
         }
         close_modal(); refresh_game_settings(); save_profile();
     } else if (action_name == "change-settings") {
@@ -15614,6 +15700,7 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
               state_.navigation.modals.back().id == "workshop-items" ||
               state_.navigation.modals.back().id == "install-version" ||
               state_.navigation.modals.back().id == "button-mapping" || state_.navigation.modals.back().id == "controller-panel" ||
+              state_.navigation.modals.back().id == "hold-templates" ||
               IsLayoutModal(state_.navigation.modals.back().id) ||
               !state_.navigation.modals.back().setting_id.empty()))
         move(0, logical_action == "l1" ? -5 : 5);  // L1/R1 jump five rows, as on macOS
@@ -15671,6 +15758,8 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
         // With it go the keys that belong to the row: a "Change anyway", the picked program and its
         // architecture, and library overrides an earlier build kept as additions.
         std::vector<std::string> keys = {id, rt::kUnlockPrefix + id};
+        // Touchpad hold's template goes with it.
+        if (id == "touchpad_hold") keys.insert(keys.end(), {"touchpad_hold_layout", "touchpad_hold_controller"});
         if (id == "launch_option") keys.insert(keys.end(), {"program", "architecture", "program_folder", "program_arguments", "start_check"});
         if (id == "dll_overrides") keys.push_back("library_overrides");
         const auto present = [&] {
@@ -17972,6 +18061,10 @@ std::vector<Simulation::SettingsSummaryLine> Simulation::settings_summary(GameId
                                  : current != values.values.end() ? rt::ChosenValue(current->second) : std::string();
         if (definition.id == "program_folder") line.value = chosen.empty() ? "Program's folder" : chosen == "." ? "Game folder" : chosen;
         else if (definition.id == "controller_layout") line.value = layout_label(chosen);
+        else if (definition.id == "touchpad_hold_layout")
+            line.value = chosen.empty() ? std::string("None")
+                                        : LayoutNameFor(chosen, known ? rt::ChosenValue(values.values.at("touchpad_hold_controller"))
+                                                                      : std::string("keyboard"), &my_templates_);
         else if (definition.kind == rt::SettingKind::kText) line.value = chosen.empty() ? "Empty" : chosen;
         else line.value = choice_label(definition, chosen);
         lines.push_back(std::move(line));
@@ -18017,7 +18110,87 @@ std::vector<std::string> Simulation::controller_panel_actions() const {
 // The card beside the Controller panel: what each input sends now, as a layout (a preset and button rows as their
 // layout equivalent). A layout that waits for the runtime kit update isn't what plays yet: the card shows what does,
 // and says what comes after the update.
+// One card column of a layout: the controller mode, then what each input sends (Nothing for a controller input the mode
+// has no controller for).
+std::vector<std::array<std::string, 3>> LayoutCardRows(const rt::ControllerLayout& layout, const std::string& mode) {
+    std::vector<std::array<std::string, 3>> rows;
+    rows.push_back({"Controller", layout::ModeLabel(mode), layout::ModeLabel(mode)});
+    for (const auto& section : layout::Sections())
+        for (const auto input : section.inputs) {
+            std::string sends = layout::InputSummary(layout, input, mode);
+            if (rt::LayoutInputKindOf(input) == rt::LayoutInputKind::kStick) {
+                const auto stick = layout::EffectiveStick(layout, input).mode;
+                if (mode == "keyboard" && (stick == rt::StickMode::kPadLeftStick || stick == rt::StickMode::kPadRightStick ||
+                                           stick == rt::StickMode::kPadDpad))
+                    sends = "Nothing";
+            } else if (!layout::SilentReason(layout::EffectiveTarget(layout, input, mode), mode).empty()) {
+                sends = "Nothing";
+            }
+            rows.push_back({layout::InputLabel(input), sends, sends});
+        }
+    return rows;
+}
+
+void Simulation::clear_held_layout() {
+    const auto game = state_.navigation.selected_game_id;
+    auto& overrides = state_.game_settings[game].overrides;
+    const auto* preset = preset_for(game);
+    const bool inherited = RecipeFor(game).defaults.count("touchpad_hold_layout") ||
+                           (preset && preset->settings.count("touchpad_hold_layout"));
+    if (inherited) overrides["touchpad_hold_layout"] = "";
+    else overrides.erase("touchpad_hold_layout");
+    overrides.erase("touchpad_hold_controller");
+}
+
+// Touchpad hold › Switch to: the focused template against what the game's own controls send.
+void Simulation::build_hold_preview(const rt::EffectiveSettings& values) {
+    if (state_.navigation.modals.empty()) return;
+    const auto& focused = state_.navigation.focus_key;
+    if (focused.rfind("hold-template-", 0) != 0) return;
+    const auto chosen = template_choice(focused.substr(14));
+    if (!chosen) return;
+    const auto seed = rt::SeedControllerLayout(values);
+    rt::ControllerLayout game_layout, held;
+    if (!rt::ParseControllerLayout(seed.text, &game_layout, nullptr)) game_layout = {};
+    rt::FillControllerLayout(&game_layout, seed.mode);
+    if (!rt::ParseControllerLayout(chosen->text, &held, nullptr)) held = {};
+    // The controller the game gets while held: a PlayStation template plays as the Xbox controller beside an Xbox game.
+    const auto held_mode = rt::HeldLayoutMode(chosen->mode, seed.mode);
+    rt::FillControllerLayout(&held, held_mode);
+    const auto now = LayoutCardRows(game_layout, seed.mode);
+    const auto then = LayoutCardRows(held, held_mode);
+    ViewData::Comparison card;
+    card.title = chosen->name;
+    card.hint = chosen->mine ? "Made by you. What the controls swap to while the touchpad is held."
+                             : "What the controls swap to while the touchpad is held.";
+    card.first = "Input";
+    card.current = "Game layout";
+    card.column = "While held";
+    card.compact = true;
+    for (std::size_t index = 0; index < now.size() && index < then.size(); ++index)
+        card.rows.push_back({now[index][0], now[index][2], then[index][2]});
+    view_.comparison = std::move(card);
+}
+
 void Simulation::build_controller_card(GameId game, const rt::EffectiveSettings& values) {
+    // On Touchpad hold with a template to swap to: what the controls are while the touchpad is held.
+    if (state_.navigation.focus_key == "setting-touchpad_hold" && HeldSwitch(values, true))
+        if (const auto& held = rt::ChosenValue(values.values.at("touchpad_hold_layout")); !held.empty()) {
+            const auto mode = rt::HeldLayoutMode(rt::ChosenValue(values.values.at("touchpad_hold_controller")),
+                                                 values.values.at("controller").value);
+            rt::ControllerLayout layout;
+            if (!rt::ParseControllerLayout(held, &layout, nullptr)) layout = {};
+            rt::FillControllerLayout(&layout, mode);
+            ViewData::Comparison card;
+            card.title = "While the touchpad is held";
+            card.hint = LayoutNameFor(held, mode, &my_templates_) + ". Hold the touchpad for 2 seconds to swap, and again to swap back.";
+            card.first = "Input";
+            card.column = "Sends";
+            card.compact = card.single = true;
+            card.rows = LayoutCardRows(layout, mode);
+            view_.comparison = std::move(card);
+            return;
+        }
     // What plays now: a choice that waits for the runtime kit update (a layout, the PlayStation controller) isn't yet.
     rt::EffectiveSettings now = values;
     auto& layout_row = now.values["controller_layout"];
@@ -18045,21 +18218,8 @@ void Simulation::build_controller_card(GameId game, const rt::EffectiveSettings&
     card.column = "Sends";
     card.compact = true;
     card.single = true;
-    card.rows.push_back({"Controller", layout::ModeLabel(seed.mode), layout::ModeLabel(seed.mode)});
-    for (const auto& section : layout::Sections())
-        for (const auto input : section.inputs) {
-            // A controller button the mode has no controller for reaches nothing: say so, as the editor does.
-            std::string sends = layout::InputSummary(layout, input, seed.mode);
-            if (rt::LayoutInputKindOf(input) == rt::LayoutInputKind::kStick) {
-                const auto mode = layout::EffectiveStick(layout, input).mode;
-                const bool pad = mode == rt::StickMode::kPadLeftStick || mode == rt::StickMode::kPadRightStick ||
-                                 mode == rt::StickMode::kPadDpad;
-                if (pad && seed.mode == "keyboard") sends = "Nothing";
-            } else if (!layout::SilentReason(layout::EffectiveTarget(layout, input, seed.mode), seed.mode).empty()) {
-                sends = "Nothing";
-            }
-            card.rows.push_back({layout::InputLabel(input), sends, sends});
-        }
+    // A controller button the mode has no controller for reaches nothing: the rows say so, as the editor does.
+    card.rows = LayoutCardRows(layout, seed.mode);
     if (!waiting.empty())
         card.note = "\u26a0 After the runtime kit update the game uses the " +
                     LayoutNameFor(waiting, rt::ChosenValue(values.values.at("controller")), &my_templates_) +
@@ -18357,7 +18517,7 @@ void Simulation::build_preset_comparison(GameId id, const std::string& preset_id
     const auto label = [&](const rt::SettingDefinition& definition, const rt::EffectiveSettings& values) {
         const auto& value = values.values.at(definition.id);
         if (definition.id == "launch_option") return values.launch ? values.launch->label : value.value;
-        if (definition.id == "controller_layout") return layout_label(rt::ChosenValue(value));
+        if (definition.id == "controller_layout" || definition.id == "touchpad_hold_layout") return layout_label(rt::ChosenValue(value));
         if (definition.kind == rt::SettingKind::kText) return value.value.empty() ? std::string("Empty") : value.value;
         auto text = choice_label(definition, rt::ChosenValue(value));
         if (value.locked || (definition.id == "graphics" && value.source == rt::ValueSource::kRecipe)) text += " (game)";
@@ -18468,6 +18628,14 @@ void Simulation::open_setting(const std::string& id) {
                 if (setup == game_setups_.end() || !setup->second.scanned) actions.push_back("program-scan");
             }
         }
+        // Touchpad hold: Switch to a template… on a runtime kit that swaps to a layout (or will after its update).
+        if (id == "touchpad_hold") {
+            const auto& held = values.values.at("touchpad_hold_layout");
+            if (held.available || held.waits_for_update) {
+                if (HeldSwitch(values, false)) focused = static_cast<int>(actions.size());
+                actions.push_back("touchpad-hold-template");
+            }
+        }
         if (launch || value.unlocked) actions.push_back("value-reset");
         actions.push_back("cancel");
         open_modal({"choice-picker", definition->label, action_name, std::move(actions), focused, false, "", id});
@@ -18545,13 +18713,6 @@ std::optional<layout::Tuning> TuningOfKey(std::string_view key) {
     return std::nullopt;
 }
 
-std::string TemplateDescription(const std::string& id) {
-    if (id == "gamepad") return "Every input sends its own controller button, as the Gamepad preset does.";
-    if (id == "mouse") return "Left stick moves the pointer, Cross clicks, Circle right-clicks.";
-    if (id == "arrows") return "D-pad sends the arrows, Cross Z, Circle X, Triangle C.";
-    if (id == "wasd-mouse") return "Left stick sends W A S D, right stick moves the pointer.";
-    return {};
-}
 
 // What a stick mode gives the game, under its name in the mode sheet.
 std::string StickModeHint(rt::StickMode mode) {

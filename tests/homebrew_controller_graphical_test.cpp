@@ -92,6 +92,18 @@ int main(int argc, char** argv) {
         check(model.view().comparison && model.view().comparison->single, "the panel's card shows what plays");
         capture("panel", "controller-panel");
 
+        // Touchpad hold › Switch to a template…: the templates with the held controls against the game's, then the panel's
+        // card of the held controls.
+        check(model.action("focus:setting-touchpad_hold") && model.action("cross") &&
+                  model.action("focus:touchpad-hold-template") && model.action("cross") &&
+                  model.action("focus:hold-template-arrows"),
+              "Touchpad hold's templates open");
+        check(model.view().comparison && model.view().comparison->column == "While held", "the held preview");
+        capture("hold-templates", "hold-templates");
+        check(model.action("cross") && model.action("focus:setting-touchpad_hold"), "the template is chosen");
+        check(model.view().comparison && model.view().comparison->title == "While the touchpad is held", "the held card");
+        capture("panel-hold", "controller-panel");
+
         // On a runtime kit that can't read layouts yet: the older rows under their heading, today's controls in the card.
         check(model.scenario("controller-panel-old-kit") && model.action("cross"), "the older runtime kit's panel opens");
         check(model.view().comparison && model.view().comparison->title.rfind("Today: ", 0) == 0, "the card shows today's controls");

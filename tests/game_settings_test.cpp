@@ -116,7 +116,8 @@ int main(int argc, char** argv) {
         "steam_features", "steam_sign_in", "game_invites",
         "resolution", "refresh", "frame_limit", "framegen", "vsync", "performance_overlay", "overlay_detail", "scaling",
         "window_view",
-        "controller", "controller_layout", "controller_preset", "touchpad_hold",
+        "controller", "controller_layout", "controller_preset", "touchpad_hold", "touchpad_hold_layout",
+        "touchpad_hold_controller",
         "pointer_stick", "pointer_speed", "rumble",
         "volume", "microphone",
         "start_check",
@@ -4180,6 +4181,111 @@ int main(int argc, char** argv) {
       input.layout_names.clear();
       CHECK(BuildSettingsLaunchPlan(input, &layout_plan, &reason));
       CHECK(layout_plan.profile_bytes.find("\ngame_label = Custom\n") != std::string::npos);
+    }
+
+    // Touchpad hold › Switch to a template…: with launcher-map, [launcher] carries the held layout and its mode instead
+    // of the Mouse lines, named by its template; without it, Mouse plays and the rows say what they need.
+    {
+      const auto hold_kit = KitCapabilitiesFromManifest({kKitInputMap, kKitTouchpadSwitch, kKitLauncherMap}, true);
+      CHECK(hold_kit.launcher_map && !KitCapabilitiesFromManifest({kKitInputMap}, true).launcher_map);
+      CHECK(KitForTitleRuntime(hold_kit, false).launcher_map_needs_update && !KitForTitleRuntime(hold_kit, false).launcher_map);
+      const std::string menus = "cross = mouse:left;circle = mouse:right;left_stick = mouse";
+      std::string canonical_menus;
+      CHECK(CanonicalControllerLayout(menus, &canonical_menus, nullptr));
+      const std::map<std::string, std::string> held = {{"controller_layout", gamepad},
+                                                       {"touchpad_hold", "mouse"},
+                                                       {"touchpad_hold_layout", menus},
+                                                       {"touchpad_hold_controller", "playstation"}};
+      CHECK(BuildEffectiveSettings(hl2, nullptr, held, hold_kit, &settings, &error));
+      CHECK(settings.values.at("touchpad_hold_layout").available && settings.values.at("touchpad_hold_controller").available);
+      settings.layout_names = {{ControllerLayoutNameKey("playstation", canonical_menus), "Menus!"}};
+      CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+      std::string held_lines;
+      for (const auto& line : ControllerLayoutLines([&] {
+             ControllerLayout parsed;
+             CHECK(ParseControllerLayout(menus, &parsed, nullptr));
+             return parsed;
+           }()))
+        held_lines += line + "\n";
+      // The game sees an Xbox controller: a held PlayStation layout plays as the Xbox controller, since the runtime gives
+      // the game one controller for the whole session. The template's name is cut to what the notice takes.
+      CHECK(HeldLayoutMode("playstation", "xinput") == "xinput" && HeldLayoutMode("playstation", "playstation") == "playstation" &&
+            HeldLayoutMode("keyboard", "xinput") == "keyboard");
+      // Named by the template's own (stored) mode, played as the Xbox controller.
+      settings.layout_names = {{ControllerLayoutNameKey("playstation", canonical_menus), "Menus!"}};
+      CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+      CHECK(profile.text.find("\n[launcher]\nchain = off\nlabel = Menus\ngame_label = Gamepad\nmap = 1\nmode = xinput\n" +
+                              held_lines) != std::string::npos);
+      CHECK(profile.text.find("\nmouse = left_stick\n") == std::string::npos);
+      const ProsperoProfileFeatures held_features{.launcher_section = true, .launcher_chain_off = true, .input_map = true,
+                                                  .launcher_map = true};
+      CHECK(CheckProsperoProfile(profile.text, &reason, held_features));
+      CHECK(!CheckProsperoProfile(profile.text, &reason, {.launcher_section = true, .launcher_chain_off = true,
+                                                          .input_map = true}));
+      // The strict check reads the held layout as strictly as [input]'s, its mode in lower case before or after map.
+      const auto with = [&](std::string_view from, std::string_view to) {
+        auto text = profile.text;
+        text.replace(text.find(from), from.size(), to);
+        return text;
+      };
+      CHECK(!CheckProsperoProfile(with("\nmap = 1\nmode = xinput\n", "\nmap = 1\nmode = xinput\npreset = mouse\n"), &reason,
+                                  held_features));
+      CHECK(!CheckProsperoProfile(with("\nmap = 1\nmode = xinput\n", "\nmap = 1\nmode = XINPUT\n"), &reason, held_features));
+      CHECK(!CheckProsperoProfile(with("\nmap = 1\nmode = xinput\n", "\nmode = XINPUT\nmap = 1\n"), &reason, held_features));
+      CHECK(CheckProsperoProfile(with("\nmap = 1\nmode = xinput\n", "\nmode = xinput\nmap = 1\n"), &reason, held_features));
+      // A game that sees the PlayStation controller keeps a held PlayStation layout's mode.
+      {
+        auto ps_held = held;
+        ps_held["controller"] = "playstation";
+        const auto ps_kit = KitCapabilitiesFromManifest({kKitInputMap, kKitTouchpadSwitch, kKitLauncherMap, kKitInputPlaystation}, true);
+        EffectiveSettings ps;
+        CHECK(BuildEffectiveSettings(hl2, nullptr, ps_held, ps_kit, &ps, &error));
+        CHECK(RenderProsperoProfile(hl2, ps, target, &profile, &reason));
+        CHECK(profile.text.find("\nmap = 1\nmode = playstation\n" + held_lines) != std::string::npos);
+        CHECK(CheckProsperoProfile(profile.text, &reason, {.launcher_section = true, .launcher_chain_off = true,
+                                                           .input_playstation = true, .input_map = true, .launcher_map = true}));
+      }
+      // Without a template's name: Menu controls.
+      settings.layout_names.clear();
+      CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+      CHECK(profile.text.find("\nlabel = Menu controls\n") != std::string::npos);
+      // Without launcher-map the held rows wait or name what they need, and Mouse plays.
+      const auto no_hold = KitCapabilitiesFromManifest({kKitInputMap, kKitTouchpadSwitch}, true);
+      CHECK(BuildEffectiveSettings(hl2, nullptr, held, no_hold, &settings, &error));
+      CHECK(!settings.values.at("touchpad_hold_layout").available &&
+            settings.values.at("touchpad_hold_layout").reason ==
+                "Needs a newer runtime kit that switches to a layout with the touchpad.");
+      CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+      CHECK(profile.text.find("\n[launcher]\nchain = off\nlabel = Mouse\n") != std::string::npos &&
+            profile.text.find("\nmap = 1\nmode = playstation\n") == std::string::npos);
+      CHECK(BuildEffectiveSettings(hl2, nullptr, held, KitForTitleRuntime(hold_kit, false), &settings, &error));
+      CHECK(settings.values.at("touchpad_hold_layout").waits_for_update &&
+            settings.values.at("touchpad_hold_layout").reason == kAppliesAfterKitUpdate);
+      // A bad held layout is refused like a bad layout.
+      std::string why;
+      CHECK(!ValidateSettingValue(hl2, "touchpad_hold_layout", "cross = z", &why));
+      // Shares carry the held layout a player set, with its mode, and leave the rows out otherwise.
+      CHECK(BuildEffectiveSettings(hl2, nullptr, held, hold_kit, &settings, &error));
+      const auto ref = playden::GameRef::Steam(220);
+      const auto shared = BuildCommunityRecipe(hl2, settings, ref, "Half-Life 2");
+      CHECK(shared.recipe.defaults.at("touchpad_hold_layout") == menus &&
+            shared.recipe.defaults.at("touchpad_hold_controller") == "playstation");
+      // The held mode goes with the held layout even when it is the default Keyboard and mouse, in both kinds of share.
+      {
+        auto keyboard_held = held;
+        keyboard_held["touchpad_hold_controller"] = "keyboard";
+        EffectiveSettings with_keyboard, base;
+        CHECK(BuildEffectiveSettings(hl2, nullptr, keyboard_held, hold_kit, &with_keyboard, &error));
+        const auto full = BuildCommunityRecipe(hl2, with_keyboard, ref, "Half-Life 2");
+        CHECK(full.recipe.defaults.at("touchpad_hold_controller") == "keyboard");
+        CHECK(BuildEffectiveSettings(hl2, nullptr, {}, hold_kit, &base, &error));
+        const auto only = BuildSettingsOnlyRecipe(full, base, with_keyboard, ref, "Half-Life 2");
+        CHECK(only.recipe.defaults.at("touchpad_hold_layout") == menus &&
+              only.recipe.defaults.at("touchpad_hold_controller") == "keyboard");
+      }
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"touchpad_hold", "mouse"}}, hold_kit, &settings, &error));
+      const auto plain = BuildCommunityRecipe(hl2, settings, ref, "Half-Life 2");
+      CHECK(!plain.recipe.defaults.count("touchpad_hold_layout") && !plain.recipe.defaults.count("touchpad_hold_controller"));
     }
 
     // S4: a first edit starts from what the game uses now, so nothing changes until the player changes something.

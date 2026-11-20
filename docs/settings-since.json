@@ -70,6 +70,8 @@
     "system_locale": "",
     "text_scale": "",
     "touchpad_hold": "",
+    "touchpad_hold_controller": "0.13.0",
+    "touchpad_hold_layout": "0.13.0",
     "trigger_deadzone": "",
     "volume": "",
     "vsync": "",

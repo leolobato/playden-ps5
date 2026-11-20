@@ -4699,7 +4699,7 @@ class Render::Impl
     static std::string sheet_eyebrow(const std::string &surface)
     {
         static const std::map<std::string, std::string> names = {
-            {"choice-picker", "Game settings"}, {"preset-picker", "Game settings"}, {"button-mapping", "Game settings"}, {"controller-panel", "Game settings"},
+            {"choice-picker", "Game settings"}, {"preset-picker", "Game settings"}, {"button-mapping", "Game settings"}, {"controller-panel", "Game settings"}, {"hold-templates", "Touchpad hold"},
             {"game-settings", "Playden"}, {"game-settings-list", "Game settings"}, {"game-maintenance", "Playden"}, {"kept-data", "Settings"}, {"leftover-titles", "Settings"},
             {"download-server", "Settings"},
             {"import-games", "Library"}, {"import-programs", "Import games"}, {"steam-programs", "Setup"}, {"import-choice", "Import games"},
@@ -4847,7 +4847,7 @@ class Render::Impl
         const bool wide = view.surface.find("settings") != std::string::npos ||
                           view.surface.find("profile") != std::string::npos ||
                           view.surface == "choice-picker" || view.surface == "preset-picker" ||
-                          view.surface == "button-mapping" || view.surface == "controller-panel" ||
+                          view.surface == "button-mapping" || view.surface == "controller-panel" || view.surface == "hold-templates" ||
                           view.surface == "game-maintenance" ||
                           view.surface == "controller" || view.surface == "logs" ||
                           view.surface == "storage" || view.surface == "move-storage" || view.surface == "install" || view.surface == "update" || view.surface == "kept-data" || view.surface == "leftover-titles" ||
@@ -5035,7 +5035,7 @@ class Render::Impl
             ui::text(overlay_, fonts_.semibold, ui::upper(comparison.column), current_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
         else
         {
-            ui::text(overlay_, fonts_.semibold, "CURRENT", current_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
+            ui::text(overlay_, fonts_.semibold, ui::upper(comparison.current), current_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
             ui::text(overlay_, fonts_.semibold, ui::upper(comparison.column), preset_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
         }
         y += 16.0F;
@@ -5428,7 +5428,7 @@ class Render::Impl
                                     view.surface == "choice-picker" ||
                                     view.surface == "download-server" ||
                                     view.surface == "preset-picker" || view.surface == "button-mapping" ||
-                                    view.surface == "controller-panel" ||
+                                    view.surface == "controller-panel" || view.surface == "hold-templates" ||
                                     view.surface == "game-maintenance" || view.surface == "share-recipe" ||
                                     view.surface == "vote-recipe" || view.surface == "feedback" || view.surface == "share-as" ||
                                     view.surface == "controller-layout" || layout_sheet(view.surface);

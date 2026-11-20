@@ -1346,6 +1346,7 @@ struct ViewData {
         std::string note;
         std::string column = "This preset";  // the right column's heading
         std::string first = "Setting";       // the left column's heading
+        std::string current = "Current";     // the middle column's heading
         bool compact = false;                 // tighter rows, for a long list (a controller layout's inputs)
         bool single = false;                  // one value column (rows[2]) under `column`: what plays, no comparison
         std::vector<std::string> starts;      // a community recipe's "Changes how the game starts" items
@@ -2466,6 +2467,9 @@ private:
     [[nodiscard]] std::vector<std::string> game_settings_list_actions() const;
     [[nodiscard]] std::vector<std::string> controller_panel_actions() const;
     void build_controller_card(GameId game, const playden::runtime::EffectiveSettings& values);
+    void build_hold_preview(const playden::runtime::EffectiveSettings& values);
+    // Touchpad hold back to Off or Switch to Mouse: the template goes, and one a recipe or preset sets is turned off.
+    void clear_held_layout();
     void ask_controller_reset();
     void reset_controller_settings();
     // One line per change the player made (Reset's rule): the summary's rows, in catalogue order.

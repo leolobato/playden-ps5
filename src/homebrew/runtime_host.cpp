@@ -3379,6 +3379,9 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
       for (const auto& [id, value] : rt::ControllerPresetInputs().at("mouse")) overrides[id] = value;
       // No controller layout either: it would replace the Mouse preset.
       overrides["controller_layout"] = "";
+      // Nor a Touchpad hold swap away from it: the run stays on the Mouse preset.
+      overrides["touchpad_hold"] = "off";
+      overrides["touchpad_hold_layout"] = "";
     }
   }
   // A game whose folder moved (RuntimeInstall::moved_from) is published again at its revision, so

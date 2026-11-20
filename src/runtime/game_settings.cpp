@@ -205,12 +205,28 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         "none"));
   // A second preset for menus the controller can't use, a hold away; the [launcher] lines with chain = off.
   list.push_back(Choice("touchpad_hold", "Touchpad hold",
-                        "Hold the touchpad for 2 seconds to swap to another preset, for menus.", "", G::kControls,
+                        "Hold the touchpad for 2 seconds to swap controls, for menus.", "", G::kControls,
                         {{"off", "Off", "The touchpad works as the game's own button."},
                          {"mouse", "Switch to Mouse",
                           "Left stick moves the pointer; Cross clicks, Circle right-clicks, D-pad sends keyboard arrows, "
                           "Triangle Esc. Hold the touchpad again to go back."}},
                         "off"));
+  // Touchpad hold › Switch to a template…: the layout the hold swaps to, copied from a template, and how the game sees
+  // the controller meanwhile. With Touchpad hold on Switch to Mouse, a runtime kit that reads a [launcher] map plays
+  // these instead of the Mouse lines; an older one plays Mouse.
+  {
+    auto held = Text("touchpad_hold_layout", "Touchpad hold layout", "What the controls swap to while the touchpad is held.",
+                     "", G::kControls);
+    held.since = "0.13.0";
+    list.push_back(std::move(held));
+    auto held_mode = Choice("touchpad_hold_controller", "Touchpad hold controller",
+                            "How the game sees your DualSense while the touchpad is held.", "", G::kControls,
+                            {{"xinput", "Xbox controller", ""}, {"playstation", "PlayStation controller", ""},
+                             {"keyboard", "Keyboard and mouse mapping", ""}},
+                            "keyboard");
+    held_mode.since = "0.13.0";
+    list.push_back(std::move(held_mode));
+  }
   // Controls › Button mapping.
   static const std::map<std::string, std::string> button_names = {
       {"cross", "Cross"},   {"circle", "Circle"}, {"square", "Square"},   {"triangle", "Triangle"},
@@ -700,6 +716,13 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
         !why.empty())
       return why;
   }
+  if (id == "touchpad_hold_layout" || id == "touchpad_hold_controller") {
+    if (kit.launcher_map_needs_update || (kit.launcher_map && kit.touchpad_switch_needs_update)) return kAppliesAfterKitUpdate;
+    if (!kit.launcher_map || !kit.touchpad_switch) return "Needs a newer runtime kit that switches to a layout with the touchpad.";
+    if (const auto launcher = values.find("start_through_launcher");
+        launcher != values.end() && launcher->second.available && launcher->second.value == "on")
+      return "Start through a launcher already switches presets with the touchpad.";
+  }
   if (id == "touchpad_hold") {
     if (kit.touchpad_switch_needs_update) return kAppliesAfterKitUpdate;
     if (!kit.touchpad_switch) return "Needs a newer runtime kit that switches presets with the touchpad.";
@@ -960,6 +983,11 @@ std::string NoticeLabel(std::string_view name, const std::string& fallback) {
   return out.empty() ? fallback : out;
 }
 
+std::string HeldLayoutMode(std::string_view held_mode, std::string_view game_mode) {
+  if (held_mode == "playstation" && game_mode != "playstation") return "xinput";
+  return held_mode.empty() ? std::string("keyboard") : std::string(held_mode);
+}
+
 std::string ControllerLayoutNameKey(std::string_view mode, std::string_view canonical_layout) {
   return std::string(mode) + "\n" + std::string(canonical_layout);
 }
@@ -1115,7 +1143,7 @@ bool ValidateSettingValue(const GameRecipe& recipe, std::string_view id, std::st
     return IsProsperoDllOverrides(value) ? true : fail("not a list like name=n;other=n,b");
   }
   if (id.substr(0, 7) == "button.") return IsProsperoBinding(value) ? true : fail("not a key, mouse button or none");
-  if (id == "controller_layout") return ParseControllerLayout(value, nullptr, reason);
+  if (id == "controller_layout" || id == "touchpad_hold_layout") return ParseControllerLayout(value, nullptr, reason);
   return fail("unknown setting");
 }
 
@@ -1761,7 +1789,31 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   // menu preset written out here, and back. Start through a launcher has its own switch, so it wins.
   const auto& touchpad_hold = OptionalValue(settings, "touchpad_hold");
   const bool touchpad_section = !launcher_section && touchpad_hold.available && touchpad_hold.value == "mouse";
-  if (touchpad_section) {
+  // A layout to swap to (Switch to a template…), on a runtime kit that reads a [launcher] map: its lines instead of
+  // Mouse's, named by its template ("Menu controls" without one).
+  const auto& held_row = OptionalValue(settings, "touchpad_hold_layout");
+  ControllerLayout held_layout;
+  std::string held_mode;
+  const bool held_map = touchpad_section && held_row.available && !held_row.value.empty() &&
+                        ParseControllerLayout(held_row.value, &held_layout, nullptr) && !held_layout.empty();
+  if (held_map) {
+    // Named by the template it was copied from (its stored mode), played in the mode the game can take.
+    const auto stored = OptionalValue(settings, "touchpad_hold_controller").available ? value("touchpad_hold_controller")
+                                                                                      : std::string("keyboard");
+    const auto mode = HeldLayoutMode(stored, value("controller"));
+    held_mode = mode;
+    const auto canonical = SerializeControllerLayout(held_layout);
+    std::string held_label = "Menu controls";
+    if (const auto named = settings.layout_names.find(ControllerLayoutNameKey(stored, canonical)); named != settings.layout_names.end())
+      held_label = NoticeLabel(named->second, "Menu controls");
+    else
+      for (const auto& item : ControllerLayoutTemplates())
+        if (item.text == canonical && item.mode == stored) held_label = item.name;
+    text += "\n[launcher]\nchain = off\nlabel = " + held_label + "\n";
+    text += "game_label = " + game_controls_label() + "\n";
+    text += "map = 1\nmode = " + mode + "\n";
+    for (const auto& line : ControllerLayoutLines(held_layout)) text += line + "\n";
+  } else if (touchpad_section) {
     text += "\n[launcher]\nchain = off\nlabel = Mouse\n";
     text += "game_label = " + game_controls_label() + "\n";
     text += "mode = keyboard\nmouse = left_stick\nmouse_speed = 900\n";
@@ -1947,8 +1999,9 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   features.display_frame_rate = frame_rate;
   features.display_framegen = display_framegen;
   features.display_fps_counter = fps_counter;
-  features.input_playstation = value("controller") == "playstation";
+  features.input_playstation = value("controller") == "playstation" || held_mode == "playstation";
   features.input_map = input_map;
+  features.launcher_map = held_map;
   features.runtime_version = settings.profile_version == 2;
   features.runtime_locale = !system_locale.empty() || !user_locale.empty();
   // BuildEffectiveSettings let arguments past 512 bytes through only for a runtime that takes them; such a runtime
@@ -2441,7 +2494,7 @@ bool ValidatePresetSetting(std::string_view id, std::string_view value, std::str
   const bool button = id.compare(0, 7, "button.") == 0;
   if (!definition || id == "launch_option" || id == "graphics" || id == "architecture" || id == "start_check" ||
       id == "steam_library_path" ||
-      (definition->kind == SettingKind::kText && !button && id != "controller_layout")) {
+      (definition->kind == SettingKind::kText && !button && id != "controller_layout" && id != "touchpad_hold_layout")) {
     if (reason) *reason = "unsupported setting";
     return false;
   }
@@ -3759,7 +3812,7 @@ bool ParseProfileSidecar(std::string_view text, CommunityPreset* community, std:
     const auto* definition = FindSetting(id);
     const bool button = id.compare(0, 7, "button.") == 0;
     if (!definition || id == "launch_option" || id == "graphics" ||
-        (definition->kind == SettingKind::kText && !button && id != "controller_layout"))
+        (definition->kind == SettingKind::kText && !button && id != "controller_layout" && id != "touchpad_hold_layout"))
       continue;
     if (ValidateSettingValue(GameRecipe{}, id, value, nullptr)) out.preset.settings[id] = value;
   }
@@ -4374,7 +4427,7 @@ const std::vector<std::string>& SettingsKitCapabilityNames() {
   static const std::vector<std::string> names = {kKitAudioMicrophone, kKitDisplay120Hz, kKitDisplayFpsCounter,
                                                  kKitDisplayFramegen,
                                                  kKitHelperProcess, kKitInputMap, kKitInputPlaystation, kKitInputRumble,
-                                                 kKitLauncherMode, kKitAudioVolume, kKitDxvkConfig, kKitDxvkPresent,
+                                                 kKitLauncherMap, kKitLauncherMode, kKitAudioVolume, kKitDxvkConfig, kKitDxvkPresent,
                                                  kKitInputTuning, kKitEnvironment,
                                                  kKitTitleNotify, kKitTouchpadSwitch};
   return names;
@@ -4414,6 +4467,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.touchpad_switch = has(kKitTouchpadSwitch);
   kit.input_playstation = has(kKitInputPlaystation);
   kit.input_map = has(kKitInputMap);
+  kit.launcher_map = has(kKitLauncherMap);
   kit.title_notify = has(kKitTitleNotify);
   kit.helper_process = has(kKitHelperProcess);
   kit.launch_arguments_4096 = has(kKitLaunchArguments4096);
@@ -4486,6 +4540,11 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   if (!title_runtime_current && kit.input_map) {
     kit.input_map = false;
     kit.input_map_needs_update = true;
+  }
+  // An older title refuses map = 1 in [launcher]: a held layout waits for the title's update.
+  if (!title_runtime_current && kit.launcher_map) {
+    kit.launcher_map = false;
+    kit.launcher_map_needs_update = true;
   }
   if (!title_runtime_current && kit.input_playstation) {
     kit.input_playstation = false;
@@ -4627,6 +4686,12 @@ namespace {
 // or the base's: a recipient whose own recipe sets another mode would get the layout in it (keyboard mode drops every
 // pad: target).
 void CarryLayoutMode(const EffectiveSettings& settings, std::map<std::string, std::string>* defaults) {
+  // The held layout (Touchpad hold) goes with its mode too, even when that is the default Keyboard and mouse.
+  if (const auto held = defaults->find("touchpad_hold_layout");
+      held != defaults->end() && !held->second.empty() && !defaults->count("touchpad_hold_controller"))
+    if (const auto mode = settings.values.find("touchpad_hold_controller");
+        mode != settings.values.end() && (mode->second.available || mode->second.waits_for_update))
+      (*defaults)["touchpad_hold_controller"] = ChosenValue(mode->second);
   const auto layout = defaults->find("controller_layout");
   if (layout == defaults->end() || layout->second.empty() || defaults->count("controller")) return;
   const auto controller = settings.values.find("controller");
@@ -4933,6 +4998,9 @@ bool CommunityPresetSupported(const CommunityPreset& community, const KitCapabil
     }
     else if (feature == "input-map") {
       if (!kit.input_map && !kit.input_map_needs_update) return false;
+    }
+    else if (feature == "launcher-map") {
+      if (!kit.launcher_map && !kit.launcher_map_needs_update) return false;
     }
     else if (feature == "input-playstation") {
       if (!kit.input_playstation && !kit.input_playstation_needs_update) return false;
