@@ -17,7 +17,9 @@ namespace playden::runtime {
 
 // The values a script's Registry section sets, by hive. %INSTALLDIR% becomes install_dir (the
 // game folder's Windows path). HKLM\Software keys go to both registry views, as Steam, a
-// 32-bit program, writes them where 32-bit and 64-bit games find them. Only "string" and
+// 32-bit program, writes them where 32-bit and 64-bit games find them; HKEY_LOCAL_MACHINE_WOW64_32
+// and _WOW64_64 keys go to that one view (Software\Wow6432Node, or the key), and such a value wins
+// over a plain HKLM key's copy for the same view. Only "string" and
 // "dword" values are taken; a value with another %TOKEN% or non-ASCII text, and keys under
 // other roots, are skipped. Text may be UTF-8 or UTF-16 with a byte order mark. A language subkey
 // of "string" or "dword" gives its values only for that language: language (Steam's name, like

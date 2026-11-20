@@ -3,6 +3,7 @@
 #include "runtime/install_script.h"
 #include "runtime/msi_package.h"
 #include "runtime/redist_install.h"
+#include "runtime/redist_names.h"
 
 #include "msi_fixture.h"
 
@@ -494,6 +495,104 @@ void TestScripts() {
   std::string far_cry_registry = "WINE REGISTRY Version 2\n";
   CHECK(ApplyRegistryValues(&far_cry_registry, far_cry.machine, 1760000000, &reason));
   CHECK(far_cry_registry.find("\"SKU\"=\"WW_STEAM\"") != std::string::npos);
+  // Road Rash 95's script (#1109, trimmed) names the 32-bit view of HKLM: its values go to Software\Wow6432Node
+  // alone, where the 32-bit game reads them. A _WOW64_64 key is the 64-bit view: the key alone. Keys outside
+  // Software, and ones already under Wow6432Node, stay as written.
+  const std::string road_rash = R"("InstallScript"
+{
+	"utf8_registry_strings"		"1"
+	"Registry"
+	{
+		"HKEY_LOCAL_MACHINE_WOW64_32\\SOFTWARE\\Electronic Arts\\RoadRash 95"
+		{
+			"string"
+			{
+				"english"
+				{
+					"path"		"%INSTALLDIR%"
+					"language"		"English"
+				}
+				"french"
+				{
+					"path"		"%INSTALLDIR%"
+					"language"		"French"
+				}
+			}
+		}
+		"HKEY_LOCAL_MACHINE_WOW64_64\\SOFTWARE\\Studio\\Game64" { "dword" { "Installed" "1" } }
+		"HKEY_LOCAL_MACHINE_WOW64_32\\SOFTWARE\\Wow6432Node\\Studio\\Twin" { "string" { "a" "b" } }
+		"HKEY_LOCAL_MACHINE_WOW64_32\\SYSTEM\\Studio" { "string" { "c" "d" } }
+	}
+	"Firewall"
+	{
+		"RoadRash95.exe"		"%INSTALLDIR%\\RoadRash95.exe"
+	}
+}
+"kvsignatures"
+{
+	"InstallScript"		"81d32a2a"
+}
+)";
+  InstallScriptValues road_rash_values;
+  CHECK(ParseInstallScript(road_rash, "Z:\\data\\playden-games\\2448570", "french", &road_rash_values, &reason));
+  CHECK(road_rash_values.user.empty() && road_rash_values.machine.size() == 5);
+  CHECK(FindValue(road_rash_values.machine, "Software\\Wow6432Node\\Electronic Arts\\RoadRash 95", "language")->data ==
+        "\"French\"");
+  CHECK(FindValue(road_rash_values.machine, "Software\\Wow6432Node\\Electronic Arts\\RoadRash 95", "path")->data ==
+        "\"Z:\\\\data\\\\playden-games\\\\2448570\"");
+  CHECK(!FindValue(road_rash_values.machine, "SOFTWARE\\Electronic Arts\\RoadRash 95", "language"));
+  CHECK(FindValue(road_rash_values.machine, "SOFTWARE\\Studio\\Game64", "Installed")->data == "dword:00000001");
+  CHECK(!FindValue(road_rash_values.machine, "Software\\Wow6432Node\\Studio\\Game64", "Installed"));
+  CHECK(FindValue(road_rash_values.machine, "SOFTWARE\\Wow6432Node\\Studio\\Twin", "a"));
+  CHECK(FindValue(road_rash_values.machine, "SYSTEM\\Studio", "c"));
+  // The same key and name in both views keep their own data, whatever the case, and a plain HKLM key's copy for a view
+  // doesn't replace a value set in that view, before or after it. Values on Software and Software\Wow6432Node
+  // themselves land on the 32-bit node; Software\Classes is shared, so a 32-bit value goes to both keys.
+  for (const bool plain_first : {true, false}) {
+    const std::string plain = "\"HKEY_LOCAL_MACHINE\\\\Software\\\\Vendor\" { \"string\" { \"Path\" \"plain\" } } ";
+    const std::string views =
+        std::string("\"HKEY_LOCAL_MACHINE_WOW64_64\\\\SOFTWARE\\\\Vendor\" { \"string\" { \"path\" \"x64\" } } ") +
+        "\"hkey_local_machine_wow64_32\\\\software\\\\vendor\" { \"string\" { \"PATH\" \"x86\" } } " +
+        "\"HKEY_LOCAL_MACHINE_WOW64_32\\\\Software\" { \"string\" { \"Top\" \"1\" } } " +
+        "\"HKEY_LOCAL_MACHINE_WOW64_32\\\\Software\\\\Wow6432Node\" { \"string\" { \"Node\" \"2\" } } " +
+        "\"HKEY_LOCAL_MACHINE_WOW64_32\\\\Software\\\\Classes\\\\Vendor.Save\" { \"string\" { \"(Default)\" \"Save\" } } ";
+    const std::string script =
+        "\"InstallScript\" { \"Registry\" { " + (plain_first ? plain + views : views + plain) + "} }";
+    InstallScriptValues viewed;
+    CHECK(ParseInstallScript(script, "Z:\\games\\1", "", &viewed, &reason));
+    CHECK(viewed.machine.size() == 6);
+    const auto data = [&](const std::string& key, const std::string& name) {
+      for (const auto& value : viewed.machine)
+        if (RedistLower(value.key) == RedistLower(key) && RedistLower(value.name) == RedistLower(name)) return value.data;
+      return std::string("missing");
+    };
+    CHECK(data("Software\\Vendor", "Path") == "\"x64\"");
+    CHECK(data("Software\\Wow6432Node\\Vendor", "Path") == "\"x86\"");
+    CHECK(data("Software\\Wow6432Node", "Top") == "\"1\"");
+    CHECK(data("Software\\Wow6432Node", "Node") == "\"2\"");
+    CHECK(data("Software\\Wow6432Node\\Wow6432Node", "Node") == "missing");
+    CHECK(data("Software", "Top") == "missing");
+    CHECK(data("Software\\Classes\\Vendor.Save", "") == "\"Save\"");
+    CHECK(data("Software\\Wow6432Node\\Classes\\Vendor.Save", "") == "\"Save\"");
+    // Applied to a hive, each view keeps its value, and applying it again changes nothing.
+    std::string hive = "WINE REGISTRY Version 2\n;; All keys relative to REGISTRY\\\\Machine\n\n#arch=win64\n";
+    CHECK(ApplyRegistryValues(&hive, viewed.machine, 1760000000, &reason));
+    const auto section_has = [&hive](const std::string& key, const std::string& line) {
+      const auto lower = RedistLower(hive);
+      const auto start = lower.find("[" + RedistLower(key) + "]");
+      if (start == std::string::npos) return false;
+      const auto end = lower.find("\n[", start + 1);
+      return lower.substr(start, end == std::string::npos ? std::string::npos : end - start).find(RedistLower(line)) !=
+             std::string::npos;
+    };
+    CHECK(section_has("Software\\\\Vendor", "\"Path\"=\"x64\""));
+    CHECK(section_has("Software\\\\Wow6432Node\\\\Vendor", "\"Path\"=\"x86\""));
+    CHECK(!section_has("Software\\\\Vendor", "\"Path\"=\"plain\"") &&
+          !section_has("Software\\\\Wow6432Node\\\\Vendor", "\"Path\"=\"plain\""));
+    const auto once = hive;
+    CHECK(ApplyRegistryValues(&hive, viewed.machine, 1760000001, &reason));
+    CHECK(hive == once);
+  }
   // A language's value replaces a plain one of the same name, any case: a registry key holds one of each.
   const std::string overlapping =
       "\"InstallScript\" { \"Registry\" { \"HKEY_CURRENT_USER\\\\Software\\\\Studio\" { \"string\" { "

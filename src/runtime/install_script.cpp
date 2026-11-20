@@ -98,6 +98,21 @@ bool ReadScript(const std::filesystem::path& path, std::string* text) {
   return ok;
 }
 
+// The keys for a value under one registry view of HKLM (HKEY_LOCAL_MACHINE_WOW64_32 or _WOW64_64). The 64-bit view is
+// the key as written. The 32-bit view is HKLM\Software as a 32-bit program sees it: Software\Wow6432Node in the
+// bottle. Software\Classes is mostly shared by both views (with redirected parts like CLSID), so it gets both keys,
+// as a plain HKLM key does. Keys outside Software, and ones already under Wow6432Node, stay as written.
+std::vector<std::string> ViewKeys(bool view32, const std::string& subkey) {
+  const auto lower = Lower(subkey);
+  const auto under = [&lower](const char* key) {
+    const std::string prefix = key;
+    return lower == prefix || lower.rfind(prefix + "\\", 0) == 0;
+  };
+  if (!view32 || !under("software") || under("software\\wow6432node")) return {subkey};
+  if (under("software\\classes")) return {subkey, "Software\\Wow6432Node" + subkey.substr(8)};
+  return {"Software\\Wow6432Node" + subkey.substr(8)};
+}
+
 }  // namespace
 
 std::vector<std::string> InstallScriptKeys(bool machine, const std::string& subkey) {
@@ -139,17 +154,25 @@ bool ParseInstallScript(std::string_view text, const std::string& install_dir, c
   const auto* script = ScriptSection(*root);
   const auto* registry = script->Find("Registry");
   if (!registry) return true;
+  // Values a script sets in one registry view. They go in last, so a plain HKLM key's copy for the other view
+  // doesn't replace a value the script set there itself.
+  std::vector<RegistryValue> viewed;
   for (const auto& [path, key] : registry->children) {
     if (!key.is_dict) continue;
     const auto separator = path.find('\\');
     const auto hive = Lower(path.substr(0, separator));
     if (separator == std::string::npos || separator + 1 >= path.size()) continue;
-    const bool machine = hive == "hkey_local_machine" || hive == "hklm";
+    // A script can name one registry view of HKLM: _WOW64_32 is the 32-bit one, where a 32-bit game reads
+    // HKLM\Software (Software\Wow6432Node in the bottle), and _WOW64_64 the 64-bit one (the key as written).
+    // Road Rash 95 finds its Text\<language>.dll through a _WOW64_32 key and shows a bare "Warning" without it.
+    const bool view32 = hive == "hkey_local_machine_wow64_32";
+    const bool view64 = hive == "hkey_local_machine_wow64_64";
+    const bool machine = hive == "hkey_local_machine" || hive == "hklm" || view32 || view64;
     if (!machine && hive != "hkey_current_user" && hive != "hkcu") continue;
     const auto subkey = path.substr(separator + 1);
     if (!Ascii(subkey) || subkey.find('%') != std::string::npos) continue;
-    const auto keys = InstallScriptKeys(machine, subkey);
-    auto& target = machine ? values->machine : values->user;
+    const auto keys = view32 || view64 ? ViewKeys(view32, subkey) : InstallScriptKeys(machine, subkey);
+    auto& target = view32 || view64 ? viewed : machine ? values->machine : values->user;
     for (const auto& [type, entries] : key.children) {
       const auto kind = Lower(type);
       if (!entries.is_dict || (kind != "string" && kind != "dword")) continue;
@@ -185,6 +208,7 @@ bool ParseInstallScript(std::string_view text, const std::string& install_dir, c
           if (!data.is_dict) add(name, data.value);
     }
   }
+  for (auto& value : viewed) SetRegistryValue(&values->machine, std::move(value));
   return true;
 }
 
