@@ -1079,6 +1079,7 @@ void Controller::TickPublishers() {
                                                                              : PublisherAccountState::SignedOut;
     item.display = view.display;
     item.obtained_at = static_cast<std::int64_t>(view.obtained_at);
+    item.launcher = view.launcher;
     // Listed once it matters: the pack can start the publisher's games, a prepared game is the
     // publisher's, or an account is kept (so it can be signed out of).
     item.shown = view.pack_ready || view.account != runtime::PublisherAccountState::kSignedOut;

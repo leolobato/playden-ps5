@@ -267,6 +267,8 @@ struct LivePublisher {
     // Settings lists it: the publisher pack can start its games, a prepared game is its, or an
     // account is kept on the console.
     bool shown = false;
+    // Its games start beside the publisher's launcher, which Steam features = Online leaves out.
+    bool launcher = false;
     bool operator==(const LivePublisher&) const = default;
 };
 // The phone sign-in screen, from its one-time page (runtime/phone_relay.h).
@@ -2206,6 +2208,8 @@ private:
     std::int64_t publisher_signed_in_at_ = -1;
     [[nodiscard]] const LivePublisher* find_publisher(const std::string& slug) const;
     [[nodiscard]] const LivePublisher* publisher_of(GameId id) const;
+    // The publisher whose launcher the game starts beside, which Steam features = Online leaves out.
+    [[nodiscard]] const LivePublisher* launcher_publisher(GameId id) const;
     void begin_publisher_sign_in(const std::string& slug, GameId play_game);
     void leave_publisher_sign_in(bool signed_in);
     void settle_publisher_sign_in();

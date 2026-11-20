@@ -328,6 +328,29 @@ void live_vac_warns_on_online(const std::filesystem::path& base) {
     const auto* row = find_row(model, "setting-steam_features");
     check(row && row->value == "Online (experimental)" && row->subtitle.rfind(warning, 0) == 0,
           "the Steam features row warns while a VAC game is on Online");
+    // A game that starts beside its publisher's launcher can't run it with Online: that warning comes first, on the
+    // row and on the choice. A publisher whose pack runs no launcher leaves the VAC warning.
+    const std::string launcher_warning =
+        "Not supported for this game yet: it needs the Rockstar launcher, which doesn't run with Online. Use Offline emulation.";
+    playden::homebrew::LivePublishers publishers;
+    publishers.publishers.push_back(
+        {"rockstar", "Rockstar Games", "Rockstar", playden::homebrew::PublisherAccountState::SignedOut, {}, 0, true});
+    publishers.games[SteamId(220)] = "rockstar";
+    model.SetPublishers(publishers);
+    row = find_row(model, "setting-steam_features");
+    check(row && row->subtitle.find("VAC") != std::string::npos, "a publisher without a launcher keeps the VAC warning");
+    publishers.publishers[0].launcher = true;
+    model.SetPublishers(publishers);
+    row = find_row(model, "setting-steam_features");
+    check(row && row->subtitle.rfind(launcher_warning, 0) == 0, "the Steam features row says Online can't start the publisher's launcher");
+    activate(model, "setting-steam_features");
+    online = find_row(model, "choice-1");
+    check(online && online->subtitle == launcher_warning, "the Online choice says the publisher's launcher doesn't run");
+    check(find_row(model, "choice-0") && find_row(model, "choice-0")->subtitle.find("launcher") == std::string::npos,
+          "Offline emulation doesn't warn about the launcher");
+    check(model.action("circle"), "close the Steam features picker again");
+    model.SetPublishers({});
+    row = find_row(model, "setting-steam_features");
     // Game invites shows only once the game is Online. A runtime kit without title-notify runs Ask as Off, and its
     // picker offers only Join at once and Off.
     const auto* invites = find_row(model, "setting-game_invites");

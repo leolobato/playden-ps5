@@ -7471,6 +7471,7 @@ void RuntimeHost::PublishPublishers(Composition& c) {
       view.pack_checked = view.pack_ready = true;
       if (!manifest.signin_page.empty()) view.signin_page = loaded->second.directory + "/" + manifest.signin_page;
       if (manifest.runtime) view.runtime_label = manifest.runtime->label;
+      view.launcher = manifest.helper.has_value();
     } else if (const auto failed = c.publisher_failures.find(publisher); failed != c.publisher_failures.end()) {
       view.pack_checked = true;
       view.pack_message = failed->second;

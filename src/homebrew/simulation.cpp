@@ -109,6 +109,12 @@ namespace {
 // from Steam). Named in full, since not every player knows the abbreviation.
 constexpr const char* kVacOnlineWarning =
     "This game uses Valve Anti-Cheat (VAC). Playing it online could get your account banned from this game.";
+// Steam features = Online on a game that starts beside its publisher's launcher: the title runs one program beside the
+// game, and Online's is Steam's client, so the launcher doesn't run and the game stops at its start.
+std::string PublisherOnlineWarning(const std::string& publisher) {
+    return "Not supported for this game yet: it needs the " + publisher +
+           " launcher, which doesn't run with Online. Use Offline emulation.";
+}
 // "Go back to Playden <previous>" is for development: release builds (NDEBUG) don't offer it.
 #ifdef NDEBUG
 constexpr bool kOfferGoBack = false;
@@ -3336,6 +3342,11 @@ const LivePublisher* Simulation::find_publisher(const std::string& slug) const {
 const LivePublisher* Simulation::publisher_of(GameId id) const {
     const auto game = state_.publishers.games.find(id);
     return game == state_.publishers.games.end() ? nullptr : find_publisher(game->second);
+}
+
+const LivePublisher* Simulation::launcher_publisher(GameId id) const {
+    const auto* publisher = publisher_of(id);
+    return publisher && publisher->launcher ? publisher : nullptr;
 }
 
 std::pair<std::string, GameId> Simulation::DetailsPublisherCheck() const {
@@ -8464,7 +8475,8 @@ void Simulation::rebuild_view() {
             if (!refusal.empty()) view_.subtitle = refusal;
             else if (online) view_.subtitle = title + " starts and joins this lobby. If the lobby is full or closed by then, the game says so.";
             else if (std::count(modal.action_keys.begin(), modal.action_keys.end(), "join-use-online"))
-                view_.subtitle = uses_vac(join_game) ? std::string(kVacOnlineWarning)
+                view_.subtitle = launcher_publisher(join_game) ? PublisherOnlineWarning(launcher_publisher(join_game)->short_name)
+                    : uses_vac(join_game) ? std::string(kVacOnlineWarning)
                     : "Joining needs Steam features set to Online. " + title + " keeps it for the next times you play.";
             else view_.subtitle = "Joining needs Steam features set to Online. This game's recipe sets it: change it in Game settings first.";
         }
@@ -9249,7 +9261,10 @@ void Simulation::rebuild_view() {
                 item.modified = value.source == rt::ValueSource::kUser || value.unlocked;
                 if (value.unlocked) item.subtitle = value.reason;
                 if (id == "architecture") item.subtitle = "Follows the program you choose.";
-                if (id == "steam_features" && value.value == "online" && uses_vac(settings_game)) item.subtitle = kVacOnlineWarning;
+                if (id == "steam_features" && value.value == "online") {
+                    if (const auto* launcher = launcher_publisher(settings_game)) item.subtitle = PublisherOnlineWarning(launcher->short_name);
+                    else if (uses_vac(settings_game)) item.subtitle = kVacOnlineWarning;
+                }
                 // Another store's game has no Steam folder to be shown in (the runtime host checks the store too).
                 if (id == "steam_library_path" && settings_game.store != Store::kSteam) {
                     item.enabled = false;
@@ -9390,6 +9405,8 @@ void Simulation::rebuild_view() {
                         item.enabled = false;
                     } else if (rt::SettingChoiceWaitsForUpdate(settings_values, modal.setting_id, value)) {
                         item.subtitle = rt::kAppliesAfterKitUpdate;
+                    } else if (modal.setting_id == "steam_features" && value == "online" && launcher_publisher(settings_game)) {
+                        item.subtitle = PublisherOnlineWarning(launcher_publisher(settings_game)->short_name);
                     } else if (modal.setting_id == "steam_features" && value == "online" && uses_vac(settings_game)) {
                         item.subtitle = kVacOnlineWarning;
                     }

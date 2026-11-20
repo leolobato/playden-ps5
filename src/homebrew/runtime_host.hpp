@@ -364,6 +364,7 @@ struct RuntimePublisherView {
   std::string pack_message;
   std::string signin_page;    // the pack's sign-in page (host path), "" when it has none
   std::string runtime_label;  // the runtime the pack makes from games' installers, "" when none
+  bool launcher = false;      // the pack runs a launcher beside its games (stage manifest "helper")
 };
 
 // How the latest publisher sign-in submission ended.
