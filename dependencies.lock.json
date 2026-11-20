@@ -126,8 +126,8 @@
     "ps5_build_flags": "-ffile-prefix-map=<source root>/= (relative source paths; byte-reproducible with SDK v0.43 and LLVM 18.1.8)"
   },
   "homebrew_ui": {
-    "revision": "a936bab253c36abf113109b06f4faf781896b736",
-    "source": "third_party/ps5-homebrew-ui submodule, fork branch main: upstream 4b3fbb7 plus the latin-glyph, macOS OpenGL 4.1, CFF SDF and last-used controller commits (not yet upstream)",
+    "revision": "24d74b721168a08a12f93e9f2aa2ee1abfd0e878",
+    "source": "third_party/ps5-homebrew-ui submodule, fork branch main: upstream 4b3fbb7 plus the latin-glyph, macOS OpenGL 4.1, CFF SDF, last-used controller and KeyPicker commits (not yet upstream)",
     "stb_image": {
       "source": "Vendored third_party/stb/stb_image.h (stb v2.30)",
       "sha256": "594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3"
