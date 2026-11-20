@@ -1232,12 +1232,42 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
     if (const auto preset = ControllerPresetInputs().find(out.values["controller_preset"].value);
         preset != ControllerPresetInputs().end() && !(value.locked && !value.unlocked))
       fallback = preset->second.at("controller");
+    // A controller layout brings its mode. While the layout waits for the title's update the old rows play, so its
+    // mode waits with it: WASD and mouse's keyboard mode would leave an Xbox controller game with neither. The old rows
+    // keep the mode they had below the layer that set the layout (Playden's, the recipe's, the preset's, a controller
+    // preset's).
+    const auto& layout_row = out.values["controller_layout"];
+    const bool layout_waiting = !layout_row.value.empty() && !(value.locked && !value.unlocked) &&
+                                ControllerLayoutUnsupported(layout_row.value, kit) == kAppliesAfterKitUpdate;
+    std::string before_layout = FindSetting("controller")->playden_default;
+    if (layout_waiting) {
+      ValueSource source = ValueSource::kPlayden;
+      const auto below = [&](const std::map<std::string, std::string>& layer, const std::string& key, ValueSource kind) {
+        const auto found = layer.find(key);
+        if ((kind != ValueSource::kPlayden && kind >= layout_row.source) || found == layer.end() ||
+            !ValidateSettingValue(recipe, "controller", found->second, nullptr))
+          return;
+        before_layout = found->second;
+        source = kind;
+      };
+      below(overrides, kGameDefaultPrefix + std::string("controller"), ValueSource::kPlayden);
+      below(recipe.defaults, "controller", ValueSource::kRecipe);
+      if (preset) below(preset->settings, "controller", ValueSource::kPreset);
+      const auto& preset_row = out.values["controller_preset"];
+      if (const auto inputs = ControllerPresetInputs().find(preset_row.value);
+          inputs != ControllerPresetInputs().end() && source < preset_row.source)
+        before_layout = inputs->second.at("controller");
+    }
+    const bool layout_waits = layout_waiting && value.value != before_layout;
     if (auto reason = SettingChoiceUnavailable(out, "controller", value.value); !reason.empty()) {
       value.value = fallback;
       value.reason = std::move(reason);
-    } else if (SettingChoiceWaitsForUpdate(out, "controller", value.value)) {
+    } else if (SettingChoiceWaitsForUpdate(out, "controller", value.value) || layout_waits) {
       value.after_update = value.value;
-      value.value = fallback;
+      // A mode the title can't take yet (the PlayStation controller) falls back as above.
+      const bool before_plays = SettingChoiceUnavailable(out, "controller", before_layout).empty() &&
+                                !SettingChoiceWaitsForUpdate(out, "controller", before_layout);
+      value.value = layout_waits && before_plays ? before_layout : fallback;
       value.reason = kAppliesAfterKitUpdate;
       value.waits_for_update = true;
     }

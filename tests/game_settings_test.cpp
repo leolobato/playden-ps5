@@ -4165,6 +4165,50 @@ int main(int argc, char** argv) {
     // So is one that waits for the title's update: an edit never starts over from the old rows.
     CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, stale, &settings, &error));
     CHECK(!ControllerLayoutInEffect(settings) && SeedControllerLayout(settings).text == wasd);
+    // A layout's mode waits with it: an Xbox controller game that picks WASD and mouse before its title's update keeps
+    // its controller until then, and the layout comes with keyboard mode after it.
+    {
+      GameSettingsRecord waiting_record;
+      SetControllerLayout(&waiting_record, wasd, "keyboard");
+      CHECK(BuildEffectiveSettings(unbound, nullptr, waiting_record.overrides, stale, &settings, &error));
+      const auto& mode = settings.values.at("controller");
+      CHECK(mode.value == "xinput" && mode.waits_for_update && mode.after_update == "keyboard" &&
+            mode.reason == kAppliesAfterKitUpdate);
+      CHECK(SeedControllerLayout(settings).mode == "keyboard" && SeedControllerLayout(settings).text == wasd);
+      CHECK(RenderProsperoProfile(unbound, settings, target, &profile, &reason));
+      CHECK(profile.text.find("\nmode = xinput\n") != std::string::npos && profile.text.find("map = 1") == std::string::npos);
+      CHECK(BuildEffectiveSettings(unbound, nullptr, waiting_record.overrides, map_kit, &settings, &error));
+      CHECK(!settings.values.at("controller").waits_for_update && Value(settings, "controller") == "keyboard");
+      CHECK(RenderProsperoProfile(unbound, settings, target, &profile, &reason));
+      CHECK(profile.text.find("\nmode = keyboard\nmap = 1\n") != std::string::npos);
+      // The old rows keep the mode they had below the layout: a recipe's Keyboard, with a key on a button. Starting
+      // an edit there and saving it changes nothing until the title's update.
+      GameRecipe keyboard_recipe = unbound;
+      keyboard_recipe.defaults["controller"] = "keyboard";
+      GameSettingsRecord keys_record;
+      keys_record.overrides = {{"button.cross", "space"}};
+      CHECK(BuildEffectiveSettings(keyboard_recipe, nullptr, keys_record.overrides, stale, &settings, &error));
+      CHECK(RenderProsperoProfile(keyboard_recipe, settings, target, &profile, &reason));
+      const auto before_edit = profile.text;
+      const auto first = SeedControllerLayout(settings);
+      CHECK(first.mode == "keyboard");
+      SetControllerLayout(&keys_record, first.text, first.mode);
+      CHECK(BuildEffectiveSettings(keyboard_recipe, nullptr, keys_record.overrides, stale, &settings, &error));
+      CHECK(RenderProsperoProfile(keyboard_recipe, settings, target, &profile, &reason));
+      CHECK(profile.text == before_edit && !settings.values.at("controller").waits_for_update);
+      // A template with another mode waits, and the old rows keep the recipe's Keyboard meanwhile.
+      SetControllerLayout(&keys_record, FindControllerLayoutTemplate("gamepad")->text, "xinput");
+      CHECK(BuildEffectiveSettings(keyboard_recipe, nullptr, keys_record.overrides, stale, &settings, &error));
+      CHECK(Value(settings, "controller") == "keyboard" && settings.values.at("controller").after_update == "xinput");
+      CHECK(RenderProsperoProfile(keyboard_recipe, settings, target, &profile, &reason));
+      CHECK(profile.text == before_edit);
+      // A recipe's locked Controller is not moved.
+      GameRecipe locked = unbound;
+      locked.defaults["controller"] = "keyboard";
+      locked.locked.insert("controller");
+      CHECK(BuildEffectiveSettings(locked, nullptr, waiting_record.overrides, stale, &settings, &error));
+      CHECK(Value(settings, "controller") == "keyboard" && !settings.values.at("controller").waits_for_update);
+    }
     // Without input-map the row is off, and the seed is the old rows'.
     CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, no_map, &settings, &error));
     CHECK(SeedControllerLayout(settings).text != wasd);
