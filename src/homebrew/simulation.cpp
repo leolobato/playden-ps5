@@ -886,13 +886,16 @@ rt::SettingGroup SheetGroup(const rt::SettingDefinition& definition) {
                                                                                       : definition.group;
 }
 
+// Game settings › Controller layout and its sheets.
+bool IsLayoutModal(const std::string& id) { return id == "controller-layout" || id.rfind("layout-", 0) == 0; }
+
 bool SheetDecoration(const std::string& key) {
     return key.rfind("heading-", 0) == 0 || key == "divider" || key.rfind("summary-", 0) == 0;
 }
 
 std::string action_label(const std::string& key) {
     static const std::map<std::string, std::string> labels = {
-        {"cancel", "Cancel"}, {"confirm-destructive", "Confirm"}, {"runtime-batch-free", "Free up space"}, {"ready-later", "Later"}, {"update-ready-later", "Not now"}, {"update-ready-play", "Play"}, {"alert-ok", "OK"}, {"alert-settings", "Game settings"}, {"start-failed-settings", "Change settings"},
+        {"cancel", "Cancel"}, {"confirm-destructive", "Confirm"}, {"layout-template-confirm", "Use this layout"}, {"runtime-batch-free", "Free up space"}, {"ready-later", "Later"}, {"update-ready-later", "Not now"}, {"update-ready-play", "Play"}, {"alert-ok", "OK"}, {"alert-settings", "Game settings"}, {"start-failed-settings", "Change settings"},
         {"start-failed-report", "Report the problem"}, {"start-failed-logs", "Open logs"}, {"runtime-cleanup-confirm", "Clean up"}, {"quit-to-home", "Play"}, {"favorite", "Favorite"},
         {"collection", "Collections"}, {"compatibility", "Compatibility"}, {"note", "Note"}, {"verify", "Verify files"},
         {"uninstall", "Uninstall…"}, {"import-remove", "Remove from library…"}, {"uninstall-delete-saves", "Delete saves too"}, {"remove-playden-delete-saves", "Delete saves too"}, {"remove-playden-confirm", "Uninstall Playden"}, {"run-once-dont-show", "Don't show again"}, {"launcher-help-dont-show", "Don't show again"}, {"launcher-help-on", "Turn on"}, {"launcher-hint-later", "Not now"}, {"launcher-hint-on", "Turn on and play"}, {"folder-recipe-skip", "Don't use it"}, {"folder-recipe-use", "Use the recipe"}, {"logs", "Open logs"}, {"logs-back", "Back"},
@@ -7370,6 +7373,27 @@ bool Simulation::scenario(const std::string& name) {
         // The community's compatibility list: the Library's badges, its Compatibility filter and the Install sheet's
         // warning for a game listed as Partial, Broken or Refused (#977).
         seed_community_scenario(false);
+    } else if (name == "controller-layout" || name == "controller-layout-mouse") {
+        // Game settings › Controller layout on a runtime kit that reads layouts: started from the game's controller
+        // (the Gamepad defaults), or from the Mouse preset with a button of the player's.
+        const auto id = GameId::Steam(900002);
+        state_.account().authentication = AuthState::SignedIn;
+        state_.navigation.modals.clear();
+        state_.navigation.route = Route::Details;
+        state_.navigation.detail_id = id;
+        state_.navigation.selected_game_id = id;
+        state_.navigation.focus_key = "details-play";
+        kit_.input_map = true;
+        state_.game_settings.erase(id);
+        if (name == "controller-layout-mouse") {
+            auto& record = state_.game_settings[id];
+            record.overrides["controller"] = "keyboard";
+            record.overrides["controller_preset"] = "mouse";
+            record.overrides["button.triangle"] = "Escape";
+        }
+        open_game_settings();
+        open_settings_list();
+        open_setting("controller_layout");
     } else if (name.rfind("recipes-", 0) == 0) {
         // Community recipes: the chooser, the Install sheet's Settings row, a switch and Game settings.
         seed_community_scenario(name == "recipes-offline");
@@ -8202,6 +8226,10 @@ void Simulation::rebuild_view() {
         };
         for (const auto& action_key : modal.action_keys) {
             auto& item = row(action_key, RowKind::Action, action_label(action_key), action_key);
+            if (IsLayoutModal(modal.id)) {
+                build_layout_row(modal, action_key, item);
+                continue;
+            }
             item.dangerous = modal.destructive && action_key != "cancel";
             // The Cloud saves choice: under each button, what it does.
             if (modal.saves_game.valid() && (action_key == "cloud-use-cloud" || action_key == "cloud-use-local")) {
@@ -9756,6 +9784,7 @@ void Simulation::rebuild_view() {
         else if (modal.id == "gog-sign-in") view_.legends = {"Cross Select", "Circle Back"};
         else if (modal.id == "move-storage") view_.legends = {move_picker_game_.valid() ? "Cross Move here" : "Cross Choose", "Circle Back"};
         else if (!modal.setting_id.empty()) view_.legends = {"Cross Select", "Triangle Reset", "L1/R1 Jump", "Circle Back"};
+        if (IsLayoutModal(modal.id)) build_layout_view(modal);
     } else if (state_.navigation.route == Route::Startup && state_.root_access_missing && state_.removing_playden) {
         view_.title = "Uninstalling Playden…";
         view_.subtitle = "Removing each game's PS5 title, the game files and Playden's data. Don't turn the console off.";
@@ -11219,6 +11248,11 @@ void Simulation::close_modal() {
         (state_.navigation.modals.size() < 2 || state_.navigation.modals[state_.navigation.modals.size() - 2].id != "import-choice"))
         import_choice_game_ = {};
     if (state_.navigation.modals.back().id == "move-storage") move_picker_game_ = {};
+    // The controller layout editor's working copy ends with it (each change was saved as it was made).
+    if (state_.navigation.modals.back().id == "controller-layout") {
+        layout_edit_.reset();
+        state_.key_picker = {};
+    }
     // The chooser's search ends with it.
     if (state_.navigation.modals.back().id == "preset-picker") {
         chooser_query_.reset();
@@ -12386,6 +12420,7 @@ void Simulation::activate() {
     // Preset update/delete validate every affected revision themselves and show refusals above the sheet.
     if (edits_settings && !can_change_game_settings()) return;
     if (sign_in_action(action_name)) return;
+    if (layout_action(action_name)) return;
     if (action_name == "connect") open_sign_in();
     else if (action_name == "qr-retry" || action_name == "qr-refresh") {
         state_.sign_in.step = SignInStep::Qr;
@@ -14983,6 +15018,23 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
         offset = std::clamp(offset + (logical_action == "l2" ? -1 : 1), 0, last_page);
         rebuild_view(); return true;
     }
+    // The key picker over the controller layout editor takes every button while it is open.
+    if (state_.key_picker.active &&
+        (state_.navigation.modals.empty() || !IsLayoutModal(state_.navigation.modals.back().id)))
+        state_.key_picker = {};
+    if (state_.key_picker.active && !state_.editor.active) {
+        layout_key_picker_action(logical_action);
+        rebuild_view();
+        return true;
+    }
+    const bool layout_editor = !state_.editor.active && !state_.navigation.modals.empty() &&
+                               state_.navigation.modals.back().id == "controller-layout";
+    if (layout_editor && (logical_action == "square" || logical_action == "triangle")) {
+        // Square puts the focused input back to its default; Triangle opens Templates.
+        layout_action(logical_action == "square" ? "layout-square" : "layout-triangle");
+        rebuild_view();
+        return true;
+    }
     if (logical_action == "up") move(0, -1, repeat);
     else if (logical_action == "down") move(0, 1, repeat);
     else if (logical_action == "left") move(-1, 0);
@@ -14999,6 +15051,7 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
               state_.navigation.modals.back().id == "workshop-items" ||
               state_.navigation.modals.back().id == "install-version" ||
               state_.navigation.modals.back().id == "button-mapping" || state_.navigation.modals.back().id == "controller-tuning" ||
+              IsLayoutModal(state_.navigation.modals.back().id) ||
               !state_.navigation.modals.back().setting_id.empty()))
         move(0, logical_action == "l1" ? -5 : 5);  // L1/R1 jump five rows, as on macOS
     else if (logical_action == "l1" || logical_action == "r1") {
@@ -17477,6 +17530,9 @@ void Simulation::open_setting(const std::string& id) {
         actions.push_back("choice-custom");
         actions.push_back("cancel");
         open_modal({"choice-picker", definition->label, action_name, std::move(actions), focused, false, "", id});
+    } else if (id == "controller_layout") {
+        // The list editor, never typed text.
+        open_layout_editor();
     } else if (id == "dll_overrides" || id == "arguments" || id == "program_folder" || id == "program_arguments") {
         // Values the recipe starts: edit them, or go back to the recipe's.
         open_modal({"setting-value", definition->label, action_name, setting_value_actions(id), 0, false, "", id});
@@ -17551,6 +17607,682 @@ std::vector<std::string> Simulation::setting_value_actions(const std::string& id
     actions.push_back("value-reset");
     actions.push_back("cancel");
     return actions;
+}
+
+// ---- Game settings › Controller layout ----
+// A full-screen list of every input (E1), the panel of what the focused one does (E2), and sheets over it: what a
+// button sends by kind (E3), the key picker (E4), a stick's mode and tuning and a trigger's pull (E5), and Templates
+// (E6). Opening it seeds the layout from what the game uses now (SeedControllerLayout) and saves nothing; each change
+// saves the whole layout with its controller mode, as the other rows save, and applies at the next start.
+
+namespace {
+
+bool IsAnalogPull(const rt::LayoutTarget& target) {
+    return target.kind == rt::LayoutTarget::Kind::kPad && (target.pad == "lt" || target.pad == "rt");
+}
+
+bool IsTriggerInput(rt::LayoutInput input) { return input == rt::LayoutInput::kL2 || input == rt::LayoutInput::kR2; }
+
+bool IsStickInput(rt::LayoutInput input) { return rt::LayoutInputKindOf(input) == rt::LayoutInputKind::kStick; }
+
+std::optional<rt::LayoutInput> LayoutInputOfKey(const std::string& key) {
+    static const std::string prefix = "layout-input-";
+    if (key.rfind(prefix, 0) != 0) return std::nullopt;
+    return rt::LayoutInputFromName(std::string_view(key).substr(prefix.size()));
+}
+
+const layout::ReservedInput* ReservedOfKey(const std::string& key) {
+    static const std::string prefix = "layout-reserved-";
+    if (key.rfind(prefix, 0) != 0) return nullptr;
+    for (const auto& reserved : layout::ReservedInputs())
+        if (key.substr(prefix.size()) == reserved.key) return &reserved;
+    return nullptr;
+}
+
+const char* kStickDirections[] = {"Push up", "Push down", "Push left", "Push right"};
+
+std::string TuningKey(layout::Tuning tuning) {
+    switch (tuning) {
+        case layout::Tuning::kDeadzone: return "deadzone";
+        case layout::Tuning::kOuter: return "outer";
+        case layout::Tuning::kSpeed: return "speed";
+        case layout::Tuning::kCurve: return "curve";
+        case layout::Tuning::kThreshold: return "threshold";
+    }
+    return {};
+}
+
+std::optional<layout::Tuning> TuningOfKey(std::string_view key) {
+    for (const auto tuning : {layout::Tuning::kDeadzone, layout::Tuning::kOuter, layout::Tuning::kSpeed,
+                              layout::Tuning::kCurve, layout::Tuning::kThreshold})
+        if (key == TuningKey(tuning)) return tuning;
+    return std::nullopt;
+}
+
+std::string TemplateDescription(const std::string& id) {
+    if (id == "gamepad") return "Every input sends its own controller button, as the Gamepad preset does.";
+    if (id == "mouse") return "Left stick moves the pointer, Cross clicks, Circle right-clicks.";
+    if (id == "arrows") return "D-pad sends the arrows, Cross Z, Circle X, Triangle C.";
+    if (id == "wasd-mouse") return "Left stick sends W A S D, right stick moves the pointer.";
+    return {};
+}
+
+// What a stick mode gives the game, under its name in the mode sheet.
+std::string StickModeHint(rt::StickMode mode) {
+    switch (mode) {
+        case rt::StickMode::kPadLeftStick: return "The game's left stick.";
+        case rt::StickMode::kPadRightStick: return "The game's right stick.";
+        case rt::StickMode::kPadDpad: return "The game's D-pad: one direction for each way the stick is pushed.";
+        case rt::StickMode::kKeys: return "A key for each direction, such as W A S D.";
+        case rt::StickMode::kMouse: return "Moves the mouse pointer.";
+        case rt::StickMode::kWheel: return "Up and down turn the mouse wheel.";
+        case rt::StickMode::kNone: break;
+    }
+    return "The game gets nothing from it.";
+}
+
+}  // namespace
+
+void Simulation::open_layout_editor() {
+    const auto game = state_.navigation.selected_game_id;
+    rt::EffectiveSettings values;
+    if (!EffectiveSettingsFor(game, &values)) return;
+    const auto seed = rt::SeedControllerLayout(values);
+    LayoutEdit edit;
+    edit.game = game;
+    edit.mode = seed.mode;
+    if (!rt::ParseControllerLayout(seed.text, &edit.layout, nullptr)) edit.layout = {};
+    layout_edit_ = std::move(edit);
+    state_.key_picker = {};
+    open_modal({"controller-layout", "Controller layout", state_.navigation.focus_key, layout_editor_actions(), 0, false});
+}
+
+std::vector<std::string> Simulation::layout_editor_actions() const {
+    std::vector<std::string> actions;
+    for (const auto& section : layout::Sections()) {
+        actions.push_back("heading-layout-" + section.key);
+        for (const auto input : section.inputs) actions.push_back("layout-input-" + std::string(rt::LayoutInputName(input)));
+        if (section.key == "centre")
+            for (const auto& reserved : layout::ReservedInputs()) actions.push_back("layout-reserved-" + reserved.key);
+    }
+    actions.insert(actions.end(), {"divider", "layout-templates", "layout-remove", "cancel"});
+    return actions;
+}
+
+std::vector<std::string> Simulation::layout_stick_actions() const {
+    std::vector<std::string> actions = {"layout-stick-mode"};
+    if (!layout_edit_) return actions;
+    const auto stick = layout::EffectiveStick(layout_edit_->layout, layout_edit_->input);
+    if (stick.mode == rt::StickMode::kKeys)
+        for (int direction = 0; direction < 4; ++direction) actions.push_back("layout-stick-key-" + std::to_string(direction));
+    if (rt::StickModeTakes(stick.mode, rt::StickTuning::kSpeed)) actions.push_back("layout-tuning-speed");
+    if (rt::StickModeTakes(stick.mode, rt::StickTuning::kDeadzone)) actions.push_back("layout-tuning-deadzone");
+    if (rt::StickModeTakes(stick.mode, rt::StickTuning::kOuter)) actions.push_back("layout-tuning-outer");
+    if (rt::StickModeTakes(stick.mode, rt::StickTuning::kCurve)) actions.push_back("layout-tuning-curve");
+    if (rt::StickModeTakes(stick.mode, rt::StickTuning::kInvertX)) actions.push_back("layout-invert-x");
+    if (rt::StickModeTakes(stick.mode, rt::StickTuning::kInvertY)) actions.push_back("layout-invert-y");
+    actions.insert(actions.end(), {"divider", "layout-default", "cancel"});
+    return actions;
+}
+
+void Simulation::open_layout_sheet(const std::string& id, const std::string& title, std::vector<std::string> actions,
+                                   const std::string& focus) {
+    const auto found = std::find(actions.begin(), actions.end(), focus);
+    const int focused = found == actions.end() ? 0 : static_cast<int>(found - actions.begin());
+    open_modal({id, title, state_.navigation.focus_key, std::move(actions), focused, false});
+}
+
+// Closes the sheets over `keep` (and a template's confirmation); the stick sheet's rows follow its mode.
+void Simulation::close_layout_sheets(const std::string& keep) {
+    while (!state_.navigation.modals.empty() && state_.navigation.modals.back().id != keep &&
+           (IsLayoutModal(state_.navigation.modals.back().id) || state_.navigation.modals.back().id == "confirmation"))
+        close_modal();
+    if (state_.navigation.modals.empty() || state_.navigation.modals.back().id != "layout-stick") return;
+    auto& modal = state_.navigation.modals.back();
+    const auto focused = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
+    modal.action_keys = layout_stick_actions();
+    const auto found = std::find(modal.action_keys.begin(), modal.action_keys.end(), focused);
+    modal.focused_action = found == modal.action_keys.end() ? 0 : static_cast<int>(found - modal.action_keys.begin());
+    state_.navigation.focus_key = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
+}
+
+void Simulation::save_layout() {
+    if (!layout_edit_ || !can_change_game_settings()) return;
+    const auto text = rt::SerializeControllerLayout(layout_edit_->layout);
+    std::string reason;
+    if (!text.empty() && !rt::ValidateSettingValue(RecipeFor(layout_edit_->game), "controller_layout", text, &reason)) {
+        push_notice({"layout-refused", "Controller layout not saved", "", false, kLiveNoticeSeconds, true, reason, false});
+        return;
+    }
+    auto& record = state_.game_settings[layout_edit_->game];
+    rt::SetControllerLayout(&record, text, layout_edit_->mode);
+    ++record.revision;
+    refresh_game_settings();
+    save_profile();
+}
+
+void Simulation::open_layout_key_picker(int direction) {
+    if (!layout_edit_) return;
+    auto& edit = *layout_edit_;
+    edit.direction = direction;
+    auto& picker = state_.key_picker;
+    picker = {};
+    picker.active = true;
+    if (direction < 0) {
+        picker.title = "Keys for " + layout::InputLabel(edit.input);
+        const auto target = layout::EffectiveTarget(edit.layout, edit.input, edit.mode);
+        if (target.kind == rt::LayoutTarget::Kind::kKeys) picker.keys = target.keys;
+        picker.max_keys = 4;
+    } else {
+        picker.title = layout::InputLabel(edit.input) + ": " + kStickDirections[direction];
+        const auto stick = layout::EffectiveStick(edit.layout, edit.input);
+        const auto& key = stick.keys[static_cast<std::size_t>(direction)];
+        if (!key.empty() && key != "none") picker.keys = {key};
+        picker.max_keys = 1;
+        picker.allow_empty = true;
+    }
+    // The focus starts on the last key picked that the grid has, else on A.
+    picker.focus = layout::PickerIndex("a");
+    for (const auto& key : picker.keys)
+        if (const int index = layout::PickerIndex(key); index >= 0) picker.focus = index;
+    picker.column = layout::PickerColumn(picker.focus);
+}
+
+void Simulation::layout_key_picker_action(const std::string& logical_action) {
+    auto& picker = state_.key_picker;
+    if (logical_action == "up" || logical_action == "down" || logical_action == "left" || logical_action == "right") {
+        const int dx = logical_action == "left" ? -1 : logical_action == "right" ? 1 : 0;
+        const int dy = logical_action == "up" ? -1 : logical_action == "down" ? 1 : 0;
+        picker.focus = layout::PickerMove(picker.focus, dx, dy, &picker.column);
+        picker.refusal.clear();
+        return;
+    }
+    if (logical_action == "circle") {
+        picker = {};
+        return;
+    }
+    if (logical_action == "square") {
+        picker.keys.clear();
+        picker.refusal.clear();
+        return;
+    }
+    bool accept = logical_action == "triangle" || logical_action == "options";
+    if (logical_action == "cross") {
+        if (picker.focus >= layout::PickerDoneIndex()) {
+            accept = true;
+        } else {
+            const std::string name(layout::PickerKeys()[static_cast<std::size_t>(picker.focus)].name);
+            picker.refusal.clear();
+            if (const auto found = std::find(picker.keys.begin(), picker.keys.end(), name); found != picker.keys.end())
+                picker.keys.erase(found);
+            else if (picker.max_keys == 1)
+                picker.keys = {name};
+            else if (static_cast<int>(picker.keys.size()) >= picker.max_keys)
+                picker.refusal = "Up to " + std::to_string(picker.max_keys) + " keys. Drop one first.";
+            else {
+                picker.keys.push_back(name);
+                picker.keys = rt::OrderLayoutKeys(picker.keys);
+            }
+            return;
+        }
+    }
+    if (!accept || !layout_edit_) return;
+    if (picker.keys.empty() && !picker.allow_empty) {
+        picker.refusal = "Pick a key first, or press Circle.";
+        return;
+    }
+    auto& edit = *layout_edit_;
+    auto& entry = edit.layout[edit.input];
+    if (edit.direction < 0) {
+        if (!entry.set) {
+            entry.set = true;
+            entry.threshold = 0;
+        }
+        entry.target = rt::KeyTarget(rt::OrderLayoutKeys(picker.keys));
+    } else {
+        if (!entry.set) {
+            entry = {};
+            entry.set = true;
+            entry.stick.mode = rt::LayoutDefaultStick(edit.input);
+        }
+        const std::string key = picker.keys.empty() ? std::string("none") : picker.keys.front();
+        // A key comes once in a stick's four (Nothing can come more than once).
+        for (int other = 0; other < 4; ++other)
+            if (other != edit.direction && key != "none" && entry.stick.keys[static_cast<std::size_t>(other)] == key) {
+                picker.refusal = layout::KeyLabel(key) + " is already " + std::string(kStickDirections[other]) + ".";
+                return;
+            }
+        entry.stick.keys[static_cast<std::size_t>(edit.direction)] = key;
+    }
+    picker = {};
+    save_layout();
+    if (edit.direction < 0) close_layout_sheets(IsTriggerInput(edit.input) ? "layout-action" : "controller-layout");
+}
+
+bool Simulation::layout_action(const std::string& name) {
+    if (state_.navigation.modals.empty() || !layout_edit_) return false;
+    const auto modal_id = state_.navigation.modals.back().id;
+    auto& edit = *layout_edit_;
+    if (name == "layout-template-confirm") {
+        const auto* chosen = rt::FindControllerLayoutTemplate(edit.template_id);
+        if (!chosen) return true;
+        rt::ControllerLayout parsed;
+        if (rt::ParseControllerLayout(chosen->text, &parsed, nullptr)) {
+            edit.layout = parsed;
+            edit.mode = chosen->mode;
+            save_layout();
+        }
+        edit.template_id.clear();
+        close_layout_sheets("controller-layout");
+        return true;
+    }
+    if (!IsLayoutModal(modal_id)) return false;
+    auto& entry = edit.layout[edit.input];
+    // A line for the input before it changes: what it sends now, its default when it has none.
+    const auto materialize = [&] {
+        if (entry.set) return;
+        entry = {};
+        entry.set = true;
+        if (IsStickInput(edit.input)) entry.stick.mode = rt::LayoutDefaultStick(edit.input);
+        else entry.target = rt::LayoutDefaultTarget(edit.input, edit.mode);
+    };
+    // A trigger's threshold only goes with a button target.
+    const auto set_target = [&](rt::LayoutTarget target) {
+        materialize();
+        entry.target = std::move(target);
+        if (IsAnalogPull(entry.target) || entry.target.kind == rt::LayoutTarget::Kind::kNone) entry.threshold = 0;
+        save_layout();
+    };
+    if (const auto input = LayoutInputOfKey(name)) {
+        edit.input = *input;
+        const auto label = layout::InputLabel(*input);
+        if (IsStickInput(*input)) {
+            open_layout_sheet("layout-stick", label, layout_stick_actions(), "");
+            return true;
+        }
+        std::vector<std::string> actions;
+        if (IsTriggerInput(*input)) actions.push_back("layout-kind-analog");
+        actions.insert(actions.end(), {"layout-kind-pad", "layout-kind-keys", "layout-kind-mouse", "layout-kind-none"});
+        if (IsTriggerInput(*input)) actions.push_back("layout-threshold");
+        actions.insert(actions.end(), {"divider", "layout-default", "cancel"});
+        const auto target = layout::EffectiveTarget(edit.layout, *input, edit.mode);
+        const std::string focus = IsTriggerInput(*input) && IsAnalogPull(target) ? "layout-kind-analog"
+            : target.kind == rt::LayoutTarget::Kind::kPad ? "layout-kind-pad"
+            : target.kind == rt::LayoutTarget::Kind::kKeys ? "layout-kind-keys"
+            : target.kind == rt::LayoutTarget::Kind::kMouse ? "layout-kind-mouse" : "layout-kind-none";
+        open_layout_sheet("layout-action", label, std::move(actions), focus);
+        return true;
+    }
+    if (name == "layout-templates" || name == "layout-triangle") {
+        std::vector<std::string> actions;
+        const auto current = rt::SerializeControllerLayout(edit.layout);
+        std::string focus;
+        for (const auto& item : rt::ControllerLayoutTemplates()) {
+            actions.push_back("layout-template-" + item.id);
+            if (item.text == current) focus = actions.back();
+        }
+        actions.push_back("cancel");
+        open_layout_sheet("layout-templates", "Templates", std::move(actions), focus);
+        return true;
+    }
+    if (name == "layout-remove") {
+        if (!can_change_game_settings()) return true;
+        auto& record = state_.game_settings[edit.game];
+        rt::ResetControllerLayout(&record, RecipeFor(edit.game), preset_for(edit.game));
+        ++record.revision;
+        refresh_game_settings();
+        save_profile();
+        // The list shows what the game uses now again.
+        rt::EffectiveSettings values;
+        if (EffectiveSettingsFor(edit.game, &values)) {
+            const auto seed = rt::SeedControllerLayout(values);
+            edit.mode = seed.mode;
+            if (!rt::ParseControllerLayout(seed.text, &edit.layout, nullptr)) edit.layout = {};
+        }
+        return true;
+    }
+    if (name.rfind("layout-template-", 0) == 0) {
+        const auto* chosen = rt::FindControllerLayoutTemplate(name.substr(16));
+        if (!chosen) return true;
+        edit.template_id = chosen->id;
+        ModalEntry confirmation{"confirmation", "Use the " + chosen->name + " layout?", "", {"cancel", "layout-template-confirm"}, 1, false};
+        confirmation.body = "Every input changes to what the " + chosen->name + " layout sends.";
+        if (chosen->mode != edit.mode) confirmation.body += " Controller changes to " + layout::ModeLabel(chosen->mode) + ".";
+        open_modal(std::move(confirmation));
+        return true;
+    }
+    if (name == "layout-square") {
+        // Square on an input: back to its default (its line goes).
+        if (const auto input = LayoutInputOfKey(state_.navigation.focus_key); input && edit.layout[*input].set) {
+            edit.layout[*input] = {};
+            save_layout();
+        }
+        return true;
+    }
+    if (name == "layout-default") {
+        if (entry.set) {
+            entry = {};
+            save_layout();
+        }
+        close_layout_sheets("controller-layout");
+        return true;
+    }
+    if (name == "layout-kind-analog") {
+        set_target(rt::PadTarget(edit.input == rt::LayoutInput::kL2 ? "lt" : "rt"));
+        close_layout_sheets("controller-layout");
+        return true;
+    }
+    if (name == "layout-kind-none") {
+        set_target({});
+        close_layout_sheets("controller-layout");
+        return true;
+    }
+    if (name == "layout-kind-pad" || name == "layout-kind-mouse") {
+        const bool pad = name == "layout-kind-pad";
+        const auto target = layout::EffectiveTarget(edit.layout, edit.input, edit.mode);
+        std::vector<std::string> actions;
+        std::string focus;
+        for (const auto& button : pad ? rt::LayoutPadButtons() : rt::LayoutMouseButtons()) {
+            actions.push_back((pad ? "layout-pad-" : "layout-mouse-") + button);
+            if ((pad && target.kind == rt::LayoutTarget::Kind::kPad && target.pad == button) ||
+                (!pad && target.kind == rt::LayoutTarget::Kind::kMouse && target.mouse == button))
+                focus = actions.back();
+        }
+        actions.push_back("cancel");
+        open_layout_sheet(pad ? "layout-pad" : "layout-mouse", pad ? "Controller button" : "Mouse", std::move(actions), focus);
+        return true;
+    }
+    if (name == "layout-kind-keys") {
+        open_layout_key_picker(-1);
+        return true;
+    }
+    if (name.rfind("layout-pad-", 0) == 0 || name.rfind("layout-mouse-", 0) == 0) {
+        const bool pad = name.rfind("layout-pad-", 0) == 0;
+        set_target(pad ? rt::PadTarget(name.substr(11)) : rt::MouseTarget(name.substr(13)));
+        close_layout_sheets(IsTriggerInput(edit.input) ? "layout-action" : "controller-layout");
+        return true;
+    }
+    if (name == "layout-stick-mode") {
+        std::vector<std::string> actions;
+        std::string focus;
+        const auto stick = layout::EffectiveStick(edit.layout, edit.input);
+        for (std::size_t index = 0; index < layout::StickModes().size(); ++index) {
+            actions.push_back("layout-mode-" + std::to_string(index));
+            if (layout::StickModes()[index] == stick.mode) focus = actions.back();
+        }
+        actions.push_back("cancel");
+        open_layout_sheet("layout-stick-mode", layout::InputLabel(edit.input) + " sends", std::move(actions), focus);
+        return true;
+    }
+    if (name.rfind("layout-mode-", 0) == 0) {
+        const auto index = static_cast<std::size_t>(std::strtoul(name.c_str() + 12, nullptr, 10));
+        if (index >= layout::StickModes().size()) return true;
+        materialize();
+        const auto mode = layout::StickModes()[index];
+        if (entry.stick.mode != mode) {
+            rt::SetStickMode(&entry.stick, mode);
+            // Keys need all four: W A S D to start from.
+            if (mode == rt::StickMode::kKeys && entry.stick.keys[0].empty()) entry.stick.keys = {"w", "s", "a", "d"};
+            save_layout();
+        }
+        close_layout_sheets("layout-stick");
+        return true;
+    }
+    if (name.rfind("layout-stick-key-", 0) == 0) {
+        open_layout_key_picker(std::clamp(std::atoi(name.c_str() + 17), 0, 3));
+        return true;
+    }
+    if (name == "layout-threshold" || name.rfind("layout-tuning-", 0) == 0) {
+        const auto tuning = name == "layout-threshold" ? std::optional(layout::Tuning::kThreshold) : TuningOfKey(name.substr(14));
+        if (!tuning) return true;
+        edit.tuning = *tuning;
+        const auto stick = layout::EffectiveStick(edit.layout, edit.input);
+        const auto values = rt::ResolvedStick(stick);
+        const int current = *tuning == layout::Tuning::kThreshold ? (entry.set ? entry.threshold : 0)
+            : *tuning == layout::Tuning::kDeadzone ? values.deadzone
+            : *tuning == layout::Tuning::kOuter ? values.outer
+            : *tuning == layout::Tuning::kSpeed ? values.speed : static_cast<int>(values.curve);
+        std::vector<std::string> actions;
+        std::string focus;
+        for (const int value : layout::TuningValues(*tuning, stick.mode, current)) {
+            actions.push_back("layout-value-" + std::to_string(value));
+            if (value == current) focus = actions.back();
+        }
+        actions.push_back("cancel");
+        open_layout_sheet("layout-values", layout::TuningTitle(*tuning), std::move(actions), focus);
+        return true;
+    }
+    if (name.rfind("layout-value-", 0) == 0) {
+        const int value = std::atoi(name.c_str() + 13);
+        materialize();
+        auto& stick = entry.stick;
+        switch (edit.tuning) {
+            case layout::Tuning::kThreshold: entry.threshold = value; break;
+            case layout::Tuning::kDeadzone: stick.deadzone = value; break;
+            case layout::Tuning::kOuter: stick.outer = value; break;
+            case layout::Tuning::kSpeed: stick.speed = value; break;
+            case layout::Tuning::kCurve: stick.curve = static_cast<rt::StickCurve>(value); break;
+        }
+        save_layout();
+        close_layout_sheets(edit.tuning == layout::Tuning::kThreshold ? "layout-action" : "layout-stick");
+        return true;
+    }
+    if (name == "layout-invert-x" || name == "layout-invert-y") {
+        materialize();
+        const auto values = rt::ResolvedStick(entry.stick);
+        if (name == "layout-invert-x") entry.stick.invert_x = !values.invert_x;
+        else entry.stick.invert_y = !values.invert_y;
+        save_layout();
+        return true;
+    }
+    return false;
+}
+
+void Simulation::build_layout_row(const ModalEntry& modal, const std::string& key, ViewRow& item) const {
+    if (key == "cancel") {
+        item.title = modal.id == "controller-layout" ? "Back" : "Cancel";
+        return;
+    }
+    if (SheetDecoration(key)) {
+        item.kind = RowKind::Separator;
+        item.action.clear();
+        item.enabled = false;
+        item.title.clear();
+        for (const auto& section : layout::Sections())
+            if (key == "heading-layout-" + section.key) item.title = section.title;
+        return;
+    }
+    if (!layout_edit_) {
+        item.enabled = false;
+        return;
+    }
+    const auto& edit = *layout_edit_;
+    const auto& mode = edit.mode;
+    item.kind = RowKind::Choice;
+    if (const auto input = LayoutInputOfKey(key)) {
+        item.title = layout::InputLabel(*input);
+        item.value = layout::InputSummary(edit.layout, *input, mode);
+        if (*input == rt::LayoutInput::kCreate) item.subtitle = "Also opens the PS5 capture menu.";
+        if (!IsStickInput(*input))
+            if (auto silent = layout::SilentReason(layout::EffectiveTarget(edit.layout, *input, mode), mode); !silent.empty())
+                item.subtitle = std::move(silent);
+        return;
+    }
+    if (const auto* reserved = ReservedOfKey(key)) {
+        item.title = reserved->title;
+        item.value = "Reserved";
+        item.subtitle = reserved->what;
+        item.enabled = false;
+        return;
+    }
+    if (key == "layout-templates") {
+        item.title = "Templates…";
+        item.subtitle = "Start again from a built-in layout.";
+        return;
+    }
+    if (key == "layout-remove") {
+        item.title = "Remove the layout";
+        item.subtitle = "The game goes back to its controller preset and button mapping.";
+        const auto record = state_.game_settings.find(edit.game);
+        item.enabled = record != state_.game_settings.end() && record->second.overrides.count("controller_layout") != 0 &&
+                       !record->second.overrides.at("controller_layout").empty();
+        if (!item.enabled) item.subtitle = "No layout is saved: the game uses its controller preset and button mapping.";
+        return;
+    }
+    const auto target = layout::EffectiveTarget(edit.layout, edit.input, mode);
+    const auto stick = layout::EffectiveStick(edit.layout, edit.input);
+    const auto values = rt::ResolvedStick(stick);
+    if (key == "layout-kind-analog") {
+        item.title = "Analog trigger";
+        item.subtitle = "The game gets how far the trigger is pulled.";
+        if (IsAnalogPull(target)) item.value = layout::PadLabel(target.pad, mode), item.selected = true;
+    } else if (key == "layout-kind-pad") {
+        item.title = "Controller button";
+        item.subtitle = "A button of the game's controller.";
+        if (target.kind == rt::LayoutTarget::Kind::kPad && !(IsTriggerInput(edit.input) && IsAnalogPull(target)))
+            item.value = layout::PadLabel(target.pad, mode), item.selected = true;
+    } else if (key == "layout-kind-keys") {
+        item.title = "Keyboard";
+        item.subtitle = "A key, or up to 4 keys pressed together.";
+        if (target.kind == rt::LayoutTarget::Kind::kKeys) item.value = layout::KeysLabel(target.keys), item.selected = true;
+    } else if (key == "layout-kind-mouse") {
+        item.title = "Mouse";
+        item.subtitle = "A mouse button or the wheel.";
+        if (target.kind == rt::LayoutTarget::Kind::kMouse) item.value = layout::MouseLabel(target.mouse), item.selected = true;
+    } else if (key == "layout-kind-none") {
+        item.title = "Nothing";
+        item.subtitle = "The game gets nothing from it.";
+        item.checked = target.kind == rt::LayoutTarget::Kind::kNone;
+    } else if (key == "layout-threshold") {
+        item.title = "Pull to press";
+        const bool button = !IsAnalogPull(target) && target.kind != rt::LayoutTarget::Kind::kNone;
+        const auto& entry = edit.layout[edit.input];
+        item.value = layout::TuningLabel(layout::Tuning::kThreshold, rt::StickMode::kNone, entry.set ? entry.threshold : 0);
+        item.subtitle = button ? "How far the trigger is pulled before it presses. It lets go 5% below."
+                               : "Only when the trigger sends a button, a key or the mouse.";
+        item.enabled = button;
+    } else if (key == "layout-default") {
+        item.title = "Use the default";
+        item.value = IsStickInput(edit.input) ? layout::StickModeLabel(rt::LayoutDefaultStick(edit.input))
+                                              : layout::TargetSummary(rt::LayoutDefaultTarget(edit.input, mode), mode);
+    } else if (key.rfind("layout-pad-", 0) == 0) {
+        const auto pad = key.substr(11);
+        item.title = layout::PadLabel(pad, mode);
+        item.checked = target.kind == rt::LayoutTarget::Kind::kPad && target.pad == pad;
+        if (pad == "lt" || pad == "rt")
+            item.subtitle = IsTriggerInput(edit.input) ? "The trigger's analog pull." : "Fully pulled while the button is held.";
+        if (auto silent = layout::SilentReason(rt::PadTarget(pad), mode); !silent.empty()) item.subtitle = std::move(silent);
+    } else if (key.rfind("layout-mouse-", 0) == 0) {
+        const auto button = key.substr(13);
+        item.title = layout::MouseLabel(button);
+        item.checked = target.kind == rt::LayoutTarget::Kind::kMouse && target.mouse == button;
+        if (button == "wheel_up" || button == "wheel_down") item.subtitle = "One notch for each press.";
+        if (button == "back" || button == "forward") item.subtitle = "A side button of the mouse.";
+    } else if (key == "layout-stick-mode") {
+        item.title = "Sends";
+        item.value = layout::StickModeLabel(stick.mode);
+    } else if (key.rfind("layout-mode-", 0) == 0) {
+        const auto index = static_cast<std::size_t>(std::strtoul(key.c_str() + 12, nullptr, 10));
+        const auto mode_choice = index < layout::StickModes().size() ? layout::StickModes()[index] : rt::StickMode::kNone;
+        item.title = layout::StickModeLabel(mode_choice);
+        item.subtitle = StickModeHint(mode_choice);
+        item.checked = stick.mode == mode_choice;
+    } else if (key.rfind("layout-stick-key-", 0) == 0) {
+        const int direction = std::clamp(std::atoi(key.c_str() + 17), 0, 3);
+        const auto& name = stick.keys[static_cast<std::size_t>(direction)];
+        item.title = kStickDirections[direction];
+        item.value = name.empty() || name == "none" ? std::string("Nothing") : layout::KeyLabel(name);
+    } else if (key.rfind("layout-tuning-", 0) == 0) {
+        if (const auto tuning = TuningOfKey(key.substr(14))) {
+            item.title = layout::TuningTitle(*tuning);
+            const int value = *tuning == layout::Tuning::kDeadzone ? values.deadzone
+                : *tuning == layout::Tuning::kOuter ? values.outer
+                : *tuning == layout::Tuning::kSpeed ? values.speed : static_cast<int>(values.curve);
+            item.value = layout::TuningLabel(*tuning, stick.mode, value);
+            if (*tuning == layout::Tuning::kDeadzone) item.subtitle = "How far the stick moves before anything happens.";
+            if (*tuning == layout::Tuning::kOuter) item.subtitle = "How far from the edge the stick counts as fully pushed.";
+            if (*tuning == layout::Tuning::kCurve) item.subtitle = "Squared and Cubed make small moves finer.";
+            if (*tuning == layout::Tuning::kSpeed)
+                item.subtitle = stick.mode == rt::StickMode::kWheel ? "Wheel notches a second at full tilt."
+                                                                    : "Pointer speed at full tilt.";
+        }
+    } else if (key == "layout-invert-x" || key == "layout-invert-y") {
+        const bool x = key == "layout-invert-x";
+        item.title = x ? "Invert left and right" : "Invert up and down";
+        item.value = (x ? values.invert_x : values.invert_y) ? "On" : "Off";
+    } else if (key.rfind("layout-value-", 0) == 0) {
+        const int value = std::atoi(key.c_str() + 13);
+        const auto tuning = edit.tuning;
+        item.title = layout::TuningLabel(tuning, stick.mode, value);
+        const auto& entry = edit.layout[edit.input];
+        const int current = tuning == layout::Tuning::kThreshold ? (entry.set ? entry.threshold : 0)
+            : tuning == layout::Tuning::kDeadzone ? values.deadzone
+            : tuning == layout::Tuning::kOuter ? values.outer
+            : tuning == layout::Tuning::kSpeed ? values.speed : static_cast<int>(values.curve);
+        item.checked = value == current;
+        const auto defaults = rt::StickDefaults(stick.mode);
+        const int fallback = tuning == layout::Tuning::kThreshold ? 0
+            : tuning == layout::Tuning::kDeadzone ? defaults.deadzone
+            : tuning == layout::Tuning::kOuter ? defaults.outer
+            : tuning == layout::Tuning::kSpeed ? defaults.speed : static_cast<int>(defaults.curve);
+        if (value == fallback) item.subtitle = "Default";
+        if (tuning != layout::Tuning::kThreshold && !layout::TuningAllowed(tuning, stick, value)) {
+            item.enabled = false;
+            item.subtitle = "The dead zone and the outer dead zone add up to 90% at most.";
+        }
+    } else if (key.rfind("layout-template-", 0) == 0) {
+        if (const auto* chosen = rt::FindControllerLayoutTemplate(key.substr(16))) {
+            item.title = chosen->name;
+            item.value = layout::ModeLabel(chosen->mode);
+            item.subtitle = TemplateDescription(chosen->id);
+            item.selected = chosen->text == rt::SerializeControllerLayout(edit.layout) && chosen->mode == edit.mode;
+        }
+    }
+}
+
+void Simulation::build_layout_view(const ModalEntry& modal) {
+    if (!layout_edit_) return;
+    const auto& edit = *layout_edit_;
+    const auto& focused = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
+    const auto panel = [this](const layout::InputDetails& details) {
+        ViewData::InputPanel shown;
+        shown.title = details.title;
+        shown.kind = details.kind;
+        for (const auto& fact : details.facts) shown.facts.push_back({fact.label, fact.value, fact.warn});
+        shown.notes = details.notes;
+        view_.input_panel = std::move(shown);
+    };
+    if (modal.id == "controller-layout") {
+        view_.eyebrow = "Game settings";
+        const auto* game = find_game(state_, edit.game);
+        const auto record = state_.game_settings.find(edit.game);
+        const bool saved = record != state_.game_settings.end() && record->second.overrides.count("controller_layout") != 0 &&
+                           !record->second.overrides.at("controller_layout").empty();
+        const auto summary = rt::ControllerLayoutSummary(rt::SerializeControllerLayout(edit.layout));
+        view_.subtitle = (game ? game->title + " · " : std::string()) +
+                         (saved ? (summary.empty() ? std::string("Custom") : summary) : std::string("Not changed yet")) +
+                         " · " + layout::ModeLabel(edit.mode) + ". Changes apply the next time the game starts.";
+        view_.legends = {"Cross Change", "Square Reset", "Triangle Templates", "L1/R1 Jump", "Circle Back"};
+        if (const auto input = LayoutInputOfKey(focused)) panel(layout::DescribeInput(edit.layout, *input, edit.mode));
+        else if (const auto* reserved = ReservedOfKey(focused)) panel(layout::DescribeReserved(*reserved));
+    } else {
+        view_.eyebrow = "Controller layout";
+        view_.legends = {"Cross Choose", "L1/R1 Jump", "Circle Back"};
+        if (modal.id == "layout-templates") {
+            view_.subtitle = "A template replaces every input. Gamepad, Mouse and Arrow keys send what the presets of the same name send.";
+        } else {
+            panel(layout::DescribeInput(edit.layout, edit.input, edit.mode));
+            if (modal.id == "layout-action") view_.subtitle = "What " + layout::InputLabel(edit.input) + " sends to the game.";
+            else if (modal.id == "layout-stick")
+                view_.subtitle = "What the " + std::string(edit.input == rt::LayoutInput::kLeftStick ? "left" : "right") +
+                                 " stick sends, and how it feels.";
+            else if (modal.id == "layout-pad" && edit.mode == "keyboard")
+                view_.subtitle = "With Keyboard and mouse the game has no controller: these send nothing until Controller changes.";
+        }
+    }
+    if (state_.key_picker.active) {
+        view_.legends = {"Cross Pick or drop", "Square Clear", "Triangle Done", "Circle Cancel"};
+    }
 }
 
 void Simulation::export_recipe(GameId id) {

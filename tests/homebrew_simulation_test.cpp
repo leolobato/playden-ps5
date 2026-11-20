@@ -764,6 +764,166 @@ void controller_layout_replaces_rows(const std::filesystem::path& fixtures, cons
     std::filesystem::remove(settings_file);
 }
 
+// Game settings › Controller layout (#443): the list editor, its sheets, the key picker and Templates. Opening it saves
+// nothing; each change saves the whole layout, seeded from what the game used, with its controller mode.
+void controller_layout_editor(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    const auto game = SteamId(900002);
+    const auto saved = [&](const char* id) -> std::string {
+        const auto record = simulation.state().game_settings.find(game);
+        if (record == simulation.state().game_settings.end()) return "<none>";
+        const auto found = record->second.overrides.find(id);
+        return found == record->second.overrides.end() ? std::string("<none>") : found->second;
+    };
+    const auto top = [&] {
+        return simulation.state().navigation.modals.empty() ? std::string() : simulation.state().navigation.modals.back().id;
+    };
+    const auto gamepad = rt::FindControllerLayoutTemplate("gamepad")->text;
+    const auto with_line = [&](const std::string& from, const std::string& to) {
+        auto text = gamepad;
+        const auto at = text.find(from);
+        check(at != std::string::npos, "layout editor: the Gamepad layout has the line");
+        return text.replace(at, from.size(), to);
+    };
+
+    check(simulation.scenario("controller-layout"), "layout editor: the scenario opens");
+    check(top() == "controller-layout" && simulation.view().surface == "controller-layout", "layout editor: the editor opens");
+    check(saved("controller_layout") == "<none>", "layout editor: opening it saves nothing");
+    check(find_row(simulation, "layout-input-cross")->value == "Controller \u00b7 A", "layout editor: Cross starts as the pad's A");
+    check(simulation.view().input_panel && simulation.view().input_panel->title == "Cross", "layout editor: the panel shows the focused input");
+    const auto* reserved = find_row(simulation, "layout-reserved-ps");
+    check(reserved && !reserved->enabled && reserved->value == "Reserved", "layout editor: PS is reserved and greyed");
+    check(find_row(simulation, "layout-input-create")->subtitle.find("capture menu") != std::string::npos,
+          "layout editor: Create warns about the capture menu");
+    check(!find_row(simulation, "layout-remove")->enabled, "layout editor: nothing to remove before a change");
+    simulation.action("circle");
+    check(top() == "game-settings-list" && saved("controller_layout") == "<none>", "layout editor: Circle leaves without saving");
+
+    // E3: a mouse button for Cross; the rest of the seed stays, with the controller mode.
+    activate(simulation, "setting-controller_layout");
+    activate(simulation, "layout-input-cross");
+    check(top() == "layout-action" && simulation.view().input_panel, "layout editor: Cross opens the action picker with its panel");
+    activate(simulation, "layout-kind-mouse");
+    check(top() == "layout-mouse", "layout editor: Mouse lists the mouse buttons");
+    activate(simulation, "layout-mouse-left");
+    check(top() == "controller-layout", "layout editor: a pick goes back to the list");
+    check(saved("controller_layout") == with_line("cross = pad:a", "cross = mouse:left"), "layout editor: the change is saved over the seed");
+    check(saved("controller") == "xinput", "layout editor: the layout keeps its controller mode");
+    check(find_row(simulation, "layout-remove")->enabled, "layout editor: a saved layout can be removed");
+
+    // Square puts an input back to its default: its line goes.
+    simulation.action("focus:layout-input-cross");
+    simulation.action("square");
+    check(saved("controller_layout").find("cross =") == std::string::npos, "layout editor: Square drops the input's line");
+
+    // E4: the key picker, up to 4 keys, modifiers first.
+    activate(simulation, "layout-input-cross");
+    activate(simulation, "layout-kind-keys");
+    check(simulation.state().key_picker.active && simulation.state().key_picker.max_keys == 4, "layout editor: Keyboard opens the key picker");
+    simulation.action("cross");  // A
+    simulation.action("down");
+    simulation.action("down");   // Ctrl
+    simulation.action("cross");
+    check((simulation.state().key_picker.keys == std::vector<std::string>{"ctrl", "a"}), "layout editor: modifiers come first");
+    for (const char* move : {"up", "right", "cross", "right", "cross"}) simulation.action(move);  // Shift's row: Z, X
+    check(simulation.state().key_picker.keys.size() == 4, "layout editor: four keys picked");
+    simulation.action("right");
+    simulation.action("cross");
+    check(simulation.state().key_picker.keys.size() == 4 && !simulation.state().key_picker.refusal.empty(),
+          "layout editor: a fifth key is refused");
+    simulation.action("triangle");
+    check(!simulation.state().key_picker.active && top() == "controller-layout", "layout editor: Triangle accepts the pick");
+    check(saved("controller_layout").find("cross = key:ctrl+a+z+x") != std::string::npos, "layout editor: the combination is saved");
+    // Circle leaves the pick as it was.
+    activate(simulation, "layout-input-cross");
+    activate(simulation, "layout-kind-keys");
+    simulation.action("square");
+    simulation.action("circle");
+    check(!simulation.state().key_picker.active && saved("controller_layout").find("cross = key:ctrl+a+z+x") != std::string::npos,
+          "layout editor: Circle cancels the picker");
+    simulation.action("circle");
+
+    // E5: the left stick as keys, with W A S D to start from and one key per direction.
+    activate(simulation, "layout-input-left_stick");
+    check(top() == "layout-stick", "layout editor: a stick opens the stick sheet");
+    activate(simulation, "layout-stick-mode");
+    activate(simulation, "layout-mode-3");
+    check(top() == "layout-stick" && find_row(simulation, "layout-stick-key-0"), "layout editor: Keys adds the four directions");
+    check(saved("controller_layout").find("left_stick = keys;left_stick_keys = w,s,a,d") != std::string::npos,
+          "layout editor: the stick sends W A S D");
+    check(!find_row(simulation, "layout-tuning-speed"), "layout editor: Keys has no speed");
+    activate(simulation, "layout-stick-key-0");
+    check(simulation.state().key_picker.max_keys == 1, "layout editor: a direction takes one key");
+    simulation.action("down");  // from W to S
+    simulation.action("cross");
+    simulation.action("triangle");
+    check(simulation.state().key_picker.active && !simulation.state().key_picker.refusal.empty(),
+          "layout editor: a key can't come twice in a stick");
+    simulation.action("square");
+    simulation.action("triangle");
+    check(!simulation.state().key_picker.active &&
+              saved("controller_layout").find("left_stick_keys = none,s,a,d") != std::string::npos,
+          "layout editor: an empty pick sends nothing for that direction");
+    activate(simulation, "layout-tuning-deadzone");
+    activate(simulation, "layout-value-20");
+    check(saved("controller_layout").find("left_stick_deadzone = 20") != std::string::npos, "layout editor: the dead zone is saved");
+    activate(simulation, "layout-stick-mode");
+    activate(simulation, "layout-mode-4");
+    check(find_row(simulation, "layout-tuning-speed") && !find_row(simulation, "layout-stick-key-0"),
+          "layout editor: Mouse pointer swaps the rows");
+    check(saved("controller_layout").find("left_stick = mouse") != std::string::npos &&
+              saved("controller_layout").find("left_stick_keys") == std::string::npos,
+          "layout editor: the keys go with the mode");
+    simulation.action("circle");
+
+    // E5: a trigger as a button at a threshold.
+    activate(simulation, "layout-input-r2");
+    activate(simulation, "layout-kind-mouse");
+    activate(simulation, "layout-mouse-left");
+    check(top() == "layout-action", "layout editor: a trigger stays on its sheet for the threshold");
+    activate(simulation, "layout-threshold");
+    activate(simulation, "layout-value-30");
+    check(saved("controller_layout").find("r2 = mouse:left;r2_threshold = 30") != std::string::npos, "layout editor: the threshold is saved");
+    activate(simulation, "layout-kind-analog");
+    check(saved("controller_layout").find("r2 = pad:rt") != std::string::npos &&
+              saved("controller_layout").find("r2_threshold") == std::string::npos,
+          "layout editor: the analog trigger drops the threshold");
+
+    // E6: a template replaces every input, after a confirmation, with its mode.
+    simulation.action("triangle");
+    check(top() == "layout-templates", "layout editor: Triangle opens Templates");
+    activate(simulation, "layout-template-wasd-mouse");
+    check(top() == "confirmation", "layout editor: a template asks first");
+    simulation.action("cross");
+    check(top() == "controller-layout", "layout editor: the confirmation goes back to the list");
+    check(saved("controller_layout") == rt::FindControllerLayoutTemplate("wasd-mouse")->text && saved("controller") == "keyboard",
+          "layout editor: the template and its mode are saved");
+    check(find_row(simulation, "layout-input-cross")->value == "Key \u00b7 Space", "layout editor: the list follows the template");
+
+    // Reset removes the layout; the editor shows what the game uses again.
+    activate(simulation, "layout-remove");
+    check(saved("controller_layout") == "<none>", "layout editor: Remove the layout removes it");
+    simulation.action("circle");
+
+    // Seeded from the Mouse preset and a button of the player's.
+    check(simulation.scenario("controller-layout-mouse"), "layout editor: the Mouse scenario opens");
+    check(find_row(simulation, "layout-input-triangle")->value == "Key \u00b7 Esc" &&
+              find_row(simulation, "layout-input-cross")->value == "Mouse \u00b7 Left button",
+          "layout editor: the seed has the preset and the player's button");
+
+    // Without input-map the row stays shut.
+    simulation.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"touchpad-switch"}, true));
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+    activate(simulation, "details-more");
+    activate(simulation, "game-settings");
+    activate(simulation, "change-settings");
+    simulation.action("focus:setting-controller_layout");
+    simulation.action("cross");
+    check(top() == "game-settings-list", "layout editor: without input-map the editor does not open");
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+}
+
 void settings_revision_exhaustion_preserves_record(const std::filesystem::path& fixtures,
                                                  const std::filesystem::path& profile) {
     playden::homebrew::Simulation simulation(fixtures, profile);
@@ -5017,6 +5177,8 @@ int main(int argc, char** argv) {
     t08b_settings_sheet_rules(fixtures, profile);
     settings_revision_exhaustion_preserves_record(fixtures, profile);
     controller_layout_replaces_rows(fixtures, profile);
+    clean();
+    controller_layout_editor(fixtures, profile);
     settings_sheet_details(fixtures, profile);
     settings_save_failure_does_not_claim_success(fixtures, profile);
     clean();

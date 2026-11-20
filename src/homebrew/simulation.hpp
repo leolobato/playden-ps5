@@ -10,6 +10,8 @@
 #include "library/organization.h"
 #include "library/update_check.h"
 #include "library/model.h"
+#include "homebrew/layout_editor.hpp"
+#include "runtime/controller_layout.h"
 #include "runtime/game_settings.h"
 #include "steam/backend/content_language.h"
 #include "runtime/kit_version.h"
@@ -1016,6 +1018,20 @@ struct EditorState {
     int focus_key = 0;
 };
 
+// Controller layout › Keyboard: a PC keyboard over the editor, to pick a key or a combination of up to four. The
+// model moves the focus over layout::PickerKeys() and keeps the pick; view.cpp draws ps5-homebrew-ui's KeyPicker at
+// the same place.
+struct KeyPickerState {
+    bool active = false;
+    std::string title;              // "Keys for Cross"
+    std::vector<std::string> keys;  // the pick, modifiers first; may hold keys the grid lacks (num4, vk:0x92)
+    int focus = 0;                  // an index into layout::PickerKeys(), or layout::PickerDoneIndex()
+    float column = 0.5F;            // where the player is across the grid, for Up and Down
+    int max_keys = 4;               // 1: Cross replaces the pick
+    bool allow_empty = false;       // a stick direction: nothing picked sends nothing
+    std::string refusal;            // why the last press did nothing ("Up to 4 keys.")
+};
+
 struct Notice {
     std::string id;
     std::string message;
@@ -1123,6 +1139,7 @@ struct State {
     std::map<GameId, std::uint64_t> save_sizes;         // live: Windows user folders of games without Steam Cloud
     Navigation navigation;
     EditorState editor;
+    KeyPickerState key_picker;
     // The Steam account's sign-in screen and its preference: the last sign-in used the account name and password.
     SignInForm sign_in;
     bool sign_in_password = false;
@@ -1225,6 +1242,15 @@ struct ViewNotice {
 };
 
 struct ViewData {
+    // The controller layout editor and its sheets: everything the focused input does (E2), beside the list.
+    struct InputPanel {
+        std::string title;  // "R2"
+        std::string kind;   // "Trigger"
+        std::vector<ViewFact> facts;
+        std::vector<std::string> notes;
+        bool operator==(const InputPanel&) const = default;
+    };
+    std::optional<InputPanel> input_panel;
     std::vector<ViewFact> facts;
     std::optional<ViewNotice> notice;
     std::string surface;
@@ -1611,6 +1637,19 @@ public:
     void set_new_install_defaults(GameId id);
     // Opens the picker, editor or "Change anyway" for one Game settings row.
     void open_setting(const std::string& id);
+    // Game settings › Controller layout (layout_editor.hpp): the full-screen list, its sheets and the key picker.
+    void open_layout_editor();
+    std::vector<std::string> layout_editor_actions() const;
+    bool layout_action(const std::string& action_name);
+    void layout_key_picker_action(const std::string& logical_action);
+    void open_layout_key_picker(int direction);
+    void open_layout_sheet(const std::string& id, const std::string& title, std::vector<std::string> actions,
+                           const std::string& focus);
+    void close_layout_sheets(const std::string& keep);
+    void build_layout_row(const ModalEntry& modal, const std::string& action_key, ViewRow& item) const;
+    void build_layout_view(const ModalEntry& modal);
+    std::vector<std::string> layout_stick_actions() const;
+    void save_layout();
     // The actions of a row whose value the recipe starts (edit, reset, library override entries).
     [[nodiscard]] std::vector<std::string> setting_value_actions(const std::string& id) const;
     // "Export as file": the game's effective settings as recipe-<game name>-<install id>.json for a pull request.
@@ -1781,6 +1820,18 @@ private:
     playden::runtime::KitCapabilities kit_;
     std::set<std::string> expanded_settings_sections_;
     std::string editing_setting_id_;
+    // Game settings › Controller layout while it is open: the layout being edited (seeded from what the game uses now;
+    // nothing is saved until the first change), the controller mode it is for, and what its sheets are editing.
+    struct LayoutEdit {
+        GameId game;
+        std::string mode;
+        playden::runtime::ControllerLayout layout;
+        playden::runtime::LayoutInput input = playden::runtime::LayoutInput::kCross;
+        int direction = -1;  // the stick direction the key picker edits; -1: the input's target
+        layout::Tuning tuning = layout::Tuning::kDeadzone;  // what the values sheet sets
+        std::string template_id;  // a template waiting for its confirmation
+    };
+    std::optional<LayoutEdit> layout_edit_;
     bool editing_append_ = false;  // the editor adds one library override to the list
     std::map<GameId, LiveGameSetup> game_setups_;
     std::vector<GameId> pending_program_scans_;

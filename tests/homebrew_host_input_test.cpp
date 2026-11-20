@@ -4,16 +4,45 @@
 #define main playden_host_program
 #include "../src/homebrew/host.cpp"
 #undef main
+#include "homebrew/layout_editor.hpp"
+#include "runtime/controller_layout.h"
+#include "ui/components/key_picker.hpp"
+
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <unistd.h>
 
 static void require(bool okay, const char* message) {
     if (!okay) { std::fprintf(stderr, "FAIL: %s\n", message); std::exit(1); }
 }
 
+// The controller layout editor moves the focus over its own copy of the key picker's grid and the view draws
+// ps5-homebrew-ui's KeyPicker at the same index: the two must be the same keys, and each a key name the runtime kit
+// reads.
+static void key_picker_grid_matches() {
+    namespace layout = playden::homebrew::layout;
+    const auto& keys = layout::PickerKeys();
+    require(keys.size() == std::size(hui::ui::kKeyPickerKeys), "key picker: the grids have the same keys");
+    for (std::size_t index = 0; index < keys.size(); ++index) {
+        const auto& ours = keys[index];
+        const auto& theirs = hui::ui::kKeyPickerKeys[index];
+        require(ours.name == theirs.name && ours.label == theirs.label && ours.row == theirs.row && ours.span == theirs.span,
+                "key picker: the grids match key for key");
+        require(playden::runtime::IsLayoutKey(ours.name), "key picker: every key is a layout key name");
+    }
+    for (const auto modifier : hui::ui::kKeyPickerModifiers)
+        require(playden::runtime::IsLayoutModifier(modifier), "key picker: its modifiers are the layout's");
+    require(std::size(hui::ui::kKeyPickerModifiers) == playden::runtime::LayoutModifiers().size(),
+            "key picker: the modifier orders have the same names");
+    for (std::size_t index = 0; index < playden::runtime::LayoutModifiers().size(); ++index)
+        require(hui::ui::kKeyPickerModifiers[index] == playden::runtime::LayoutModifiers()[index],
+                "key picker: modifiers come in the layout's order");
+}
+
 int main(int argc, char** argv) {
     require(argc == 2, "fixture directory argument");
+    key_picker_grid_matches();
 
     {
         char program[] = "playden-homebrew";

@@ -7,6 +7,7 @@
 
 #include "homebrew/browse.hpp"
 #include "homebrew/focus_motion.hpp"
+#include "homebrew/layout_editor.hpp"
 #include "homebrew/qr.hpp"
 #include "homebrew/queue_layout.hpp"
 #include "homebrew/simulation.hpp"
@@ -22,6 +23,7 @@
 #include "ui/components/banner.hpp"
 #include "ui/components/detail_list.hpp"
 #include "ui/components/grid.hpp"
+#include "ui/components/key_picker.hpp"
 #include "ui/components/keyboard.hpp"
 #include "ui/components/list.hpp"
 #include "ui/components/progress.hpp"
@@ -4215,6 +4217,11 @@ class Render::Impl
         if (current_state_ && current_state_->navigation.route == Route::Startup && !current_state_->simulation_mode &&
             std::any_of(view.rows.begin(), view.rows.end(), [](const ViewRow &row) { return row.key == "startup-loading"; }))
             return;
+        // The controller layout editor and its sheets cover the footer and draw their own legends.
+        if (current_state_ && !current_state_->navigation.modals.empty() &&
+            (current_state_->navigation.modals.back().id == "controller-layout" ||
+             layout_sheet(current_state_->navigation.modals.back().id)))
+            return;
         std::string shoulder;
         draw_hint_row(scene_, legend_hints(view, shoulder, true), 96.0F);
         if (view.show_simulation_label)
@@ -4255,11 +4262,28 @@ class Render::Impl
         if (!state.navigation.modals.empty())
         {
             const ModalEntry &modal = state.navigation.modals.back();
+            // A template's confirmation over the controller layout editor keeps that screen's backdrop.
+            const bool over_layout = modal.id == "confirmation" && state.navigation.modals.size() > 1 &&
+                (state.navigation.modals[state.navigation.modals.size() - 2].id == "controller-layout" ||
+                 layout_sheet(state.navigation.modals[state.navigation.modals.size() - 2].id));
+            if (over_layout)
+                overlay_.rounded_rect({0.0F, 0.0F, kWidth, kHeight}, 0.0F, kBackground);
             // GOG's sign-in is a dialog too: its QR code needs the link strip.
             if (modal.destructive || modal.id == "confirmation" || modal.id == "gog-sign-in")
+            {
                 draw_modal_overlay(modal, view, state);
+                if (over_layout)
+                {
+                    std::string shoulder;
+                    draw_hint_row(overlay_, legend_hints(view, shoulder, false), 96.0F);
+                }
+            }
+            else if (modal.id == "controller-layout")
+                draw_layout_editor(view);
             else
                 draw_sheet_overlay(view);
+            if (state.key_picker.active)
+                draw_key_picker(state, view);
             return;
         }
         if (view.surface != "home" && view.surface != "library" && view.surface != "downloads" &&
@@ -4609,9 +4633,110 @@ class Render::Impl
         draw_overlay_rows(view, {panel.x + 40.0F, y, panel.w - 80.0F, 120.0F}, false);
     }
 
+    // The controller layout editor's sheets (layout-action, layout-stick, ...).
+    static bool layout_sheet(const std::string &surface) { return surface.rfind("layout-", 0) == 0; }
+
+    // Game settings › Controller layout: the whole screen, the inputs listed on the left and what the focused one
+    // does on the right, with the legends over it (the footer is under this screen).
+    void draw_layout_editor(const ViewData &view)
+    {
+        const float ease = overlay_transition_.enter();
+        overlay_.rounded_rect({0.0F, 0.0F, kWidth, kHeight}, 0.0F, kBackground.with_alpha(ease));
+        overlay_.push_opacity(overlay_transition_.content());
+        section_overlay(view.eyebrow, kSafeX, 86.0F);
+        ui::text(overlay_, fonts_.display, view.title, kSafeX, 152.0F, 52.0F, kText);
+        constexpr float kListWidth = 1000.0F;
+        const float subtitle_bottom = ui::paragraph(overlay_, fonts_.regular, view.subtitle, kSafeX, 196.0F, 23.0F,
+                                                    kListWidth, 32.0F, kSecondary, 2);
+        const float rows_top = std::max(250.0F, subtitle_bottom + 34.0F);
+        draw_overlay_rows(view, {kSafeX + 8.0F, rows_top, kListWidth - 16.0F, 916.0F - rows_top});
+        const float panel_x = kSafeX + kListWidth + 64.0F;
+        if (view.input_panel)
+            draw_input_panel(*view.input_panel, {panel_x, 120.0F, kWidth - kSafeX - panel_x, 810.0F});
+        if (!(current_state_ && current_state_->key_picker.active))
+        {
+            std::string shoulder;
+            draw_hint_row(overlay_, legend_hints(view, shoulder, true), 96.0F);
+        }
+        overlay_.pop_opacity();
+    }
+
+    // What one input of a controller layout does: its name, its kind, each part as a label and a value
+    // (DetailList), then notes.
+    void draw_input_panel(const ViewData::InputPanel &panel, const gfx::Rect &bounds)
+    {
+        if (bounds.w < 360.0F)
+            return;
+        overlay_.shadow(bounds, 14.0F, 32.0F, gfx::Color::rgb(0x000000, 0.55F));
+        overlay_.rounded_rect(bounds, 14.0F, kPanel);
+        const float inner = bounds.w - 96.0F;
+        float y = bounds.y + 58.0F;
+        ui::text(overlay_, fonts_.semibold, ui::upper(panel.kind), bounds.x + 48.0F, y, 15.0F, kMuted, gfx::Align::left, 1.6F);
+        y += 52.0F;
+        ui::text(overlay_, fonts_.display, fit(fonts_.display, panel.title, 40.0F, inner), bounds.x + 48.0F, y, 40.0F, kText);
+        y += 28.0F;
+        y += draw_facts(input_facts_, input_facts_shown_, panel.facts, {bounds.x + 32.0F, y, bounds.w - 64.0F});
+        y += 20.0F;
+        for (const std::string &note : panel.notes)
+        {
+            if (y > bounds.y + bounds.h - 40.0F)
+                break;
+            y = ui::paragraph(overlay_, fonts_.regular, note, bounds.x + 48.0F, y + 26.0F, 20.0F, inner, 28.0F,
+                              kSecondary, 3);
+        }
+    }
+
+    // Controller layout › Keyboard: ps5-homebrew-ui's KeyPicker over the editor. The model holds the pick and the
+    // focus; the picker only draws them.
+    void draw_key_picker(const State &state, const ViewData &view)
+    {
+        const KeyPickerState &picker = state.key_picker;
+        overlay_.rounded_rect({0.0F, 0.0F, kWidth, kHeight}, 0.0F, gfx::Color::rgb(0x000000, 0.68F));
+        key_picker_.style.max_keys = picker.max_keys;
+        const float picker_height = key_picker_.preferred_height(1400.0F - 112.0F);
+        const float panel_h = 222.0F + picker_height + 56.0F;
+        const gfx::Rect panel{260.0F, std::max(60.0F, (kFooterY - panel_h) * 0.5F), 1400.0F, panel_h};
+        overlay_.shadow(panel, 16.0F, 40.0F, gfx::Color::rgb(0x000000, 0.65F));
+        overlay_.rounded_rect(panel, 16.0F, kPanel);
+        ui::text(overlay_, fonts_.display, fit(fonts_.display, picker.title, 44.0F, panel.w - 112.0F), panel.x + 56.0F,
+                 panel.y + 84.0F, 44.0F, kText);
+        std::string hint = picker.max_keys == 1
+            ? "Pick one key. Clear it with Square to send nothing for this direction."
+            : "Pick a key, or up to " + std::to_string(picker.max_keys) + " keys pressed together. Modifiers come first: Ctrl + S.";
+        // A key the grid doesn't show (a number pad key, a left or right modifier) is still part of the pick.
+        const bool off_grid = std::any_of(picker.keys.begin(), picker.keys.end(),
+                                          [](const std::string &key) { return layout::PickerIndex(key) < 0; });
+        if (off_grid)
+            hint += " Picked now: " + layout::KeysLabel(picker.keys) + ".";
+        ui::paragraph(overlay_, fonts_.regular, hint, panel.x + 56.0F, panel.y + 130.0F, 23.0F, panel.w - 112.0F, 32.0F,
+                      kSecondary, 2);
+        if (!picker.refusal.empty())
+            ui::text(overlay_, fonts_.regular, picker.refusal, panel.x + 56.0F, panel.y + 196.0F, 22.0F, kAmber);
+        key_picker_.style.theme = theme_;
+        key_picker_.style.reduced_motion = state.reduced_motion;
+        key_picker_.style.max_keys = picker.max_keys;
+        key_picker_.style.allow_empty = picker.allow_empty;
+        key_picker_.style.entrance_step = 0.0F;
+        if (key_picker_.keys() != picker.keys)
+            key_picker_.set_keys(picker.keys);
+        const float width = panel.w - 112.0F;
+        const float height = picker_height;
+        key_picker_.set_bounds({panel.x + 56.0F, panel.y + 222.0F, width, height});
+        key_picker_.set_focus(picker.focus, state.reduced_motion);
+        key_picker_.set_active(true);
+        key_picker_.update(frame_dt_);
+        ui::Canvas canvas{overlay_, fonts_, renderer_.glass_texture(), clock_};
+        key_picker_.draw(canvas);
+        std::string shoulder;
+        draw_hint_row(overlay_, legend_hints(view, shoulder, false), 96.0F);
+    }
+
     void draw_sheet_overlay(const ViewData &view)
     {
         const float ease = overlay_transition_.enter();
+        // Over the controller layout editor, which takes the whole screen: the sheet keeps that screen's backdrop.
+        if (layout_sheet(view.surface))
+            overlay_.rounded_rect({0.0F, 0.0F, kWidth, kHeight}, 0.0F, kBackground);
         overlay_.rounded_rect({0.0F, 0.0F, kWidth, kHeight}, 0.0F,
                               gfx::Color::rgb(0x000000, 0.58F * ease));
         const bool wide = view.surface.find("settings") != std::string::npos ||
@@ -4625,7 +4750,7 @@ class Render::Impl
                           view.surface == "import-games" ||
                           view.surface == "import-programs" || view.surface == "steam-programs" ||
                           view.surface == "setup-programs" || view.surface == "share-recipe" || view.surface == "vote-recipe" ||
-                          view.surface == "feedback" || view.surface == "share-as";
+                          view.surface == "feedback" || view.surface == "share-as" || layout_sheet(view.surface);
         const float width = overlay_transition_.panel_width(wide ? 960.0F : 640.0F);
         const gfx::Rect panel{kWidth - width + (1.0F - ease) * width, 0.0F, width, kHeight};
         overlay_.shadow({panel.x - 18.0F, 0.0F, panel.w + 18.0F, panel.h}, 0.0F, 36.0F,
@@ -4680,6 +4805,13 @@ class Render::Impl
         }
         if (view.comparison)
             draw_preset_comparison(*view.comparison, {72.0F, 150.0F, panel.x - 144.0F, 760.0F}, ease);
+        else if (view.input_panel)
+            draw_input_panel(*view.input_panel, {72.0F, 150.0F, panel.x - 144.0F, 760.0F});
+        if (layout_sheet(view.surface) && !(current_state_ && current_state_->key_picker.active))
+        {
+            std::string shoulder;
+            draw_hint_row(overlay_, legend_hints(view, shoulder, true), 96.0F);
+        }
         overlay_.pop_opacity();
     }
 
@@ -5174,7 +5306,8 @@ class Render::Impl
                                     view.surface == "preset-picker" || view.surface == "button-mapping" ||
                                     view.surface == "controller-tuning" ||
                                     view.surface == "game-maintenance" || view.surface == "share-recipe" ||
-                                    view.surface == "vote-recipe" || view.surface == "feedback" || view.surface == "share-as";
+                                    view.surface == "vote-recipe" || view.surface == "feedback" || view.surface == "share-as" ||
+                                    view.surface == "controller-layout" || layout_sheet(view.surface);
         // The Import sheets: each folder's path (or why it can't be added) under its name.
         const bool import_sheet = view.surface == "import-games" || view.surface == "import-programs" ||
                                   view.surface == "import-choice" || view.surface == "steam-programs" ||
@@ -5546,6 +5679,9 @@ class Render::Impl
     ui::SectionHeader library_heading_;  // over the grid while a store collection is shown
     ui::ListView list_;
     ui::Keyboard keyboard_;
+    ui::KeyPicker key_picker_;
+    ui::DetailList input_facts_;
+    std::vector<ViewFact> input_facts_shown_;
     int keyboard_layouts_ = 0;  // 0 the default layouts, 1 a password's (Show), 2 a revealed password's (Hide)
     std::array<std::uint32_t, 8> art_{};
     std::uint32_t hero_ = 0;
