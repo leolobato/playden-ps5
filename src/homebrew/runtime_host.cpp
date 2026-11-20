@@ -2969,6 +2969,8 @@ rt::PackageActionResult RuntimeHost::DrivePublication(Composition& c, const rt::
   if (!recipe) return failed("recipe-unavailable", "Playden no longer knows how to start this game; prepare it again.");
   rt::SettingsLaunchInput input;
   input.recipe = recipe;
+  // The player's layout templates name the game's own controls in the Touchpad hold notice.
+  if (config_.my_templates) input.layout_names = rt::MyTemplateNames(config_.my_templates());
   input.record = config_.settings_record
                      ? config_.settings_record(GameOf(record)).value_or(rt::GameSettingsRecord{})
                                          : rt::GameSettingsRecord{};
@@ -3496,6 +3498,8 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
       return steamworks;
   rt::SettingsLaunchInput input;
   input.recipe = recipe;
+  // The player's layout templates name the game's own controls in the Touchpad hold notice.
+  if (config_.my_templates) input.layout_names = rt::MyTemplateNames(config_.my_templates());
   input.record = saved;
   // The program and its folder are the install record's; the switch above moved them to the
   // settings' choice.

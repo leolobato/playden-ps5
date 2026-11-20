@@ -433,7 +433,13 @@ struct EffectiveSettings {
   bool helper_process_needs_update = false;
   // The title's runtime reads the profile's [environment] section (KitCapabilities::environment).
   bool environment_section = false;
+  // The player's names for layouts (their layout templates), by ControllerLayoutNameKey: the switch notice names the
+  // game's own controls by them. Built-in templates are named without it.
+  std::map<std::string, std::string> layout_names;
 };
+
+// The key layout_names uses for a layout: its mode, a line break, and its canonical text.
+std::string ControllerLayoutNameKey(std::string_view mode, std::string_view canonical_layout);
 
 // The launch entry id of a program the player chose from the game folder.
 inline constexpr const char* kProgramEntryId = "program";
@@ -501,8 +507,8 @@ inline constexpr const char* kSetByControllerLayout = "Set by the controller lay
 // Whether a layout applies: set, and the game's title runs a runtime kit with input-map. The profile then gets map = 1
 // and the layout's lines, and the rows SetByControllerLayout names are unavailable.
 bool ControllerLayoutInEffect(const EffectiveSettings& settings);
-// The rows a layout replaces: Controller preset, Touchpad hold, Pointer stick, Pointer speed and every button.<name>.
-// Controller and Rumble stay.
+// The rows a layout replaces: Controller preset, Pointer stick, Pointer speed and every button.<name>. Controller,
+// Rumble and Touchpad hold stay.
 bool SetByControllerLayout(std::string_view id);
 // Why the game's runtime kit can't run a layout (text, possibly empty), naming the runtime kit it needs; empty when it
 // can. kAppliesAfterKitUpdate when the kit can and only the game's title is older. An empty layout is checked for the
@@ -1033,6 +1039,7 @@ struct SettingsLaunchInput {
   KitCapabilities kit;
   ProfileTarget target;     // profile id and console path of the game files
   std::string runtime_dir;  // bundled settings data; input presets are read from <runtime_dir>/input
+  std::map<std::string, std::string> layout_names;  // EffectiveSettings::layout_names, for the switch notice
 };
 
 // Builds the plan, or false with a reason (invalid override, missing input preset, a profile

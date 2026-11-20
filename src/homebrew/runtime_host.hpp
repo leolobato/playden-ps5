@@ -10,6 +10,7 @@
 #include "runtime/install_service.h"
 #include "runtime/launch_service.h"
 #include "runtime/my_presets.h"
+#include "runtime/my_templates.h"
 #include "runtime/leftover_titles.h"
 #include "runtime/online_session.h"
 #include "runtime/package_installer.h"
@@ -111,6 +112,8 @@ struct RuntimeHostConfig {
   // The player's own presets (my-presets.json, read on the worker each time a record is resolved, never moved).
   // Unset or none: a record naming one plays as Playden default with its own changes.
   std::function<std::vector<runtime::MyPreset>()> my_presets;
+  // The player's layout templates, read again for each profile (the UI saves them while Playden runs).
+  std::function<std::vector<runtime::MyTemplate>()> my_templates;
   // A community recipe's file from the recipes cache, by its revision (the SHA-256 of the file, 64
   // hex) or the first 32 hex of it (an install record's recipe_version); nothing when the cache has
   // no such object. Runs on the worker. The host parses it, checks the hash, applies the community

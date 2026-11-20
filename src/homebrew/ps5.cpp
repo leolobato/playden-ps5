@@ -750,6 +750,11 @@ int main() {
                 if (!file || !rt::ReadMyPresetsFile(rt::MyPresetsPath(*file).string(), &presets, &reason)) return {};
                 return presets;
             };
+            config.my_templates = [file = settings_file]() -> std::vector<rt::MyTemplate> {
+                std::vector<rt::MyTemplate> templates; std::string reason;
+                if (!file || !rt::ReadMyTemplatesFile(rt::MyTemplatesPath(*file).string(), &templates, &reason)) return {};
+                return templates;
+            };
             config.log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "runtime.log", line); };
             config.community_recipe_bytes = playden::homebrew::CommunityRecipeBytes(community_objects);
             config.system_notification = [](const std::string& text) {

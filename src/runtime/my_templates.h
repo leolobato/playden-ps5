@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -88,6 +89,12 @@ struct MyTemplatesLoad {
 };
 MyTemplatesLoad LoadMyTemplatesFile(const std::string& path);
 std::vector<std::string> MyTemplatesLoadLog(const MyTemplatesLoad& load);
+// Reads the templates without ever moving the file: for a worker while Playden runs (the file was set aside once at
+// startup by LoadMyTemplatesFile). No file: true and none. A file that can't be read or parsed: false and a reason.
+bool ReadMyTemplatesFile(const std::string& path, std::vector<MyTemplate>* templates, std::string* reason);
+// The templates' names by ControllerLayoutNameKey, for SettingsLaunchInput::layout_names.
+std::map<std::string, std::string> MyTemplateNames(const std::vector<MyTemplate>& templates);
+
 // Replaces the file atomically, with My presets' file rules. Refuses while the file there does not parse as templates
 // or has templates this build skips (a newer Playden's, which a rewrite would lose), and proposed data that cannot be
 // parsed back without loss.

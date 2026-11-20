@@ -259,6 +259,24 @@ std::vector<std::string> MyTemplatesLoadLog(const MyTemplatesLoad& load) {
   return lines;
 }
 
+bool ReadMyTemplatesFile(const std::string& path, std::vector<MyTemplate>* templates, std::string* reason) {
+  templates->clear();
+  std::string text;
+  const auto read = ReadPrivateSettingsFile(path, &text);
+  if (read == PrivateSettingsRead::kMissing) return true;
+  std::string why = "cannot read my-templates.json";
+  if (read == PrivateSettingsRead::kPresent && ParseMyTemplates(text, templates, nullptr, &why)) return true;
+  templates->clear();
+  if (reason) *reason = why;
+  return false;
+}
+
+std::map<std::string, std::string> MyTemplateNames(const std::vector<MyTemplate>& templates) {
+  std::map<std::string, std::string> names;
+  for (const auto& item : templates) names.emplace(ControllerLayoutNameKey(item.mode, item.layout), item.name);
+  return names;
+}
+
 bool SaveMyTemplatesFile(const std::string& path, const std::vector<MyTemplate>& templates, std::string* reason) {
   const auto fail = [&](std::string why) {
     if (reason) *reason = std::move(why);

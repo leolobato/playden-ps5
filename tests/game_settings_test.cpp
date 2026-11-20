@@ -4065,8 +4065,7 @@ int main(int argc, char** argv) {
         {"controller_layout", wasd}, {"controller", "keyboard"},     {"controller_preset", "mouse"},
         {"button.cross", "space"},   {"touchpad_hold", "mouse"},     {"pointer_stick", "right_stick"},
         {"pointer_speed", "1800"},   {"rumble", "50"}};
-    const char* replaced[] = {"controller_preset", "touchpad_hold", "pointer_stick", "pointer_speed", "button.cross",
-                              "button.touchpad"};
+    const char* replaced[] = {"controller_preset", "pointer_stick", "pointer_speed", "button.cross", "button.touchpad"};
 
     // Without input-map the row is disabled and names the runtime kit it needs; the old rows apply as before.
     const auto no_map = KitCapabilitiesFromManifest({kKitInputRumble, kKitTouchpadSwitch}, false);
@@ -4078,6 +4077,8 @@ int main(int argc, char** argv) {
     CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
     CHECK(profile.text.find("map = 1") == std::string::npos && profile.text.find("\npreset = mouse\n") != std::string::npos &&
           profile.text.find("\ncross = space\n") != std::string::npos);
+    // Touchpad hold swaps from the preset, named as before.
+    CHECK(profile.text.find("\n[launcher]\nchain = off\nlabel = Mouse\ngame_label = Mouse\n") != std::string::npos);
     CHECK(BuildEffectiveSettings(hl2, nullptr, {}, no_map, &settings, &error));
     CHECK(!settings.values.at("controller_layout").available &&
           settings.values.at("controller_layout").reason == "Needs a newer runtime kit with controller layouts.");
@@ -4095,8 +4096,8 @@ int main(int argc, char** argv) {
     CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
     CHECK(profile.text.find("map = 1") == std::string::npos && profile.text.find("\npreset = mouse\n") != std::string::npos);
 
-    // With input-map the layout replaces the preset, the buttons, Touchpad hold and the pointer stick. Controller
-    // and Rumble stay.
+    // With input-map the layout replaces the preset, the buttons and the pointer stick. Controller, Rumble and Touchpad
+    // hold stay.
     CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, map_kit, &settings, &error));
     CHECK(ControllerLayoutInEffect(settings) && settings.values.at("controller_layout").available);
     for (const char* id : replaced) {
@@ -4105,10 +4106,12 @@ int main(int argc, char** argv) {
       CHECK(SetByControllerLayout(id));
     }
     CHECK(!SetByControllerLayout("controller") && !SetByControllerLayout("rumble") &&
-          !SetByControllerLayout("controller_layout"));
+          !SetByControllerLayout("controller_layout") && !SetByControllerLayout("touchpad_hold"));
+    CHECK(settings.values.at("touchpad_hold").available && Value(settings, "touchpad_hold") == "mouse");
     CHECK(settings.values.at("controller").available && Value(settings, "controller") == "keyboard");
-    // The profile: the mode, rumble, then map = 1 and the layout's lines; no preset, pointer or button lines and no
-    // touchpad-hold [launcher]. Rumble is kept out by keyboard mode here.
+    // The profile: the mode, rumble, then map = 1 and the layout's lines; no preset, pointer or button lines. Touchpad
+    // hold's [launcher] keeps its old-style Mouse lines, and names the game's controls by the layout's template.
+    // Rumble is kept out by keyboard mode here.
     CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
     std::string lines;
     for (const auto& line : ControllerLayoutLines([&] {
@@ -4118,9 +4121,13 @@ int main(int argc, char** argv) {
          }()))
       lines += line + "\n";
     CHECK(profile.text.find("\n[input]\nmode = keyboard\nmap = 1\n" + lines) != std::string::npos);
-    CHECK(profile.text.find("preset =") == std::string::npos && profile.text.find("\nmouse =") == std::string::npos &&
-          profile.text.find("[launcher]") == std::string::npos && profile.text.find("cross = space") == std::string::npos);
-    CHECK(CheckProsperoProfile(profile.text, &reason, {.input_map = true}));
+    CHECK(profile.text.find("preset =") == std::string::npos && profile.text.find("cross = space") == std::string::npos);
+    const auto input_section = profile.text.substr(profile.text.find("\n[input]\n"), profile.text.find("\n[launcher]\n") -
+                                                                                            profile.text.find("\n[input]\n"));
+    CHECK(input_section.find("\nmouse =") == std::string::npos);
+    CHECK(profile.text.find("\n[launcher]\nchain = off\nlabel = Mouse\ngame_label = WASD and mouse\nmode = keyboard\n"
+                            "mouse = left_stick\n") != std::string::npos);
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.launcher_section = true, .launcher_chain_off = true, .input_map = true}));
     CHECK(!CheckProsperoProfile(profile.text, &reason));  // an older runtime refuses map = 1
     // Xbox controller with rumble.
     CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller_layout", gamepad}, {"rumble", "50"}}, map_kit, &settings, &error));
@@ -4148,7 +4155,7 @@ int main(int argc, char** argv) {
                                  &settings, &error));
     CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
     CHECK(profile.text.find("map = 1\n") != std::string::npos &&
-          profile.text.find("\n[launcher]\nlabel = Mouse\ngame_label = Game controls\nmode = keyboard\nmouse = left_stick\n") !=
+          profile.text.find("\n[launcher]\nlabel = Mouse\ngame_label = Gamepad\nmode = keyboard\nmouse = left_stick\n") !=
               std::string::npos);
     // The plan names no input preset file with a layout.
     {
@@ -4161,6 +4168,18 @@ int main(int argc, char** argv) {
       SettingsLaunchPlan layout_plan;
       CHECK(BuildSettingsLaunchPlan(input, &layout_plan, &reason));
       CHECK(layout_plan.input_presets.empty() && layout_plan.profile_bytes.find("\nmap = 1\n") != std::string::npos);
+      // Touchpad hold names a layout of the player's by their template, cut to what the notice takes; another is Custom.
+      input.record.overrides["touchpad_hold"] = "mouse";
+      std::string canonical;
+      CHECK(CanonicalControllerLayout(wasd, &canonical, nullptr));
+      input.layout_names = {{ControllerLayoutNameKey("xinput", canonical), "Wrong mode"},
+                            {ControllerLayoutNameKey("keyboard", canonical), "Brotato: menus & more, with a long name"}};
+      CHECK(BuildSettingsLaunchPlan(input, &layout_plan, &reason));
+      CHECK(layout_plan.profile_bytes.find("\ngame_label = Brotato menus more with a long\n") != std::string::npos);
+      input.record.overrides["controller_layout"] = "cross = key:enter";
+      input.layout_names.clear();
+      CHECK(BuildSettingsLaunchPlan(input, &layout_plan, &reason));
+      CHECK(layout_plan.profile_bytes.find("\ngame_label = Custom\n") != std::string::npos);
     }
 
     // S4: a first edit starts from what the game uses now, so nothing changes until the player changes something.
@@ -4314,8 +4333,9 @@ int main(int argc, char** argv) {
     {
       const auto shared = BuildCommunityRecipe(hl2, settings, ref, "Half-Life 2");
       CHECK(shared.recipe.defaults.at("controller_layout") == wasd && shared.recipe.defaults.at("controller") == "keyboard");
-      // The rows the layout replaces don't travel with it.
+      // The rows the layout replaces don't travel with it; Touchpad hold, which works beside it, does.
       for (const char* id : replaced) CHECK(!shared.recipe.defaults.count(id));
+      CHECK(shared.recipe.defaults.at("touchpad_hold") == "mouse");
       CommunityRecipe reread;
       CHECK(ParseCommunityRecipe(SerializeCommunityRecipe(shared), &reread, &reason) &&
             reread.recipe.defaults.at("controller_layout") == wasd);
@@ -4324,6 +4344,7 @@ int main(int argc, char** argv) {
       CHECK(BuildEffectiveSettings(hl2, nullptr, {}, map_kit, &before, &error));
       const auto only = BuildSettingsOnlyRecipe(shared, before, settings, ref, "Half-Life 2");
       CHECK(only.recipe.defaults.at("controller_layout") == wasd);
+      CHECK(only.recipe.defaults.at("touchpad_hold") == "mouse");
       const auto unchanged = BuildSettingsOnlyRecipe(reread, before, before, ref, "Half-Life 2");
       CHECK(unchanged.recipe.defaults.at("controller_layout") == wasd);  // the base's own rows stay
     }

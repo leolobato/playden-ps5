@@ -188,8 +188,8 @@ std::vector<SettingDefinition> BuildCatalogue() {
                          {"keyboard", "Keyboard and mouse mapping", "Buttons send keys and mouse clicks."}},
                         "xinput"));
   // What each DualSense input sends (runtime/controller_layout.h): the runtime kit's input-map lines joined by ';'.
-  // While one is set and the runtime kit reads it, it replaces the preset, the buttons, Touchpad hold and the pointer
-  // stick.
+  // While one is set and the runtime kit reads it, it replaces the preset, the buttons and the pointer stick; Touchpad
+  // hold still swaps to its menu controls and back.
   {
     auto layout = Text("controller_layout", "Controller layout", "What each button and stick sends to the game.", "",
                        G::kControls);
@@ -942,8 +942,26 @@ bool ControllerLayoutInEffect(const EffectiveSettings& settings) {
 }
 
 bool SetByControllerLayout(std::string_view id) {
-  return id == "controller_preset" || id == "touchpad_hold" || id == "pointer_stick" || id == "pointer_speed" ||
-         id.substr(0, 7) == "button.";
+  // Touchpad hold isn't one: the runtime swaps from a layout to its [launcher] lines and back.
+  return id == "controller_preset" || id == "pointer_stick" || id == "pointer_speed" || id.substr(0, 7) == "button.";
+}
+
+// A name as the runtime's switch notice takes it ([launcher] label): letters, digits, spaces and hyphens, up to 31
+// bytes. Anything else becomes a space; runs of spaces become one. Nothing left: the fallback.
+std::string NoticeLabel(std::string_view name, const std::string& fallback) {
+  std::string out;
+  for (const char c : name) {
+    const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-';
+    if (allowed) out += c;
+    else if (!out.empty() && out.back() != ' ') out += ' ';
+  }
+  if (out.size() > 31) out.resize(31);
+  while (!out.empty() && out.back() == ' ') out.pop_back();
+  return out.empty() ? fallback : out;
+}
+
+std::string ControllerLayoutNameKey(std::string_view mode, std::string_view canonical_layout) {
+  return std::string(mode) + "\n" + std::string(canonical_layout);
 }
 
 std::string ControllerLayoutUnsupported(std::string_view text, const KitCapabilities& kit) {
@@ -1288,8 +1306,8 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
     }
     value.value = definition.playden_default;
   }
-  // A controller layout in effect sends every input itself: the preset, the buttons, Touchpad hold and the pointer
-  // stick don't apply, and say so. A layout that waits for the title's update leaves them as they are until then.
+  // A controller layout in effect sends every input itself: the preset, the buttons and the pointer stick don't apply,
+  // and say so. Touchpad hold still swaps from it to the menu controls and back. A layout that waits for the title's update leaves them as they are until then.
   if (ControllerLayoutInEffect(out)) {
     for (const auto& definition : SettingsCatalogue()) {
       if (!SetByControllerLayout(definition.id)) continue;
@@ -1700,6 +1718,25 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
     if (!input_map && !binding.empty()) text += button + " = " + binding + "\n";
   }
 
+  // The game's own controls by name in the switch notice ([launcher] game_label): its layout's template (the player's
+  // or a built-in one), or Custom; else its controller preset; else Game controls.
+  const auto game_controls_label = [&]() -> std::string {
+    if (input_map) {
+      std::string canonical;
+      const auto mode = value("controller");
+      if (!CanonicalControllerLayout(value("controller_layout"), &canonical, nullptr)) return "Custom";
+      if (const auto named = settings.layout_names.find(ControllerLayoutNameKey(mode, canonical));
+          named != settings.layout_names.end())
+        return NoticeLabel(named->second, "Custom");
+      for (const auto& item : ControllerLayoutTemplates())
+        if (item.text == canonical && item.mode == mode) return item.name;
+      return "Custom";
+    }
+    if (value("controller_preset") != "none")
+      for (const auto& option : FindSetting("controller_preset")->choices)
+        if (option.value == value("controller_preset")) return option.label;
+    return "Game controls";
+  };
   // Starting through a launcher: the launcher's preset written out, since a title reads one preset file, and the
   // names the title's notification shows.
   const bool launcher_section = settings.values.at("start_through_launcher").available &&
@@ -1713,8 +1750,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
     const auto& launcher_preset = value("launcher_controller_preset");
     const auto& rows = ControllerPresetInputs().at(launcher_preset);
     text += "\n[launcher]\nlabel = " + label("launcher_controller_preset", launcher_preset) + "\n";
-    if (value("controller_preset") != "none") text += "game_label = " + label("controller_preset", value("controller_preset")) + "\n";
-    else text += "game_label = Game controls\n";
+    text += "game_label = " + game_controls_label() + "\n";
     text += "mode = " + rows.at("controller") + "\nmouse = " + rows.at("pointer_stick") + "\n";
     if (rows.count("pointer_speed")) text += "mouse_speed = " + rows.at("pointer_speed") + "\n";
     const auto& buttons = ControllerPresetButtons().at(launcher_preset);
@@ -1727,12 +1763,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   const bool touchpad_section = !launcher_section && touchpad_hold.available && touchpad_hold.value == "mouse";
   if (touchpad_section) {
     text += "\n[launcher]\nchain = off\nlabel = Mouse\n";
-    if (value("controller_preset") != "none") {
-      for (const auto& option : FindSetting("controller_preset")->choices)
-        if (option.value == value("controller_preset")) text += "game_label = " + option.label + "\n";
-    } else {
-      text += "game_label = Game controls\n";
-    }
+    text += "game_label = " + game_controls_label() + "\n";
     text += "mode = keyboard\nmouse = left_stick\nmouse_speed = 900\n";
     for (const auto& button : ProsperoButtons()) {
       const auto binding = TouchpadMenuButtons().find(button);
@@ -4508,6 +4539,7 @@ bool BuildSettingsLaunchPlan(const SettingsLaunchInput& input, SettingsLaunchPla
   SettingsError error;
   if (!BuildEffectiveSettings(*input.recipe, input.preset, input.record.overrides, input.kit, &settings, &error))
     return fail(error.setting_id.empty() ? error.message : error.setting_id + ": " + error.message);
+  settings.layout_names = input.layout_names;
   ProsperoProfile profile;
   if (!RenderProsperoProfile(*input.recipe, settings, input.target, &profile, reason)) return false;
   out.profile_id = profile.id;

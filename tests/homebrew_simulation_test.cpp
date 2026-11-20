@@ -782,11 +782,11 @@ void controller_layout_replaces_rows(const std::filesystem::path& fixtures, cons
     activate(simulation, "change-settings");
     const auto* layout = find_row(simulation, "setting-controller_layout");
     check(layout && layout->value == "WASD and mouse" && layout->enabled, "layout: the row shows the built-in layout's name");
-    // The rows the layout replaces aren't in the Controller panel beside it; Touchpad hold stays and says so.
+    // The rows the layout replaces aren't in the Controller panel beside it; Touchpad hold stays and still works.
     for (const char* id : {"setting-controller_preset", "button-mapping", "setting-pointer_stick", "setting-pointer_speed"})
         check(!find_row(simulation, id), "layout: a replaced row is not in the panel");
     const auto* hold = find_row(simulation, "setting-touchpad_hold");
-    check(hold && !hold->enabled && hold->subtitle == rt::kSetByControllerLayout, "layout: Touchpad hold says the layout replaces it");
+    check(hold && hold->enabled && hold->value == "Switch to Mouse", "layout: Touchpad hold works beside a layout");
     check(find_row(simulation, "setting-controller")->enabled, "layout: Controller stays");
     while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
     // Without input-map the row is off and names the runtime kit it needs; the old rows apply.
