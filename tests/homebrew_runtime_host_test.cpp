@@ -3138,7 +3138,8 @@ void RunsSetupProgramOnce() {
     CHECK(chmod(sessions.parent_path().c_str(), 0700) == 0 && chmod(sessions.c_str(), 0700) == 0);
     Write(sessions / (id + ".json"),
           R"({"schema_version":1,"session_id":")" + id + R"(","install_id":"steam-4300","title_id":"FAKE78001",)"
-          R"("origin":"playden","settings_revision":0,"runtime_bundle_id":"wine-wow64","phase":")" + phase + "\"}\n", 0600);
+          R"("origin":"playden","settings_revision":)" + std::to_string(saved.revision) +
+              R"(,"runtime_bundle_id":"wine-wow64","phase":")" + phase + "\"}\n", 0600);
   };
   const auto ended = [](const RuntimeSnapshot& s) { return s.launch && s.launch->state == LaunchState::kExited; };
   const auto handed_off = [&](RuntimeHost& host) {
@@ -3222,14 +3223,21 @@ void RunsSetupProgramOnce() {
   CHECK(refused.play_refusals.count(4300) && refused.play_refusals.at(4300).find("missing") != std::string::npos);
   CHECK(game_published() && launches.size() == 4);
 
-  // A game with a controller layout: the run still has the Mouse preset alone. (The game's own profile with the
-  // layout is not published here: the title's profile parser at Playden's prospero-win pin doesn't read map = 1 yet.)
+  // A game with a controller layout: the run still has the Mouse preset alone.
   saved.overrides["controller_layout"] = FindControllerLayoutTemplate("wasd-mouse")->text;
   saved.overrides["controller"] = "keyboard";
   ++saved.revision;
   host.Play(4300, "Binaries/Launcher.exe");
   handed_off(host);
   CHECK(launcher_published() && launches.size() == 5);
+  // Once the program ends, the game's own profile is published with the layout: map = 1, its lines, and no preset.
+  session(launches[4][0], "exited");
+  WaitFor(host, ended, 30);
+  CHECK(WaitFor(host, restored, 30).installs[0].launch_path == "Binaries/Game.exe");
+  const auto mapped = Read(profile);
+  CHECK(mapped.find("\\Binaries\\Game.exe\n") != std::string::npos && mapped.find("map = 1\n") != std::string::npos);
+  CHECK(mapped.find("left_stick_keys = w,s,a,d\n") != std::string::npos && mapped.find("cross = key:space\n") != std::string::npos);
+  CHECK(mapped.find("preset = ") == std::string::npos && mapped.find("cross = space") == std::string::npos);
   host.Shutdown();
 }
 
