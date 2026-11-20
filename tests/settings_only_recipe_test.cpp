@@ -409,6 +409,28 @@ void Share() {
   library = BuildSettingsOnlyRecipe(base, plain, after, playden::GameRef::Steam(274520), "Darkwood");
   CHECK(library.recipe.defaults.at("steam_library_path") == "steam");
   {
+    // A controller layout goes with the mode it was made for, also when that is Playden's default and unchanged: a
+    // recipient's own recipe could set keyboard mode, which drops every pad: target.
+    auto map_kit = kit;
+    map_kit.input_map = true;
+    auto plain_base = Read("\"program\": \"Bin/Old.exe\"");
+    auto plain_filled = plain_base;
+    FillSettingsOnlyRecipe(&plain_filled.recipe, own, copy);
+    const auto gamepad = FindControllerLayoutTemplate("gamepad")->text;
+    EffectiveSettings no_layout, with_layout;
+    CHECK(BuildEffectiveSettings(plain_filled.recipe, nullptr, {{"controller", "xinput"}}, map_kit, &no_layout, &error));
+    CHECK(BuildEffectiveSettings(plain_filled.recipe, nullptr, {{"controller", "xinput"}, {"controller_layout", gamepad}},
+                                 map_kit, &with_layout, &error));
+    const auto layout_share = BuildSettingsOnlyRecipe(plain_base, no_layout, with_layout, playden::GameRef::Steam(274520), "Darkwood");
+    CHECK(layout_share.recipe.defaults.at("controller_layout") == gamepad &&
+          layout_share.recipe.defaults.at("controller") == "xinput");
+    const auto full = BuildCommunityRecipe(plain_filled.recipe, with_layout, playden::GameRef::Steam(274520), "Darkwood");
+    CHECK(full.recipe.defaults.at("controller_layout") == gamepad && full.recipe.defaults.at("controller") == "xinput");
+    // Without a layout the mode stays out as before.
+    CHECK(!BuildSettingsOnlyRecipe(plain_base, no_layout, no_layout, playden::GameRef::Steam(274520), "Darkwood")
+               .recipe.defaults.count("controller"));
+  }
+  {
     // A recipe that sets the row reads back and passes the community rules.
     auto shared_row = library;
     shared_row.recipe.id = "community-steam-274520-shared";

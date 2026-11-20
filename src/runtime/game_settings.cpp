@@ -4569,6 +4569,22 @@ bool ApplySettingsFiles(const SettingsLaunchPlan& plan, const std::string& insta
 
 namespace playden::runtime {
 
+namespace {
+
+// A shared controller layout goes with the controller mode it was made for, even when that mode is Playden's default
+// or the base's: a recipient whose own recipe sets another mode would get the layout in it (keyboard mode drops every
+// pad: target).
+void CarryLayoutMode(const EffectiveSettings& settings, std::map<std::string, std::string>* defaults) {
+  const auto layout = defaults->find("controller_layout");
+  if (layout == defaults->end() || layout->second.empty() || defaults->count("controller")) return;
+  const auto controller = settings.values.find("controller");
+  if (controller == settings.values.end() || (!controller->second.available && !controller->second.waits_for_update))
+    return;
+  (*defaults)["controller"] = ChosenValue(controller->second);
+}
+
+}  // namespace
+
 CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSettings& settings, const GameRef& game,
                                      std::string game_name, std::string made_on) {
   CommunityRecipe out;
@@ -4609,6 +4625,7 @@ CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSe
       continue;
     shared.defaults[definition.id] = row.value;
   }
+  CarryLayoutMode(settings, &shared.defaults);
   for (const auto& id : recipe.locked)
     if (!settings.values.at(id).unlocked) shared.locked.insert(id);
   // What the bottle gets and what the kit must provide stay with the game.
@@ -4664,6 +4681,7 @@ CommunityRecipe BuildSettingsOnlyRecipe(const CommunityRecipe& base, const Effec
       continue;
     shared.defaults[definition.id] = ChosenValue(found_after->second);
   }
+  CarryLayoutMode(after, &shared.defaults);
   out.status = "untested";
   return out;
 }
