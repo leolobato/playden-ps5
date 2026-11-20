@@ -8,6 +8,8 @@ body:
       value: |
         Thanks for testing! Reports of games that **work** help as much as reports of games that don't.
         Check the [compatibility list](https://github.com/leolobato/playden-ps5/blob/main/COMPATIBILITY.md) first. If the game is there, add what is new.
+        If you know the game already has a report for your copy, even a closed one, you can comment there instead.
+        A new report is fine too.
 
         If the game did not work, collect the logs **after you start Playden once more** (Playden copies the
         game's log when it starts):
