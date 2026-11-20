@@ -17683,6 +17683,16 @@ std::string StickModeHint(rt::StickMode mode) {
 
 }  // namespace
 
+// Whether the game has a layout, the player's or one its recipe or preset sets (in effect, or waiting for the title's
+// update): Remove the layout has something to remove.
+bool Simulation::layout_in_settings(GameId game) const {
+    rt::EffectiveSettings values;
+    if (!EffectiveSettingsFor(game, &values)) return false;
+    const auto found = values.values.find("controller_layout");
+    return found != values.values.end() && (found->second.available || found->second.waits_for_update) &&
+           !rt::ChosenValue(found->second).empty();
+}
+
 void Simulation::open_layout_editor() {
     const auto game = state_.navigation.selected_game_id;
     rt::EffectiveSettings values;
@@ -17945,7 +17955,7 @@ bool Simulation::layout_action(const std::string& name) {
         const auto* chosen = rt::FindControllerLayoutTemplate(name.substr(16));
         if (!chosen) return true;
         edit.template_id = chosen->id;
-        ModalEntry confirmation{"confirmation", "Use the " + chosen->name + " layout?", "", {"cancel", "layout-template-confirm"}, 1, false};
+        ModalEntry confirmation{"confirmation", "Use the " + chosen->name + " layout?", "", {"cancel", "layout-template-confirm"}, 0, false};
         confirmation.body = "Every input changes to what the " + chosen->name + " layout sends.";
         if (chosen->mode != edit.mode) confirmation.body += " Controller changes to " + layout::ModeLabel(chosen->mode) + ".";
         open_modal(std::move(confirmation));
@@ -18122,11 +18132,9 @@ void Simulation::build_layout_row(const ModalEntry& modal, const std::string& ke
     }
     if (key == "layout-remove") {
         item.title = "Remove the layout";
-        item.subtitle = "The game goes back to its controller preset and button mapping.";
-        const auto record = state_.game_settings.find(edit.game);
-        item.enabled = record != state_.game_settings.end() && record->second.overrides.count("controller_layout") != 0 &&
-                       !record->second.overrides.at("controller_layout").empty();
-        if (!item.enabled) item.subtitle = "No layout is saved: the game uses its controller preset and button mapping.";
+        item.subtitle = "The game goes back to its controller preset and button mapping. Controller stays as it is.";
+        item.enabled = layout_in_settings(edit.game);
+        if (!item.enabled) item.subtitle = "No layout is set: the game uses its controller preset and button mapping.";
         return;
     }
     const auto target = layout::EffectiveTarget(edit.layout, edit.input, mode);
@@ -18255,9 +18263,7 @@ void Simulation::build_layout_view(const ModalEntry& modal) {
     if (modal.id == "controller-layout") {
         view_.eyebrow = "Game settings";
         const auto* game = find_game(state_, edit.game);
-        const auto record = state_.game_settings.find(edit.game);
-        const bool saved = record != state_.game_settings.end() && record->second.overrides.count("controller_layout") != 0 &&
-                           !record->second.overrides.at("controller_layout").empty();
+        const bool saved = layout_in_settings(edit.game);
         const auto summary = rt::ControllerLayoutSummary(rt::SerializeControllerLayout(edit.layout));
         view_.subtitle = (game ? game->title + " · " : std::string()) +
                          (saved ? (summary.empty() ? std::string("Custom") : summary) : std::string("Not changed yet")) +

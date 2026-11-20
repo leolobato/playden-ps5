@@ -894,7 +894,9 @@ void controller_layout_editor(const std::filesystem::path& fixtures, const std::
     simulation.action("triangle");
     check(top() == "layout-templates", "layout editor: Triangle opens Templates");
     activate(simulation, "layout-template-wasd-mouse");
-    check(top() == "confirmation", "layout editor: a template asks first");
+    check(top() == "confirmation" && simulation.state().navigation.focus_key == "cancel",
+          "layout editor: a template asks first, on Cancel");
+    simulation.action("right");
     simulation.action("cross");
     check(top() == "controller-layout", "layout editor: the confirmation goes back to the list");
     check(saved("controller_layout") == rt::FindControllerLayoutTemplate("wasd-mouse")->text && saved("controller") == "keyboard",
@@ -904,7 +906,41 @@ void controller_layout_editor(const std::filesystem::path& fixtures, const std::
     // Reset removes the layout; the editor shows what the game uses again.
     activate(simulation, "layout-remove");
     check(saved("controller_layout") == "<none>", "layout editor: Remove the layout removes it");
+    check(saved("controller") == "keyboard", "layout editor: Remove leaves Controller as it is");
+    check(!find_row(simulation, "layout-remove")->enabled, "layout editor: nothing left to remove");
     simulation.action("circle");
+
+    // A layout the recipe sets is one to edit and to remove: the player's empty value keeps it off.
+    {
+        playden::homebrew::Simulation recipe_game(fixtures, profile);
+        std::vector<rt::SettingsPreset> presets;
+        rt::GameRecipe recipe;
+        std::string reason;
+        const auto source = fixtures.parent_path().parent_path();
+        check(rt::ParseSettingsPresets(read_text(source / "runtime/presets.json"), &presets, &reason), "layout editor: presets load");
+        check(rt::ParseGameRecipe(read_text(source / "runtime/recipes/steam-220-hl2-v1.json"), &recipe, &reason),
+              "layout editor: recipe loads");
+        recipe.app_id = 900001;
+        recipe.defaults["controller_layout"] = rt::FindControllerLayoutTemplate("mouse")->text;
+        recipe.defaults["controller"] = "keyboard";
+        recipe_game.SetSettingsData(std::move(presets), {std::move(recipe)});
+        recipe_game.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"input-map", "touchpad-switch"}, true));
+        recipe_game.action("details:900001");
+        activate(recipe_game, "details-more");
+        activate(recipe_game, "game-settings");
+        activate(recipe_game, "change-settings");
+        activate(recipe_game, "setting-controller_layout");
+        check(find_row(recipe_game, "layout-input-cross")->value == "Mouse \u00b7 Left button",
+              "layout editor: the recipe's layout is the one edited");
+        check(find_row(recipe_game, "layout-remove")->enabled, "layout editor: the recipe's layout can be removed");
+        activate(recipe_game, "layout-remove");
+        const auto& overrides = recipe_game.state().game_settings.at(SteamId(900001)).overrides;
+        check(overrides.count("controller_layout") && overrides.at("controller_layout").empty(),
+              "layout editor: removing the recipe's layout saves an empty one");
+        check(find_row(recipe_game, "layout-input-cross")->value != "Mouse \u00b7 Left button",
+              "layout editor: the list shows the rows the game uses without it");
+        while (!recipe_game.state().navigation.modals.empty()) recipe_game.action("circle");
+    }
 
     // Seeded from the Mouse preset and a button of the player's.
     check(simulation.scenario("controller-layout-mouse"), "layout editor: the Mouse scenario opens");

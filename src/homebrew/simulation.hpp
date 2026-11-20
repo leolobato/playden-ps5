@@ -1650,6 +1650,7 @@ public:
     void build_layout_view(const ModalEntry& modal);
     std::vector<std::string> layout_stick_actions() const;
     void save_layout();
+    bool layout_in_settings(GameId game) const;
     // The actions of a row whose value the recipe starts (edit, reset, library override entries).
     [[nodiscard]] std::vector<std::string> setting_value_actions(const std::string& id) const;
     // "Export as file": the game's effective settings as recipe-<game name>-<install id>.json for a pull request.
