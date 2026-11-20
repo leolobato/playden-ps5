@@ -209,6 +209,21 @@ int main() {
     CHECK(OrderLayoutKeys({"s", "shift", "x", "ctrl"}) == (std::vector<std::string>{"ctrl", "shift", "s", "x"}));
   }
 
+  // Filling gives every input its default line for the mode; putting one back keeps its line.
+  {
+    ControllerLayout layout;
+    CHECK(ParseControllerLayout("cross = key:space", &layout, nullptr));
+    FillControllerLayout(&layout, "xinput");
+    CHECK(SerializeControllerLayout(layout) ==
+          "cross = key:space;" + FindControllerLayoutTemplate("gamepad")->text.substr(std::string("cross = pad:a;").size()));
+    ResetLayoutInput(&layout, LayoutInput::kCross, "xinput");
+    CHECK(SerializeControllerLayout(layout) == FindControllerLayoutTemplate("gamepad")->text);
+    ControllerLayout playstation;
+    FillControllerLayout(&playstation, "playstation");
+    CHECK(SerializeControllerLayout(playstation).find("touchpad_left = pad:touchpad;touchpad_right = pad:touchpad;") !=
+          std::string::npos);
+  }
+
   // The old bindings as targets, for a layout made from a game's buttons.
   {
     CHECK(LayoutTargetFromBinding("Z") == KeyTarget({"z"}));

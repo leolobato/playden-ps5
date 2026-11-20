@@ -574,6 +574,19 @@ StickMode LayoutDefaultStick(LayoutInput input) {
   return input == LayoutInput::kRightStick ? StickMode::kPadRightStick : StickMode::kPadLeftStick;
 }
 
+void ResetLayoutInput(ControllerLayout* layout, LayoutInput input, std::string_view mode) {
+  auto& entry = (*layout)[input];
+  entry = {};
+  entry.set = true;
+  if (LayoutInputKindOf(input) == LayoutInputKind::kStick) entry.stick.mode = LayoutDefaultStick(input);
+  else entry.target = LayoutDefaultTarget(input, mode);
+}
+
+void FillControllerLayout(ControllerLayout* layout, std::string_view mode) {
+  for (const auto input : LayoutInputs())
+    if (!(*layout)[input].set) ResetLayoutInput(layout, input, mode);
+}
+
 bool LayoutTargetSends(const LayoutTarget& target, std::string_view mode) {
   if (target.kind == LayoutTarget::Kind::kNone) return false;
   if (target.kind != LayoutTarget::Kind::kPad) return true;

@@ -130,6 +130,11 @@ bool CanonicalControllerLayout(std::string_view text, std::string* canonical, st
 // nothing, but the default is still the pad target.
 LayoutTarget LayoutDefaultTarget(LayoutInput input, std::string_view mode);
 StickMode LayoutDefaultStick(LayoutInput input);
+// Gives every input without a line its default line for `mode`, as the writer's form has one line per input. An
+// editor starts from this, so putting one input back never leaves the layout empty.
+void FillControllerLayout(ControllerLayout* layout, std::string_view mode);
+// Puts one input back to its default line for `mode`.
+void ResetLayoutInput(ControllerLayout* layout, LayoutInput input, std::string_view mode);
 // Whether a target reaches the game in a mode: pad: targets send nothing in keyboard mode, pad:guide nothing in
 // playstation mode and pad:touchpad nothing in xinput mode.
 bool LayoutTargetSends(const LayoutTarget& target, std::string_view mode);

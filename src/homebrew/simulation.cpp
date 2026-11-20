@@ -17702,6 +17702,8 @@ void Simulation::open_layout_editor() {
     edit.game = game;
     edit.mode = seed.mode;
     if (!rt::ParseControllerLayout(seed.text, &edit.layout, nullptr)) edit.layout = {};
+    // One line per input, so putting one back to its default never leaves the layout empty.
+    rt::FillControllerLayout(&edit.layout, edit.mode);
     layout_edit_ = std::move(edit);
     state_.key_picker = {};
     open_modal({"controller-layout", "Controller layout", state_.navigation.focus_key, layout_editor_actions(), 0, false});
@@ -17760,7 +17762,9 @@ void Simulation::save_layout() {
     if (!layout_edit_ || !can_change_game_settings()) return;
     const auto text = rt::SerializeControllerLayout(layout_edit_->layout);
     std::string reason;
-    if (!text.empty() && !rt::ValidateSettingValue(RecipeFor(layout_edit_->game), "controller_layout", text, &reason)) {
+    // An empty value is no layout: the editor removes one only through Remove the layout.
+    if (text.empty()) return;
+    if (!rt::ValidateSettingValue(RecipeFor(layout_edit_->game), "controller_layout", text, &reason)) {
         push_notice({"layout-refused", "Controller layout not saved", "", false, kLiveNoticeSeconds, true, reason, false});
         return;
     }
@@ -17948,6 +17952,7 @@ bool Simulation::layout_action(const std::string& name) {
             const auto seed = rt::SeedControllerLayout(values);
             edit.mode = seed.mode;
             if (!rt::ParseControllerLayout(seed.text, &edit.layout, nullptr)) edit.layout = {};
+            rt::FillControllerLayout(&edit.layout, edit.mode);
         }
         return true;
     }
@@ -17961,19 +17966,18 @@ bool Simulation::layout_action(const std::string& name) {
         open_modal(std::move(confirmation));
         return true;
     }
+    // Back to its default: the input's own controller button or stick. Its line stays, so the rest of the layout does.
+    const auto reset = [&](rt::LayoutInput input) {
+        const auto before = rt::SerializeControllerLayout(edit.layout);
+        rt::ResetLayoutInput(&edit.layout, input, edit.mode);
+        if (rt::SerializeControllerLayout(edit.layout) != before) save_layout();
+    };
     if (name == "layout-square") {
-        // Square on an input: back to its default (its line goes).
-        if (const auto input = LayoutInputOfKey(state_.navigation.focus_key); input && edit.layout[*input].set) {
-            edit.layout[*input] = {};
-            save_layout();
-        }
+        if (const auto input = LayoutInputOfKey(state_.navigation.focus_key)) reset(*input);
         return true;
     }
     if (name == "layout-default") {
-        if (entry.set) {
-            entry = {};
-            save_layout();
-        }
+        reset(edit.input);
         close_layout_sheets("controller-layout");
         return true;
     }

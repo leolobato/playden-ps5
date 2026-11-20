@@ -447,7 +447,7 @@ void t08_nested_settings_restore_openers(const std::filesystem::path& fixtures,
     check(simulation.state().navigation.focus_key == "setting-resolution", "T08 picker restores its opener");
     check(simulation.state().game_settings.at(SteamId(900001)).overrides.at("resolution") == "2560x1440", "T08 picker saves the override");
     check(find_row(simulation, "setting-resolution")->modified, "T08 changed row is marked");
-    check(find_row(simulation, "preset-picker")->value == "Custom · from Playden default", "T08 preset reads Custom after a change");
+    check(find_row(simulation, "preset-picker")->value == "Custom \u00b7 from Playden default", "T08 preset reads Custom after a change");
     activate(simulation, "setting-extra_arguments");
     simulation.text("--fixture");
     simulation.action("circle");
@@ -614,7 +614,7 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     simulation.action("circle");
     const auto toast = std::find_if(simulation.state().notices.begin(), simulation.state().notices.end(),
                                     [](const playden::homebrew::Notice& notice) { return notice.id == "settings-saved"; });
-    check(toast != simulation.state().notices.end() && toast->message == "Settings saved · Mouse-driven game"
+    check(toast != simulation.state().notices.end() && toast->message == "Settings saved \u00b7 Mouse-driven game"
               && toast->detail == "1 change applies on next launch",
           "T08b closing the sheet announces what changed");
     check(simulation.state().navigation.modals.back().id == "context", "T08b closing Game settings returns to Game actions");
@@ -812,10 +812,10 @@ void controller_layout_editor(const std::filesystem::path& fixtures, const std::
     check(saved("controller") == "xinput", "layout editor: the layout keeps its controller mode");
     check(find_row(simulation, "layout-remove")->enabled, "layout editor: a saved layout can be removed");
 
-    // Square puts an input back to its default: its line goes.
+    // Square puts an input back to its default line.
     simulation.action("focus:layout-input-cross");
     simulation.action("square");
-    check(saved("controller_layout").find("cross =") == std::string::npos, "layout editor: Square drops the input's line");
+    check(saved("controller_layout") == gamepad, "layout editor: Square puts the input back to its controller button");
 
     // E4: the key picker, up to 4 keys, modifiers first.
     activate(simulation, "layout-input-cross");
@@ -939,6 +939,36 @@ void controller_layout_editor(const std::filesystem::path& fixtures, const std::
               "layout editor: removing the recipe's layout saves an empty one");
         check(find_row(recipe_game, "layout-input-cross")->value != "Mouse \u00b7 Left button",
               "layout editor: the list shows the rows the game uses without it");
+        while (!recipe_game.state().navigation.modals.empty()) recipe_game.action("circle");
+    }
+
+    // A layout with one line (an import, say): putting that input back keeps a layout, one line per input, and the
+    // old rows stay off.
+    {
+        playden::homebrew::Simulation recipe_game(fixtures, profile);
+        std::vector<rt::SettingsPreset> presets;
+        rt::GameRecipe recipe;
+        std::string reason;
+        const auto source = fixtures.parent_path().parent_path();
+        check(rt::ParseSettingsPresets(read_text(source / "runtime/presets.json"), &presets, &reason), "layout editor: presets load");
+        check(rt::ParseGameRecipe(read_text(source / "runtime/recipes/steam-220-hl2-v1.json"), &recipe, &reason),
+              "layout editor: recipe loads");
+        recipe.app_id = 900003;
+        recipe.defaults["controller_layout"] = "cross = key:space";
+        recipe.defaults["controller"] = "xinput";
+        recipe_game.SetSettingsData(std::move(presets), {std::move(recipe)});
+        recipe_game.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"input-map", "touchpad-switch"}, true));
+        recipe_game.action("details:900003");
+        activate(recipe_game, "details-more");
+        activate(recipe_game, "game-settings");
+        activate(recipe_game, "change-settings");
+        activate(recipe_game, "setting-controller_layout");
+        check(find_row(recipe_game, "layout-input-cross")->value == "Key \u00b7 Space", "layout editor: the one line is edited");
+        recipe_game.action("focus:layout-input-cross");
+        recipe_game.action("square");
+        const auto& overrides = recipe_game.state().game_settings.at(SteamId(900003)).overrides;
+        check(overrides.count("controller_layout") && overrides.at("controller_layout") == gamepad,
+              "layout editor: putting the only line back keeps a full layout");
         while (!recipe_game.state().navigation.modals.empty()) recipe_game.action("circle");
     }
 
@@ -1140,7 +1170,7 @@ void t11_preferences_failure_and_controller_modal_recovery(const std::filesystem
     {
         const auto& rows = restored.view().rows;
         const auto kit = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.key == "about-kit"; });
-        check(kit != rows.end() && kit->title == "Runtime kit in use" && kit->value.rfind("playden-kit 0.13 · ", 0) == 0 &&
+        check(kit != rows.end() && kit->title == "Runtime kit in use" && kit->value.rfind("playden-kit 0.13 \u00b7 ", 0) == 0 &&
                   kit->subtitle.empty(),
               "T11 About names the runtime kit in use, with no note when it is the one Playden expects");
     }
@@ -1178,11 +1208,11 @@ void game_update_scenarios(const std::filesystem::path& fixtures, const std::fil
     check(simulation.scenario("dlc-available") && row("details-update")->title == "DLC available…",
           "dlc-available says DLC available");
     check(simulation.scenario("install-options") && simulation.view().surface == "install" && row("install-version") &&
-              row("install-language") && row("install-dlc") && row("install-dlc")->value == "2 of 2 · 4.3 GB",
+              row("install-language") && row("install-dlc") && row("install-dlc")->value == "2 of 2 \u00b7 4.3 GB",
           "install-options shows Version, Language and DLC");
     check(simulation.action("focus:install-dlc") && simulation.action("cross") && simulation.view().surface == "install-dlc" &&
               row("install-dlc-900102") && row("install-dlc-900102")->title == "Texture Pack" &&
-              row("install-dlc-900102")->value == "Free · 4.2 GB",
+              row("install-dlc-900102")->value == "Free \u00b7 4.2 GB",
           "the DLC row opens the list");
     check(simulation.action("circle") && simulation.view().surface == "install", "Back returns to the sheet");
     check(simulation.scenario("updating") && simulation.state().navigation.route == playden::homebrew::Route::Downloads,
@@ -1861,7 +1891,7 @@ static void t17_import_sheet(const std::filesystem::path& fixtures, const std::f
     check(row("import-candidate-usb0:playden/import/Night Sky")->value == "Added", "T17 an added folder says Added");
     const auto* rally = row("import-candidate-usb0:playden/import/Old School Rally");
     check(rally->value.empty() && rally->subtitle == "/mnt/usb0/playden/import/Old School Rally", "T17 path, no size");
-    check(row("import-candidate-usb0:playden/import/Café Étoile")->subtitle.find(" · Copy only") != std::string::npos,
+    check(row("import-candidate-usb0:playden/import/Café Étoile")->subtitle.find(" \u00b7 Copy only") != std::string::npos,
           "T17 a non-ASCII path can only be copied");
     const auto* tools = row("import-candidate-internal:playden-import/Tools");
     check(!tools->enabled && tools->subtitle == "No Windows program found", "T17 a folder without a program can't be added");
@@ -1890,7 +1920,7 @@ static void t17_import_sheet(const std::filesystem::path& fixtures, const std::f
           "T17 the program list puts the game first and labels helpers");
     simulation.action("cross");
     check(simulation.view().surface == "import-choice" && simulation.view().title == "Where will the game files live?" &&
-              simulation.view().eyebrow == "Import games · Old School Rally" &&
+              simulation.view().eyebrow == "Import games \u00b7 Old School Rally" &&
               simulation.view().subtitle == "You can import it into Playden later from the game's page." &&
               row("import-play-in-place")->title == "Play from the USB drive" &&
               row("import-play-in-place")->subtitle == "Nothing is copied. Keep the drive plugged in." &&
@@ -1936,8 +1966,8 @@ static void t18_imported_game_page(const std::filesystem::path& fixtures, const 
     press("details-copy");
     check(simulation.view().surface == "import-storage" && simulation.view().title == "Choose storage" &&
               simulation.view().subtitle == "412 MB will be copied there." &&
-              simulation.view().eyebrow == "Import games · Night Sky" &&
-              row("volume-external")->subtitle == "Default · Available" && row("volume-external")->enabled &&
+              simulation.view().eyebrow == "Import games \u00b7 Night Sky" &&
+              row("volume-external")->subtitle == "Default \u00b7 Available" && row("volume-external")->enabled &&
               row("volume-internal")->subtitle == "Available" && row("volume-internal")->enabled &&
               !row("volume-readonly")->enabled && row("volume-readonly")->subtitle == "No write access" &&
               simulation.state().navigation.focus_key == "volume-external" &&
@@ -1996,7 +2026,7 @@ static void t18_imported_game_page(const std::filesystem::path& fixtures, const 
           "T18 a drop-folder game plays from there or is imported");
     press("import-copy");
     check(simulation.view().surface == "import-storage" && simulation.view().subtitle == "The game leaves the drop folder." &&
-              row("volume-internal")->subtitle == "Instant · moves the folder" && row("volume-internal")->enabled &&
+              row("volume-internal")->subtitle == "Instant \u00b7 moves the folder" && row("volume-internal")->enabled &&
               row("volume-external")->subtitle == "Copies, then frees the drop folder",
           "T18 the drop folder's drive choice says what each drive does");
     simulation.action("circle");
@@ -2040,7 +2070,7 @@ void synthetic_download_servers(const std::filesystem::path& fixtures, const std
           "the synthetic scenario shows the Settings row");
     press("settings-download-server");
     check(row("download-server-6") && !row("download-server-7") && row("download-server-3")->subtitle == "HTTP" &&
-              row("download-server-5")->title == "Steam (Valve) · cache5-fra1",
+              row("download-server-5")->title == "Steam (Valve) \u00b7 cache5-fra1",
           "seven servers are shown, with HTTP and the host of repeated providers marked");
     press("download-server-test");
     check(row("download-server-test")->title == "Testing Akamai (1 of 7)…", "synthetic test starts with the first provider");
@@ -2090,7 +2120,7 @@ void synthetic_download_servers(const std::filesystem::path& fixtures, const std
               playden::homebrew::FormatDownloadRate(restarted.state().jobs.front().bytes_per_second,
                                                     restarted.state().jobs.front().eta_seconds,
                                                     restarted.state().jobs.front().server_name) ==
-                  "Fastly · 18.2 MB/s · ~3 min left",
+                  "Fastly \u00b7 18.2 MB/s \u00b7 ~3 min left",
           "the Queue row names the download server");
 }
 
@@ -2183,7 +2213,7 @@ void community_recipes_chooser(const std::filesystem::path& fixtures, const std:
     // A recipe row: status, votes and author only; the side panel has where it was tested and what it changes.
     check(simulation.scenario("recipes-three"), "recipes-three scenario loads again");
     const auto* row = find_row(simulation, "recipe-" + rev('1'));
-    check(row && row->title == "120 Hz, pointer on left stick" && row->badge == "Works · Verified" && row->value == "👍 14  👎 1" &&
+    check(row && row->title == "120 Hz, pointer on left stick" && row->badge == "Works \u00b7 Verified" && row->value == "👍 14  👎 1" &&
               row->subtitle == "By leolobato \u2605" && row->author == "leolobato" && row->author_style == "trusted" &&
               row->lines.empty(),
           "a recipe row shows its status, Verified, votes and author; a trusted account's name has a star");
@@ -2230,7 +2260,7 @@ void community_recipes_chooser(const std::filesystem::path& fixtures, const std:
     {
         const auto& comparison = simulation.view().comparison;
         check(comparison && comparison->column == "This recipe" &&
-                  comparison->hint == "Verified · Community recipe by leolobato \u2605 · tested on runtime kit 0.12, firmware 10.01, 2026-10-20",
+                  comparison->hint == "Verified \u00b7 Community recipe by leolobato \u2605 \u00b7 tested on runtime kit 0.12, firmware 10.01, 2026-10-20",
               "the side panel says where the focused recipe was tested");
         check(comparison && std::any_of(comparison->rows.begin(), comparison->rows.end(),
                                         [](const std::array<std::string, 3>& line) { return line[2] == "3840×2160"; }),
@@ -2319,7 +2349,7 @@ void community_recipes_search_and_link(const std::filesystem::path& fixtures, co
     check(!simulation.state().editor.active && top(simulation).id == "preset-picker" &&
               listed(simulation, "search-game-gog/1453375253") && listed(simulation, "search-game-imported/night-sky") &&
               simulation.state().navigation.focus_key == "search-game-gog/1453375253" &&
-              find_row(simulation, "search-game-gog/1453375253")->subtitle == "GOG · 2 recipes",
+              find_row(simulation, "search-game-gog/1453375253")->subtitle == "GOG \u00b7 2 recipes",
           "the results name each game, its store and its recipe count");
     check(find_row(simulation, "search-game-gog/1453375253")->tone.empty(),
           "a game in the results is no player's recipe: no Community tag");
@@ -2339,7 +2369,7 @@ void community_recipes_search_and_link(const std::filesystem::path& fixtures, co
     check(listed(simulation, "recipe-" + rev('7')) && listed(simulation, "recipe-" + rev('8')) && !listed(simulation, "recipes-search"),
           "a result shows that game's recipes");
     check(simulation.ProgramNoteFor(night_sky, rev('7')) ==
-              "Made for Night Sky · GOG: NightSky64.exe isn't in this copy, so Playden's program is used." &&
+              "Made for Night Sky \u00b7 GOG: NightSky64.exe isn't in this copy, so Playden's program is used." &&
               simulation.ProgramNoteFor(night_sky, rev('8')).empty() && simulation.ProgramNoteFor(SteamId(900002), rev('1')).empty(),
           "another game's recipe whose program isn't in this copy gets the note; one whose program is, and own ones, don't");
     check(find_row(simulation, "recipe-" + rev('7'))->lines.back() == "NightSky64.exe isn't in this copy: Playden's program is used." &&
@@ -2368,7 +2398,7 @@ void community_recipes_search_and_link(const std::filesystem::path& fixtures, co
               simulation.RecipeFor(night_sky).defaults.count("pointer_stick"),
           "it applies with Playden's program and the recipe's settings");
     const auto preset_row = find_row(simulation, "preset-picker");
-    check(preset_row && !preset_row->lines.empty() && preset_row->lines.back().rfind("Made for Night Sky · GOG: NightSky64.exe", 0) == 0,
+    check(preset_row && !preset_row->lines.empty() && preset_row->lines.back().rfind("Made for Night Sky \u00b7 GOG: NightSky64.exe", 0) == 0,
           "the Preset row carries the note");
     {
         // Sharing it: another game's recipe is credited, never updated (the API refuses that across games): a new recipe
@@ -2850,7 +2880,7 @@ void settings_summary_lists_changes(const std::filesystem::path& fixtures, const
     simulation.action("up");
     check(simulation.state().navigation.focus_key == "preset-picker", "Up from Change settings passes over the summary");
     activate(simulation, "change-settings");
-    check(simulation.view().subtitle.find(" · 4 changed") != std::string::npos, "the list counts the changes");
+    check(simulation.view().subtitle.find(" \u00b7 4 changed") != std::string::npos, "the list counts the changes");
     const auto* compatibility = find_row(simulation, "section-compatibility");
     check(compatibility && compatibility->subtitle == "1 changed: Windows version" &&
               (!find_row(simulation, "section-advanced") || find_row(simulation, "section-advanced")->subtitle.empty()),
@@ -3017,7 +3047,7 @@ void community_recipes_switch(const std::filesystem::path& fixtures, const std::
     simulation.action("circle");
     const auto toast = std::find_if(simulation.state().notices.begin(), simulation.state().notices.end(),
                                     [](const playden::homebrew::Notice& notice) { return notice.id == "settings-saved"; });
-    check(toast != simulation.state().notices.end() && toast->message == "Settings saved · Community: 120 Hz, pointer on left stick",
+    check(toast != simulation.state().notices.end() && toast->message == "Settings saved \u00b7 Community: 120 Hz, pointer on left stick",
           "closing Game settings announces the recipe");
     // Changes of the player's that all stop applying: none carry over.
     check(simulation.scenario("recipes-switch"), "recipes-switch scenario loads again");
@@ -3610,12 +3640,12 @@ void my_presets_chooser(const std::filesystem::path& fixtures, const std::filesy
               at(kMine3) + 1 == at("chooser-heading-presets") && at("preset-playden-default") == 0 &&
               at("chooser-heading-community") < at("recipes-search"),
           "my presets: Playden default, community recipes and search, my presets, then the built-in presets");
-    check(find_row(simulation, "chooser-heading-mine") && find_row(simulation, "chooser-heading-mine")->title == "My presets · made by you",
+    check(find_row(simulation, "chooser-heading-mine") && find_row(simulation, "chooser-heading-mine")->title == "My presets \u00b7 made by you",
           "my presets: the section's heading");
     const auto* row = find_row(simulation, kMine1);
     check(row && row->title == "Point and click" &&
               row->subtitle == rt::MyPresetSummary(simulation.MyPresets().front().preset.settings) && !row->subtitle.empty() &&
-              row->value == "2 games" && row->selected && row->badge == "Current · changed",
+              row->value == "2 games" && row->selected && row->badge == "Current \u00b7 changed",
           "my presets: the game's preset is current, with what it sets and the two other games using it");
     check(simulation.state().navigation.focus_key == kMine1, "my presets: Choose settings opens on the game's preset");
     row = find_row(simulation, kMine2);
@@ -3938,7 +3968,7 @@ void friends_tab_join_and_invite(const std::filesystem::path& fixtures, const st
             if (row.key == "friend-" + std::to_string(id)) return row.subtitle;
         return std::string();
     };
-    check(status(kMara) == "Playing Amber Valley · in a lobby", "FR a friend in a lobby says the game and the lobby");
+    check(status(kMara) == "Playing Amber Valley \u00b7 in a lobby", "FR a friend in a lobby says the game and the lobby");
     check(status(kJun) == "Playing Harbor Kings", "FR a game outside the library is named by the friend's status");
     check(status(kKofi) == "Away", "FR an away friend says Away");
 
@@ -3948,22 +3978,22 @@ void friends_tab_join_and_invite(const std::filesystem::path& fixtures, const st
         return std::find(legends.begin(), legends.end(), text) != legends.end();
     };
     const auto subtitle = simulation.view().subtitle;
-    check(!simulation.state().steam_invisible && subtitle.rfind("You appear online · ", 0) == 0 &&
-              subtitle.find(" online · ") != std::string::npos && subtitle.find(" friends") != std::string::npos,
+    check(!simulation.state().steam_invisible && subtitle.rfind("You appear online \u00b7 ", 0) == 0 &&
+              subtitle.find(" online \u00b7 ") != std::string::npos && subtitle.find(" friends") != std::string::npos,
           "FR the subtitle says the account appears online, then the friends' counts");
     check(legend("Triangle Appear invisible") && !legend("Triangle Appear online"), "FR Triangle offers Appear invisible");
     const auto focus = simulation.state().navigation.focus_key;
     simulation.action("triangle");
     check(simulation.state().steam_invisible && simulation.ExportPreferences().steam_invisible,
           "FR Triangle makes the account appear invisible, as a preference");
-    check(simulation.view().subtitle.rfind("You appear invisible · ", 0) == 0 && legend("Triangle Appear online") &&
+    check(simulation.view().subtitle.rfind("You appear invisible \u00b7 ", 0) == 0 && legend("Triangle Appear online") &&
               !legend("Triangle Appear invisible"),
           "FR the subtitle says invisible, and Triangle offers Appear online");
     check(simulation.state().navigation.focus_key == focus && simulation.state().navigation.route == Route::Friends,
           "FR Triangle leaves the focus where it was");
     simulation.action("triangle");
     check(!simulation.state().steam_invisible && !simulation.ExportPreferences().steam_invisible &&
-              simulation.view().subtitle.rfind("You appear online · ", 0) == 0 && legend("Triangle Appear invisible"),
+              simulation.view().subtitle.rfind("You appear online \u00b7 ", 0) == 0 && legend("Triangle Appear invisible"),
           "FR Triangle again appears online");
 
     // Sections: In my games keeps only friends in library games; All adds the offline ones.
@@ -4181,7 +4211,7 @@ constexpr const char* kAccountSignedIn =
     "settings-title-store|Store name in PS5 titles|Accounts|Name game titles like \"Half-Life 2 (Steam)\". Prepared games change with their next Update.||toggle-title-store|1\n";
 constexpr const char* kAccountOffline =
     "settings-heading-stores|Stores|Accounts||||0\n"
-    "settings-account|Account|Accounts|Cached library · Offline|Synthetic account|account|1\n"
+    "settings-account|Account|Accounts|Cached library \u00b7 Offline|Synthetic account|account|1\n"
     "settings-signout|Sign out…|Accounts|||signout-confirm|1\n"
     "settings-title-store|Store name in PS5 titles|Accounts|Name game titles like \"Half-Life 2 (Steam)\". Prepared games change with their next Update.||toggle-title-store|1\n";
 constexpr const char* kAccountSignedOut =
@@ -4314,11 +4344,11 @@ void stores_section() {
     live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
     check(subtitle() == "Signed in" && row(live, "settings-store-gog")->value == "Synthetic GOG", "signed in, its name");
     check(live.UpdateLibrary(gog_library({{1000000001, "GOG one"}})), "GOG's library loads");
-    check(subtitle() == "Signed in · Synced", "signed in after a library loaded: synced");
+    check(subtitle() == "Signed in \u00b7 Synced", "signed in after a library loaded: synced");
     check(sheet() == std::vector<std::string>{"gog-refresh", "gog-signout-confirm", "cancel"},
           "signed in, the sheet offers Refresh library and Sign out");
     live.UpdateAccount(gog(AuthState::Offline, "Synthetic GOG"));
-    check(subtitle() == "Offline · Cached library", "offline");
+    check(subtitle() == "Offline \u00b7 Cached library", "offline");
     check(sheet() == std::vector<std::string>{"gog-refresh", "gog-signout-confirm", "cancel"}, "offline, the same actions");
     live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
     (void)live.TakeServiceActions();
