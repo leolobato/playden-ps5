@@ -285,24 +285,24 @@
     "template_preparation": "hl2-fresh-v16-neutral-bceed2d"
   },
   "publisher_pack": {
-    "version": "20261120.1",
+    "version": "20261120.2",
     "source": "external, not distributed: the EA, Rockstar, Ubisoft and Steam host helper archives of one helper-tools release. Upload with tools/console_publisher_upload.py; src/runtime/publisher_pack.cpp holds the same pins.",
     "archives": {
-      "playden-steamhost-20261120.1.tzst": {
-        "sha256": "91bd5a302ff1caf6b67dd913c1dfe8c5ec33030b0ad08ab5a05384946097659f",
-        "tree_sha256": "9d6ae296f2f67c6e6a8aa5b6982c35720e61adf698f347cac2a386eae1653f18"
+      "playden-steamhost-20261120.2.tzst": {
+        "sha256": "ff8ea44771b0d2363bd9d91e46557106002f7da14fb797f021f2b884b7b3c7ec",
+        "tree_sha256": "ba1eb95dedc85f0a19a63fd7bf4fb79a3e01e407e076a4bee66999327de59884"
       },
-      "playden-eahost-20261120.1.tzst": {
-        "sha256": "88c61892be26f1038b8bbe8742fd651167f27cbaa842a50d040989f85889516e",
-        "tree_sha256": "2f91f54b9a21e95e7f280e0f68cdaf5fc2d94223a81da9b7b2d0364b14607d49"
+      "playden-eahost-20261120.2.tzst": {
+        "sha256": "278db4e92fb68898ab9814369d19f5944d86a4b257c7669afa78b9b989e5e3a8",
+        "tree_sha256": "b6177e95fd3f1f99d691688ed0a44f205e54a0a3e44051f78e6c2f9a48b3ca7c"
       },
-      "playden-rgschost-20261120.1.tzst": {
-        "sha256": "23a5c1a7515a0da146a7beceb56379db13feffc3fed7626303324de6508dd127",
-        "tree_sha256": "9692a928548d8814f8ac518b50d9efd51a0dffd3a98a1487288908d9759670e7"
+      "playden-rgschost-20261120.2.tzst": {
+        "sha256": "d2abac163c8fc613c892d618be526bad8519c58e60a690b7004278533e3c0e50",
+        "tree_sha256": "6015438395a33c8a736a0b24f9fb6f28653bac9a65cd1599633fe4b9c8e912df"
       },
-      "playden-ubisoft-20261120.1.tzst": {
-        "sha256": "580322d2a811f2ffada1a8d78c8d4b41dd359d49fad204f81668a4c39174eee6",
-        "tree_sha256": "7ea7866f0e2f2855043b2805b87832fb3751ddcc29f69a8f4ef62ed1f106eadc"
+      "playden-ubisoft-20261120.2.tzst": {
+        "sha256": "394c7a854956f4fae93db7b4663d3cef0f42ee17383d552806eb0b744247568f",
+        "tree_sha256": "7ca70f5f4b0a851db3a81ff250c7f6820a91421217bdee8d8698957e652543d6"
       }
     }
   }

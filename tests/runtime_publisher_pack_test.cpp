@@ -184,7 +184,7 @@ int main(int argc, char** argv) {
 
   // The pinned releases: four archives, each with its required files.
   CHECK(PinnedPublisherReleases().size() == 4);
-  CHECK(std::string(kPublisherPackVersion) == "20261120.1");
+  CHECK(std::string(kPublisherPackVersion) == "20261120.2");
   // dependencies.lock.json (read by the upload tool) pins the same pack.
   if (argc > 1) {
     playden::steam::json::Limits limits;
