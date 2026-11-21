@@ -103,6 +103,11 @@ struct KitCapabilities {
   // for a title that runs this kit's runtime, like display_120hz.
   bool display_fps_counter = false;
   bool display_fps_counter_needs_update = false;
+  // [display] hud = fps|frametimes|full (the runtime kit's performance overlay, drawn by libvulkan.prx on every game
+  // that presents with Vulkan: DXVK, vkd3d-proton, Zink). Counts only for a title that runs this kit's runtime, like
+  // display_120hz.
+  bool display_hud = false;
+  bool display_hud_needs_update = false;
   // [application] arguments up to 4096 bytes and profiles up to 16384 (kKitLaunchArguments4096). Counts only for a title
   // that runs this kit's runtime, like display_120hz.
   bool launch_arguments_4096 = false;
@@ -412,6 +417,9 @@ struct EffectiveSettings {
   bool debug_env_lines = false;
   // Direct3D 12 through vkd3d-proton: ApplyD3D12Library puts its DLLs in the bottle before the game starts.
   bool vkd3d_proton = false;
+  // The performance overlay is the runtime kit's (KitCapabilities::display_hud) for this game's graphics (DXVK or
+  // OpenGL): Overlay detail goes to [display] hud, not to dxvk.hud or show_fps.
+  bool display_hud = false;
   // Pixel shaders as the driver gets them: "wave32" or "wave64" adds a variable to the environment; empty (a kit
   // without environment variables) leaves the driver's default.
   std::string pixel_shader_waves;
@@ -509,6 +517,9 @@ std::string SettingChoiceUnavailable(const EffectiveSettings& settings, std::str
 // Whether a choice SettingChoiceUnavailable allows applies only once the game's title runs the kit's runtime. It can
 // be saved now; until then the row applies the Playden default (EffectiveValue::after_update).
 bool SettingChoiceWaitsForUpdate(const EffectiveSettings& settings, std::string_view id, std::string_view value);
+// What a choice does, under its name in the chooser: the catalogue's explanation, or one that fits what draws it here
+// (Overlay detail with the runtime kit's overlay).
+std::string SettingChoiceExplanation(const EffectiveSettings& settings, std::string_view id, std::string_view value);
 
 // The controller layout (controller_layout, runtime/controller_layout.h).
 // What the rows it replaces say while it applies.
@@ -989,6 +1000,10 @@ inline constexpr const char* kKitDisplayFramegen = "display-framegen";
 // The title reads [display] fps_counter = true: the kit's libvulkan.prx draws the game's frame rate on each frame, for
 // vkd3d-proton, which has no overlay of its own. Runtimes without it refuse a profile with fps_counter.
 inline constexpr const char* kKitDisplayFpsCounter = "display-fps-counter";
+// The title reads [display] hud = off|fps|frametimes|full: the kit's libvulkan.prx draws the performance overlay (frame
+// rate; frame times and the lowest, average and highest frame rate; the game's size, CPU and memory) on every game that
+// presents with Vulkan, in place of DXVK's and Mesa's. Runtimes without it refuse a profile with hud.
+inline constexpr const char* kKitDisplayHud = "display-hud";
 // The title reads [launcher]: the exec chain only for a game that asks for it, a second input for the first
 // program, and the touchpad hold that swaps them. Runtimes without it refuse a profile with the section.
 inline constexpr const char* kKitLauncherMode = "launcher-mode";
@@ -1024,7 +1039,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
 // The installed kit's capabilities for one game's title. A prepared title keeps its own copy of the runtime until
 // Update, so a capability that adds profile keys counts only when the title runs this kit's runtime
 // (title_runtime_current: the title's owner markers name this kit, PackageInstaller::TitleCurrent). Otherwise
-// display_120hz, profile_version_2, input_rumble, display_framegen, display_fps_counter, input_playstation,
+// display_120hz, profile_version_2, input_rumble, display_framegen, display_fps_counter, display_hud, input_playstation,
 // audio_volume, audio_microphone, title_notify, steam_library_path and windows_locale are off and their _needs_update
 // say why.
 KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current);

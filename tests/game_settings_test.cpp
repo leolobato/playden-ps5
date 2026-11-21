@@ -19,6 +19,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+extern "C" {
+#include "pw_game_profile.h"
+}
+
 #define CHECK(cond)                                                                     \
   do {                                                                                  \
     if (!(cond)) {                                                                      \
@@ -38,6 +42,14 @@ std::string ReadText(const std::filesystem::path& path) {
 }
 
 const std::string& Value(const EffectiveSettings& settings, const char* id) { return settings.values.at(id).value; }
+
+// Whether the game's title starts with this profile: prospero-win's own parser, at the pinned revision.
+bool TitleTakes(const std::string& text) {
+  static PwGameProfile parsed;
+  const int status = pw_game_profile_parse(reinterpret_cast<const uint8_t*>(text.data()), text.size(), &parsed);
+  if (status != PW_OK) std::fprintf(stderr, "title refuses (%d):\n%s\n", status, text.c_str());
+  return status == PW_OK;
+}
 
 // A minimal PE header: "MZ", e_lfanew, "PE\0\0", machine and optional-header magic.
 void WritePe(const std::filesystem::path& path, bool pe64) {
@@ -378,7 +390,7 @@ int main(int argc, char** argv) {
   // otherwise a profile line the older title refuses goes out (helper-process alone once skipped the check).
   {
     for (const char* name : {kKitDisplay120Hz, kKitProfileVersion2, kKitInputRumble, kKitDisplayFramegen, kKitDisplayFpsCounter,
-                             kKitLauncherMode, kKitTouchpadSwitch, kKitInputPlaystation, kKitTitleNotify, kKitHelperProcess,
+                             kKitDisplayHud, kKitLauncherMode, kKitTouchpadSwitch, kKitInputPlaystation, kKitTitleNotify, kKitHelperProcess,
                              kKitGameRootUsbSearch, kKitLaunchArguments4096, kKitLargeAddressAware, kKitNsiproxySwitch,
                              kKitEnvironmentFileBudgets, kKitSteamLibraryPath}) {
       if (!KitDependsOnTitleRuntime(KitCapabilitiesFromManifest({name}, false)))
@@ -1781,6 +1793,125 @@ int main(int argc, char** argv) {
     CHECK(RenderProsperoProfile(game, settings, target, &profile, &reason));
     CHECK(profile.text.find("framegen") == std::string::npos);
   }
+  // The runtime kit's performance overlay (display-hud): Overlay detail on DXVK, vkd3d-proton, OpenGL and with frame
+  // generation goes to [display] hud, and no dxvk.hud, show_fps or fps_counter draws a second overlay.
+  {
+    const auto hud_kit = KitCapabilitiesFromManifest({kKitDxvk, kKitDxvkPresent, kKitVkd3dProton, kKitOpenGLZink,
+                                                      kKitDisplay120Hz, kKitDisplayFramegen, kKitDisplayFpsCounter,
+                                                      kKitDisplayHud},
+                                                     false);
+    CHECK(hud_kit.display_hud && !KitCapabilitiesFromManifest({kKitDxvk}, false).display_hud);
+    const ProsperoProfileFeatures without_hud{.debug_env = true, .display_frame_rate = true, .display_framegen = true,
+                                              .display_fps_counter = true};
+    auto with_hud = without_hud;
+    with_hud.display_hud = true;
+    const auto overlay = [&](const GameRecipe& game, std::map<std::string, std::string> chosen,
+                             const KitCapabilities& kit) {
+      chosen.emplace("performance_overlay", "on");
+      CHECK(BuildEffectiveSettings(game, nullptr, chosen, kit, &settings, &error));
+      CHECK(RenderProsperoProfile(game, settings, target, &profile, &reason));
+    };
+    auto game = hl2;
+    game.graphics = "dxvk";
+    // DXVK: every level, in the profile and not in dxvk.conf.
+    for (const char* level : {"fps", "frametimes", "full"}) {
+      overlay(game, {{"overlay_detail", level}}, hud_kit);
+      CHECK(settings.display_hud && settings.values.at("overlay_detail").available);
+      CHECK(profile.text.find(std::string("\nhud = ") + level + "\n") != std::string::npos);
+      CHECK(profile.text.find("show_fps = false\n") != std::string::npos);
+      CHECK(profile.text.find("fps_counter") == std::string::npos);
+      CHECK(RenderDxvkConfig(settings).find("dxvk.hud") == std::string::npos);
+      CHECK(!CheckProsperoProfile(profile.text, &reason, without_hud));   // a runtime without it refuses hud
+      CHECK(CheckProsperoProfile(profile.text, &reason, with_hud));
+      CHECK(TitleTakes(profile.text));
+    }
+    // Off writes no hud, so the profile stays readable by every runtime.
+    CHECK(BuildEffectiveSettings(game, nullptr, {{"overlay_detail", "full"}}, hud_kit, &settings, &error));
+    CHECK(settings.values.at("overlay_detail").reason == "Turn the performance overlay on first.");
+    CHECK(RenderProsperoProfile(game, settings, target, &profile, &reason));
+    CHECK(profile.text.find("hud") == std::string::npos && profile.text.find("show_fps = false\n") != std::string::npos);
+    CHECK(CheckProsperoProfile(profile.text, &reason, without_hud));
+    // Direct3D 12 on vkd3d-proton: the overlay with its detail, in place of the driver's frame-rate counter.
+    overlay(game, {{"d3d12", "vkd3d-proton"}, {"overlay_detail", "frametimes"}}, hud_kit);
+    CHECK(settings.vkd3d_proton && settings.values.at("overlay_detail").available);
+    CHECK(profile.text.find("\nhud = frametimes\n") != std::string::npos && profile.text.find("fps_counter") == std::string::npos);
+    CHECK(CheckProsperoProfile(profile.text, &reason, with_hud) && TitleTakes(profile.text));
+    // OpenGL (Zink): Mesa's counter gives way to it.
+    auto opengl = game;
+    opengl.graphics = "opengl";
+    overlay(opengl, {{"overlay_detail", "full"}}, hud_kit);
+    CHECK(settings.values.at("overlay_detail").available);
+    CHECK(profile.text.find("show_fps = false\n") != std::string::npos && profile.text.find("\nhud = full\n") != std::string::npos);
+    CHECK(TitleTakes(profile.text));
+    // Frame generation: the overlay shows its pictures, at any level.
+    overlay(game, {{"framegen", "2"}, {"overlay_detail", "full"}}, hud_kit);
+    CHECK(settings.values.at("overlay_detail").available);
+    CHECK(profile.text.find("\nframegen = 2\nhud = full\n") != std::string::npos);
+    CHECK(profile.text.find("show_fps = false\n") != std::string::npos);
+    CHECK(CheckProsperoProfile(profile.text, &reason, with_hud) && TitleTakes(profile.text));
+    // GDI draws no Vulkan frames: no overlay at all.
+    auto gdi = game;
+    gdi.graphics = "gdi";
+    overlay(gdi, {{"overlay_detail", "full"}}, hud_kit);
+    CHECK(!settings.display_hud && !settings.values.at("performance_overlay").available);
+    CHECK(profile.text.find("hud") == std::string::npos);
+    // DXVK's own HUD stays reachable through Environment variables, as a debugging aid, with the overlay on or off.
+    overlay(game, {{"environment", "DXVK_HUD=full"}}, hud_kit);
+    CHECK(profile.text.find("\nhud = fps\n") != std::string::npos);
+    CHECK(profile.text.find("\nenv = DXVK_HUD=full\n") != std::string::npos);
+    CHECK(CheckProsperoProfile(profile.text, &reason, with_hud) && TitleTakes(profile.text));
+    CHECK(!CheckProsperoProfile(profile.text, &reason, without_hud));
+    // Only the title's value grammar, and none of the driver variables the profile sets itself.
+    CHECK(!ValidateSettingValue(game, "environment", "DXVK_HUD=fps!", &reason));
+    for (const char* own : {"PW_HUD=full", "PW_FRAMEGEN_COUNTER=1", "PW_FRAMEGEN=2"}) {
+      overlay(game, {{"environment", std::string(own) + ";PW_MEDIA_DISABLE=1"}}, hud_kit);
+      CHECK(profile.text.find(own) == std::string::npos && TitleTakes(profile.text));
+      overlay(game, {{"environment", own}, {"framegen", "2"}}, hud_kit);
+      CHECK(profile.text.find(own) == std::string::npos && TitleTakes(profile.text));
+    }
+    CHECK(BuildEffectiveSettings(game, nullptr, {{"environment", "DXVK_HUD=full"}}, hud_kit, &settings, &error));
+    CHECK(RenderProsperoProfile(game, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\nenv = DXVK_HUD=full\n") != std::string::npos && profile.text.find("hud =") == std::string::npos);
+    CHECK(CheckProsperoProfile(profile.text, &reason, with_hud) && TitleTakes(profile.text));
+    // The title refuses it beside its own counter (show_fps defaults to true); older runtimes never get it.
+    CHECK(!CheckProsperoProfile("[application]\nid = a\n\n[debug]\nenv = DXVK_HUD=full\n", &reason, with_hud));
+    CHECK(!CheckProsperoProfile("[application]\nid = a\n\n[display]\nshow_fps = true\n\n[debug]\nenv = GALLIUM_HUD=fps\n",
+                                &reason, with_hud));
+    overlay(game, {{"environment", "DXVK_HUD=full"}}, KitCapabilitiesFromManifest({kKitDxvk, kKitOpenGLZink}, false));
+    CHECK(profile.text.find("DXVK_HUD") == std::string::npos);
+    // The chooser says what the kit's overlay shows; without it, DXVK's HUD as before.
+    overlay(game, {}, hud_kit);
+    CHECK(SettingChoiceExplanation(settings, "overlay_detail", "full").find("Not yet: temperatures") != std::string::npos);
+    CHECK(SettingChoiceExplanation(settings, "overlay_detail", "frametimes").find("lowest, average and highest") !=
+          std::string::npos);
+    CHECK(SettingChoiceExplanation(settings, "overlay_detail", "fps").empty());
+    CHECK(SettingChoiceExplanation(settings, "vsync", "game") == "The game's own setting.");
+    overlay(game, {}, KitCapabilitiesFromManifest({kKitDxvk}, false));
+    CHECK(SettingChoiceExplanation(settings, "overlay_detail", "full") == "Also memory, GPU load and the DXVK version.");
+    // A title on an older runtime keeps today's overlay until its update: DXVK's HUD on DXVK, and the rows the kit's
+    // overlay would open say they wait for it.
+    const auto stale = KitForTitleRuntime(hud_kit, false);
+    CHECK(!stale.display_hud && stale.display_hud_needs_update);
+    CHECK(KitForTitleRuntime(hud_kit, true).display_hud);
+    CHECK(!KitForTitleRuntime(KitCapabilities{}, false).display_hud_needs_update);
+    overlay(game, {{"overlay_detail", "frametimes"}}, stale);
+    CHECK(!settings.display_hud && profile.text.find("hud =") == std::string::npos);
+    CHECK(RenderDxvkConfig(settings).find("dxvk.hud = fps,frametimes\n") != std::string::npos);
+    CHECK(CheckProsperoProfile(profile.text, &reason, without_hud) && TitleTakes(profile.text));
+    overlay(game, {{"d3d12", "vkd3d-proton"}}, stale);
+    CHECK(settings.values.at("overlay_detail").reason == kAppliesAfterKitUpdate);
+    CHECK(settings.values.at("performance_overlay").reason == kAppliesAfterKitUpdate);
+    overlay(opengl, {}, stale);
+    CHECK(settings.values.at("overlay_detail").reason == kAppliesAfterKitUpdate);
+    CHECK(profile.text.find("hud =") == std::string::npos);
+    // Frame generation waits for the same update, so until then DXVK's HUD shows the detail as today.
+    overlay(game, {{"framegen", "2"}, {"overlay_detail", "full"}}, stale);
+    CHECK(settings.values.at("framegen").waits_for_update && settings.values.at("overlay_detail").available);
+    CHECK(RenderDxvkConfig(settings).find("dxvk.hud = fps,frametimes,memory,gpuload,version\n") != std::string::npos);
+    // A kit without it: today's messages.
+    overlay(opengl, {}, KitCapabilitiesFromManifest({kKitDxvk, kKitOpenGLZink}, false));
+    CHECK(settings.values.at("overlay_detail").reason == "Only available with DXVK.");
+  }
 
   // Volume has its own gate.
   const std::map<std::string, std::string> more_tuning = {{"volume", "50"}};
@@ -1860,7 +1991,10 @@ int main(int argc, char** argv) {
   }
   CHECK(std::is_sorted(SettingsKitCapabilityNames().begin(), SettingsKitCapabilityNames().end()));
   CHECK(!ValidateSettingValue(hl2, "environment", "WINEPREFIX=C:\\x", &reason));
-  CHECK(!ValidateSettingValue(hl2, "environment", "DXVK_HUD=full", &reason));
+  // DXVK's and Mesa's HUDs are taken, and reach the game only with the runtime kit's overlay (see display-hud above).
+  CHECK(ValidateSettingValue(hl2, "environment", "DXVK_HUD=full", &reason));
+  CHECK(ValidateSettingValue(hl2, "environment", "GALLIUM_HUD=fps", &reason));
+  CHECK(!ValidateSettingValue(hl2, "environment", "DXVK_HUD=a b", &reason));
   CHECK(!ValidateSettingValue(hl2, "environment", "DXVK_A=1;DXVK_A=2", &reason));
   CHECK(!ValidateSettingValue(hl2, "environment", "DXVK_A", &reason));
   // A refused name says which names are allowed, and every name the hint lists is (#480).

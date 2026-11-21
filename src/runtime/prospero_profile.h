@@ -85,6 +85,7 @@ struct ProsperoProfileFeatures {
   bool display_frame_rate = false;   // [display] frame_rate = 0|120|60|40|30 (kit capability display-120hz)
   bool display_framegen = false;     // [display] framegen = off|2|3|4 (kit capability display-framegen)
   bool display_fps_counter = false;  // [display] fps_counter = true|false (kit capability display-fps-counter)
+  bool display_hud = false;          // [display] hud = off|fps|frametimes|full (kit capability display-hud)
   bool launcher_section = false;     // [launcher] (kit launcher-mode)
   bool launcher_chain_off = false;   // [launcher] chain = off (kit capability touchpad-switch)
   bool helper_section = false;       // [helper] program, ready, wait (kit capability helper-process)
@@ -113,6 +114,10 @@ inline bool IsProsperoSteamInstallDir(std::string_view name) {
 // A [debug] env variable the runtime takes: PW_, DXVK_, MESA_, GALLIUM_, ZINK_, RADV_ or VK_ names, without the ones
 // the title sets itself or the performance overlay owns.
 bool IsProsperoDebugEnvEntry(std::string_view name, std::string_view value);
+// DXVK_HUD or GALLIUM_HUD with a value [debug] env takes: the backends' own HUDs, which the title sets itself while
+// show_fps (or menu) is on. A runtime with the kit's overlay (display-hud) takes them in [debug] env once show_fps is
+// false, so DXVK's and Mesa's HUDs stay at hand for debugging.
+bool IsProsperoHudDebugEnvEntry(std::string_view name, std::string_view value);
 inline constexpr std::size_t kProsperoMaxDebugEnvEntries = 5;
 
 // vkd3d-proton's own variables, which neither profile section takes: Environment variables passes them through the

@@ -16,7 +16,7 @@ KitAdmissionConfig DevelopmentKitAdmission() {
                                 kKitAudioVolume, kKitAudioMicrophone, kKitAudioCapture, kKitDxvkConfig, kKitDxvkPresent, kKitInputTuning,
                                 kKitEnvironment, kKitWineMono, kKitVkd3dProton,
                                 kKitDisplay120Hz, kKitProfileVersion2, kKitInputRumble,
-                                kKitDisplayFramegen, kKitDisplayFpsCounter, kKitLauncherMode,
+                                kKitDisplayFramegen, kKitDisplayFpsCounter, kKitDisplayHud, kKitLauncherMode,
                                 kKitInputPlaystation, kKitDriverThreads, kKitGameRootUsbSearch,
                                 kKitDisplayVrr, kKitLaunchArguments4096, kKitLargeAddressAware,
                                 kKitEnvironmentFileBudgets, kKitNsiproxySwitch, kKitTitleNotify,

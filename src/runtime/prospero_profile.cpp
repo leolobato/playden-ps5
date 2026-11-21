@@ -221,6 +221,16 @@ bool IsProsperoDebugEnvEntry(std::string_view name, std::string_view value) {
   return true;
 }
 
+bool IsProsperoHudDebugEnvEntry(std::string_view name, std::string_view value) {
+  if ((name != "DXVK_HUD" && name != "GALLIUM_HUD") || value.empty() || value.size() >= 96) return false;
+  // The title's [debug] env grammar (prospero-win env_value_char): letters, digits and _ + - , . = : / only.
+  for (const char c : value)
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '+' ||
+          c == '-' || c == ',' || c == '.' || c == '=' || c == ':' || c == '/'))
+      return false;
+  return true;
+}
+
 bool IsPlaydenEnvironmentVariable(std::string_view name) {
   // The PW_IMAGE_*, PW_DEBUG_REGISTERS_ZERO and PW_SUBPAGE_FIXES switches turn on prospero-win patches a game needs
   // (GTA V Legacy: Wine 1029, 1031, 1032, 1033-1036); a runtime kit without them ignores the variable.
@@ -253,6 +263,8 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
   std::set<std::string> application;
   std::string id, prefix, runtime, executable, working;
   std::size_t start = 0, debug_env_count = 0;
+  // DXVK_HUD or GALLIUM_HUD in [debug] env, and whether show_fps is false (the title's default is true).
+  bool hud_env = false, show_fps_off = false;
   // [input] map = 1 (kit capability input-map): the lines after it are a controller layout, read as a whole once the
   // profile is read. An input line before it would be read the old way, so it may not come after one.
   bool input_map = false, old_input_line = false, loose_input_line = false;
@@ -347,12 +359,15 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
         if (!OneOf(value, {"window", "desktop"})) return bad("unknown view");
       } else if (key == "show_fps" || key == "opengl_thread") {
         if (!OneOf(value, {"true", "false"})) return bad("not true or false");
+        if (key == "show_fps") show_fps_off = value == "false";
       } else if (key == "refresh") {
         if (value != "60" && value != "120") return bad("not 60 or 120");
       } else if (features.display_frame_rate && key == "frame_rate") {
         if (!OneOf(value, {"0", "120", "60", "40", "30"})) return bad("not 0, 120, 60, 40 or 30");
       } else if (features.display_fps_counter && key == "fps_counter") {
         if (!OneOf(value, {"true", "false"})) return bad("not true or false");
+      } else if (features.display_hud && key == "hud") {
+        if (!OneOf(value, {"off", "fps", "frametimes", "full"})) return bad("not off, fps, frametimes or full");
       } else if (features.display_framegen && key == "framegen") {
         if (!OneOf(value, {"off", "2", "3", "4"})) return bad("not off, 2, 3 or 4");
       } else {
@@ -507,8 +522,12 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
     } else {
       if (key == "env" && features.debug_env) {
         const auto equals = value.find('=');
-        if (equals == std::string_view::npos || !IsProsperoDebugEnvEntry(value.substr(0, equals), value.substr(equals + 1)))
+        if (equals == std::string_view::npos) return bad("not NAME=value with a variable the runtime takes");
+        const auto name = value.substr(0, equals), item = value.substr(equals + 1);
+        const bool backend_hud = features.display_hud && IsProsperoHudDebugEnvEntry(name, item);
+        if (!IsProsperoDebugEnvEntry(name, item) && !backend_hud)
           return bad("not NAME=value with a variable the runtime takes");
+        hud_env |= backend_hud;
         if (!seen.insert("env:" + std::string(value.substr(0, equals))).second) return bad("variable set twice");
         if (++debug_env_count > kProsperoMaxDebugEnvEntries) return bad("more than 5 variables");
         continue;
@@ -521,6 +540,8 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
     }
   }
   if (sections.empty()) return fail("no [application] section");
+  // The title sets the backend's HUD itself while show_fps is on, and refuses the profile that sets it too.
+  if (hud_env && !show_fps_off) return fail("DXVK_HUD or GALLIUM_HUD in [debug] env needs show_fps = false");
   if (input_map) {
     std::string why;
     if (!ParseControllerLayout(map_lines, nullptr, &why)) return fail("[input] layout: " + why);

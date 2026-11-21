@@ -736,14 +736,26 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   // later in the catalogue, so its value here is not checked yet: the same test it gets below.
   const auto d3d12 = values.find("d3d12");
   const bool vkd3d_proton = kit.vkd3d_proton && dxvk && d3d12 != values.end() && d3d12->second.value == "vkd3d-proton";
+  // The runtime kit's overlay draws on every game that presents with Vulkan (DXVK, vkd3d-proton, Zink), at every level
+  // and with frame generation; without it, a game whose title waits for the update gets it then.
+  const bool kit_hud = kit.display_hud && display_graphics;
+  const bool hud_waits = kit.display_hud_needs_update && display_graphics;
+  if (id == "overlay_detail" && kit_hud) {
+    const auto overlay = values.find("performance_overlay");
+    if (overlay == values.end() || overlay->second.value != "on") return "Turn the performance overlay on first.";
+    return {};
+  }
   // With frame generation the overlay is its own counter (the game's frames and the pictures shown), on every path.
-  if (id == "overlay_detail" && framegen) return "Frame generation shows its own counter.";
-  if (id == "performance_overlay" && vkd3d_proton && !framegen && !kit.display_fps_counter)
-    return kit.display_fps_counter_needs_update ? kAppliesAfterKitUpdate : "Not shown for Direct3D 12 games.";
-  if (id == "overlay_detail" && vkd3d_proton)
+  if (id == "overlay_detail" && framegen)
+    return hud_waits ? kAppliesAfterKitUpdate : "Frame generation shows its own counter.";
+  if (id == "performance_overlay" && vkd3d_proton && !framegen && !kit_hud && !kit.display_fps_counter)
+    return kit.display_fps_counter_needs_update || hud_waits ? kAppliesAfterKitUpdate : "Not shown for Direct3D 12 games.";
+  if (id == "overlay_detail" && vkd3d_proton) {
+    if (hud_waits) return kAppliesAfterKitUpdate;
     return kit.display_fps_counter ? "Direct3D 12 games show only the frame rate." : "Not shown for Direct3D 12 games.";
+  }
   if (id == "overlay_detail") {
-    if (!dxvk) return "Only available with DXVK.";
+    if (!dxvk) return hud_waits ? kAppliesAfterKitUpdate : "Only available with DXVK.";
     if (!kit.dxvk_config) return "Needs a runtime kit that reads dxvk.conf.";
     const auto overlay = values.find("performance_overlay");
     if (overlay == values.end() || overlay->second.value != "on") return "Turn the performance overlay on first.";
@@ -959,6 +971,20 @@ bool SettingChoiceWaitsForUpdate(const EffectiveSettings& settings, std::string_
   return settings.graphics != "dxvk" || value == "120" || value == "40";
 }
 
+std::string SettingChoiceExplanation(const EffectiveSettings& settings, std::string_view id, std::string_view value) {
+  // The runtime kit's overlay shows more than DXVK's at each level, and the same on every graphics path.
+  if (id == "overlay_detail" && settings.display_hud) {
+    // One line each in the chooser: what a level adds, and what the overlay can't read yet.
+    if (value == "frametimes") return "Adds the lowest, average and highest frame rate and a graph of each frame's time.";
+    if (value == "full") return "Also resolution, CPU and memory use. Not yet: temperatures, clocks, GPU load, disk.";
+  }
+  const auto* definition = FindSetting(id);
+  if (!definition) return {};
+  for (const auto& choice : definition->choices)
+    if (choice.value == value) return choice.explanation;
+  return {};
+}
+
 bool ControllerLayoutInEffect(const EffectiveSettings& settings) {
   const auto& layout = OptionalValue(settings, "controller_layout");
   return layout.available && !layout.value.empty();
@@ -1130,8 +1156,9 @@ bool ValidateSettingValue(const GameRecipe& recipe, std::string_view id, std::st
       auto item = entry.substr(equals + 1);
       while (!name.empty() && name.back() == ' ') name.remove_suffix(1);
       while (!item.empty() && item.front() == ' ') item.remove_prefix(1);
+      // DXVK_HUD and GALLIUM_HUD reach the game only with the runtime kit's overlay (RenderProsperoProfile).
       if (!IsProsperoEnvironmentEntry(name, item) && !IsProsperoDebugEnvEntry(name, item) &&
-          !IsBottleEnvironmentEntry(name, item))
+          !IsProsperoHudDebugEnvEntry(name, item) && !IsBottleEnvironmentEntry(name, item))
         return fail(std::string(name) + " is not an allowed variable. " + kEnvironmentNamesHint);
       if (!names.insert(std::string(name)).second) return fail(std::string(name) + " appears twice");
       if (++count > kProsperoMaxEnvironmentEntries) return fail("at most 8 variables");
@@ -1238,6 +1265,7 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
     out.values[definition.id] = std::move(value);
   }
   out.graphics = out.values["graphics"].value;
+  out.display_hud = kit.display_hud && (out.graphics == "dxvk" || out.graphics == "opengl");
   out.environment_as_debug_env = !kit.environment && kit.opengl_zink;
   out.debug_env_lines = kit.opengl_zink;
   out.environment_section = kit.environment;
@@ -1644,6 +1672,14 @@ std::string ProfileDllOverrides(const GameRecipe& recipe, const EffectiveSetting
   return with.size() <= kProsperoMaxDllOverrideBytes ? with : list;
 }
 
+namespace {
+// Whether Overlay detail is DXVK's HUD in dxvk.conf: a kit that reads it, a DXVK game, the overlay on, and not the
+// runtime kit's overlay (which then draws instead, so two never draw).
+bool DxvkHudInConfig(const EffectiveSettings& settings) {
+  return !settings.display_hud && settings.values.at("overlay_detail").available;
+}
+}  // namespace
+
 bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& settings, const ProfileTarget& target,
                            ProsperoProfile* profile, std::string* reason) {
   const auto fail = [&](std::string why) {
@@ -1684,15 +1720,20 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   text += "desktop = " + value("resolution") + "\n";
   if (settings.values.at("scaling").available) text += "scaling = " + value("scaling") + "\n";
   text += "view = " + value("window_view") + "\n";
-  // With a kit that reads dxvk.conf, a DXVK game's overlay is dxvk.hud there; the title's
+  // With the runtime kit's overlay, Overlay detail is [display] hud, for every graphics path that presents with
+  // Vulkan; the title then draws no backend counter of its own, and show_fps stays false (it defaults to true).
+  const auto& overlay = settings.values.at("performance_overlay");
+  const bool overlay_on = overlay.available && overlay.value == "on";
+  const bool kit_hud = settings.display_hud && overlay_on;
+  // Without it, with a kit that reads dxvk.conf, a DXVK game's overlay is dxvk.hud there; the title's
   // own DXVK_HUD=fps would override it, so show_fps stays false.
-  const bool hud_in_config = settings.values.at("overlay_detail").available;
+  const bool hud_in_config = DxvkHudInConfig(settings);
   // A Direct3D 12 game's overlay is the driver's counter instead, unless frame generation draws its own.
   const auto& framegen = OptionalValue(settings, "framegen");
   const bool display_framegen = framegen.available && framegen.value != "off";
-  const auto& overlay = settings.values.at("performance_overlay");
-  const bool fps_counter = settings.vkd3d_proton && !display_framegen && overlay.available && overlay.value == "on";
-  text += std::string("show_fps = ") + (hud_in_config || fps_counter ? "false" : on("performance_overlay")) + "\n";
+  const bool fps_counter = !kit_hud && settings.vkd3d_proton && !display_framegen && overlay_on;
+  text += std::string("show_fps = ") + (kit_hud || hud_in_config || fps_counter ? "false" : on("performance_overlay")) +
+          "\n";
   // An OpenGL game always names its rate, as before (60 unless the runtime takes 120 Hz). opengl_thread is no longer
   // written: it was the PS5 OpenGL SDK's, and runtimes default it to off.
   if (settings.values.at("refresh").available || settings.graphics == "opengl")
@@ -1707,6 +1748,10 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   // Only for a title whose runtime takes it: an older runtime refuses the whole profile for this key.
   if (display_framegen) text += "framegen = " + framegen.value + "\n";
   if (fps_counter) text += "fps_counter = true\n";
+  if (kit_hud) {
+    const auto& detail = settings.values.at("overlay_detail");
+    text += "hud = " + (detail.available ? detail.value : std::string("fps")) + "\n";
+  }
 
   text += "\n[input]\n";
   // A controller layout: the controller mode, rumble, then map = 1 and the layout's lines. No preset, pointer stick or
@@ -1879,7 +1924,12 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
       while (!item.empty() && item.back() == ' ') item.pop_back();
       if (!settings.environment_as_debug_env && IsProsperoEnvironmentEntry(name, item)) continue;
       if (name == "DXVK_FRAME_RATE" && FrameLimitOwnsCap(settings)) continue;
-      if (!IsProsperoDebugEnvEntry(name, item) || count == kProsperoMaxDebugEnvEntries) continue;
+      // DXVK's and Mesa's own HUDs, for debugging: only where the runtime kit's overlay keeps show_fps false.
+      const bool backend_hud = settings.display_hud && IsProsperoHudDebugEnvEntry(name, item);
+      if ((!IsProsperoDebugEnvEntry(name, item) && !backend_hud) || count == kProsperoMaxDebugEnvEntries) continue;
+      // The title refuses a profile that sets the driver's own variables while [display] sets them.
+      if ((display_framegen || fps_counter || kit_hud) && (name.rfind("PW_FRAMEGEN", 0) == 0 || name == "PW_HUD"))
+        continue;
       lines += "env = " + name + "=" + item + "\n";
       ++count;
     }
@@ -1999,6 +2049,8 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   features.display_frame_rate = frame_rate;
   features.display_framegen = display_framegen;
   features.display_fps_counter = fps_counter;
+  // The title takes hud, and DXVK_HUD or GALLIUM_HUD in [debug] env, whenever its runtime has the overlay.
+  features.display_hud = settings.display_hud;
   features.input_playstation = value("controller") == "playstation" || held_mode == "playstation";
   features.input_map = input_map;
   features.launcher_map = held_map;
@@ -2032,7 +2084,7 @@ std::string RenderDxvkConfig(const EffectiveSettings& settings) {
   if (latency.available && latency.value != "game")
     text += "dxgi.maxFrameLatency = " + latency.value + "\nd3d9.maxFrameLatency = " + latency.value + "\n";
   const auto& detail = option("overlay_detail");
-  if (detail.available) {
+  if (DxvkHudInConfig(settings)) {
     const char* elements = detail.value == "full" ? "fps,frametimes,memory,gpuload,version"
                            : detail.value == "frametimes" ? "fps,frametimes" : "fps";
     text += std::string("dxvk.hud = ") + elements + "\n";
@@ -4453,7 +4505,7 @@ namespace playden::runtime {
 const std::vector<std::string>& SettingsKitCapabilityNames() {
   // Sorted, as a kit manifest lists them.
   static const std::vector<std::string> names = {kKitAudioMicrophone, kKitDisplay120Hz, kKitDisplayFpsCounter,
-                                                 kKitDisplayFramegen,
+                                                 kKitDisplayFramegen, kKitDisplayHud,
                                                  kKitHelperProcess, kKitInputMap, kKitInputPlaystation, kKitInputRumble,
                                                  kKitLauncherMap, kKitLauncherMode, kKitAudioVolume, kKitDxvkConfig, kKitDxvkPresent,
                                                  kKitInputTuning, kKitEnvironment,
@@ -4491,6 +4543,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.input_rumble = has(kKitInputRumble);
   kit.display_framegen = has(kKitDisplayFramegen);
   kit.display_fps_counter = has(kKitDisplayFpsCounter);
+  kit.display_hud = has(kKitDisplayHud);
   kit.launcher_mode = has(kKitLauncherMode);
   kit.touchpad_switch = has(kKitTouchpadSwitch);
   kit.input_playstation = has(kKitInputPlaystation);
@@ -4555,6 +4608,10 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   if (!title_runtime_current && kit.display_fps_counter) {
     kit.display_fps_counter = false;
     kit.display_fps_counter_needs_update = true;
+  }
+  if (!title_runtime_current && kit.display_hud) {
+    kit.display_hud = false;
+    kit.display_hud_needs_update = true;
   }
   if (!title_runtime_current && kit.launcher_mode) {
     kit.launcher_mode = false;
@@ -5023,6 +5080,9 @@ bool CommunityPresetSupported(const CommunityPreset& community, const KitCapabil
     }
     else if (feature == "display-fps-counter") {
       if (!kit.display_fps_counter && !kit.display_fps_counter_needs_update) return false;
+    }
+    else if (feature == "display-hud") {
+      if (!kit.display_hud && !kit.display_hud_needs_update) return false;
     }
     else if (feature == "input-map") {
       if (!kit.input_map && !kit.input_map_needs_update) return false;

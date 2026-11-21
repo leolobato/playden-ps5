@@ -9578,7 +9578,7 @@ void Simulation::rebuild_view() {
                     const auto& choice = rt::FindSetting(modal.setting_id)->choices[index];
                     value = choice.value;
                     item.title = choice.label;
-                    item.subtitle = choice.explanation;
+                    item.subtitle = rt::SettingChoiceExplanation(settings_values, modal.setting_id, value);
                     // A choice the other settings rule out (Frame limit 120 without 120 Hz output) says why.
                     if (auto why = rt::SettingChoiceUnavailable(settings_values, modal.setting_id, value); !why.empty()) {
                         item.subtitle = std::move(why);
