@@ -212,9 +212,168 @@ void Installed(const std::string& root) {
   Put(root + "/playden/kits/kitid/runtime/wine.bin", "old");
   Put(root + "/playden/kits/.previous-kitid-1/manifest.json", std::string(64, '7'));
 }
+
+// The publisher pack download: archive served under the builds page's packs folder.
+const std::string kPackPrefix = "https://builds.playden.club/packs/";
+const std::string kPackUrl = kPackPrefix + "9/playden-rgschost-9.tzst";
+struct Pack {
+  std::string bytes = std::string(3000, 'p');
+  bool ready = false;
+  bool install_ok = true;
+  std::vector<std::string> installed;  // what install() was given, read at the time
+  void Configure(UpdateConfig& config) {
+    config.pack.name = "Rockstar Games pack";
+    config.pack.url = kPackUrl;
+    config.pack.allowed_url_prefix = kPackPrefix;
+    config.pack.archive = "playden-rgschost-9.tzst";
+    config.pack.size = bytes.size();
+    config.pack.sha256 = FakeSha(bytes);
+    config.pack.ready = [this] { return ready; };
+    config.pack.install = [this](const std::string& path, std::string* reason) {
+      installed.push_back(Read(path));
+      if (!install_ok) *reason = "no room";
+      return install_ok;
+    };
+  }
+};
 }  // namespace
 
 int main() {
+  // The publisher pack: downloaded and installed with no offer when it is not in place.
+  {
+    // Off (no URL): nothing runs.
+    Fixture fixture;
+    fixture.root = zip_fixture::TempFolder("pack-off");
+    UpdateService off(fixture.Config({0, 3, 0}));
+    off.CheckPack();
+    CHECK(!off.Busy() && off.Snapshot().pack.phase == PackInstallPhase::kIdle);
+    off.Shutdown();
+
+    // In place: not needed, nothing fetched.
+    Pack pack;
+    pack.ready = true;
+    auto config = fixture.Config({0, 3, 0});
+    pack.Configure(config);
+    UpdateService ready(config);
+    ready.CheckPack(); Wait(ready);
+    CHECK(ready.Snapshot().pack.phase == PackInstallPhase::kNotNeeded && fixture.server.requests == 0);
+    ready.Shutdown();
+
+    // Missing: downloaded from the packs folder, handed to install, and the download removed.
+    pack.ready = false;
+    fixture.server.files[kPackUrl] = pack.bytes;
+    UpdateService fresh(config);
+    fresh.CheckPack(); Wait(fresh);
+    auto snapshot = fresh.Snapshot();
+    CHECK(snapshot.pack.phase == PackInstallPhase::kInstalled);
+    CHECK(snapshot.pack.done == pack.bytes.size() && snapshot.pack.total == pack.bytes.size());
+    CHECK(pack.installed.size() == 1 && pack.installed[0] == pack.bytes);
+    CHECK(!Exists(fixture.root + "/playden/self-update/downloads/playden-rgschost-9.tzst"));
+    CHECK(!Exists(fixture.root + "/playden/self-update/downloads/playden-rgschost-9.tzst.part"));
+    CHECK(std::string(PackInstallPhaseName(snapshot.pack.phase)) == "installed");
+    fresh.Shutdown();
+
+    // Install refused: failed, with the reason in the log only.
+    pack.install_ok = false;
+    UpdateService refused(config);
+    refused.CheckPack(); Wait(refused);
+    CHECK(refused.Snapshot().pack.phase == PackInstallPhase::kFailed);
+    CHECK(refused.Snapshot().pack.error == "Playden could not install the Rockstar Games pack.");
+    refused.Shutdown();
+    pack.install_ok = true;
+
+    // Bytes that aren't the pinned archive: failed, nothing installed, nothing kept.
+    pack.installed.clear();
+    fixture.server.files[kPackUrl] = std::string(3000, 'x');
+    UpdateService tampered(config);
+    tampered.CheckPack(); Wait(tampered);
+    CHECK(tampered.Snapshot().pack.phase == PackInstallPhase::kFailed && pack.installed.empty());
+    CHECK(tampered.Snapshot().pack.error.find("Check the network") != std::string::npos);
+    CHECK(!Exists(fixture.root + "/playden/self-update/downloads/playden-rgschost-9.tzst.part"));
+    tampered.Shutdown();
+
+    // Not on the server (or offline): failed; CheckPack again tries again.
+    fixture.server.files.erase(kPackUrl);
+    UpdateService missing(config);
+    missing.CheckPack(); Wait(missing);
+    CHECK(missing.Snapshot().pack.phase == PackInstallPhase::kFailed && pack.installed.empty());
+    fixture.server.files[kPackUrl] = pack.bytes;
+    missing.CheckPack(); Wait(missing);
+    CHECK(missing.Snapshot().pack.phase == PackInstallPhase::kInstalled && pack.installed.size() == 1);
+    missing.Shutdown();
+
+    // A URL outside the allowed prefix is never fetched.
+    auto elsewhere = config;
+    elsewhere.pack.url = "https://example.com/packs/9/playden-rgschost-9.tzst";
+    fixture.server.files[elsewhere.pack.url] = pack.bytes;
+    const int before = fixture.server.requests;
+    UpdateService outside(elsewhere);
+    outside.CheckPack(); Wait(outside);
+    CHECK(outside.Snapshot().pack.phase == PackInstallPhase::kFailed && fixture.server.requests == before);
+    outside.Shutdown();
+
+    // Cancel: failed as cancelled.
+    std::atomic<bool> started{false};
+    auto held = config;
+    held.fetch = [&](const HttpRequest& request, const std::atomic<bool>& cancel) {
+      started = true;
+      while (!cancel) usleep(1000);
+      HttpResponse response;
+      response.error = playden::steam::HttpError::kCanceled;
+      (void)request;
+      return response;
+    };
+    UpdateService cancelled(held);
+    cancelled.CheckPack();
+    for (int i = 0; i < 2000 && !started; ++i) usleep(1000);
+    CHECK(cancelled.Snapshot().pack.phase == PackInstallPhase::kDownloading);
+    cancelled.Cancel(); Wait(cancelled);
+    CHECK(cancelled.Snapshot().pack.phase == PackInstallPhase::kFailed);
+    CHECK(cancelled.Snapshot().pack.error == "The Rockstar Games pack download was cancelled.");
+    cancelled.Shutdown();
+  }
+  // With a kit check asked while the pack downloads: the kit check runs after it.
+  {
+    KitOnly kit("pack-then-kit", "");
+    Publish(kit.fixture.server, "v0.3.0");
+    kit.fixture.server.releases = "[" + kit.fixture.server.latest + "]";
+    Pack pack;
+    kit.fixture.server.files[kPackUrl] = pack.bytes;
+    auto config = kit.Config();
+    pack.Configure(config);
+    std::atomic<bool> hold{true};
+    config.fetch = [&](const HttpRequest& request, const std::atomic<bool>&) {
+      while (hold && request.url == kPackUrl) usleep(1000);
+      return kit.fixture.server(request);
+    };
+    UpdateService service(config);
+    service.CheckPack();
+    service.CheckKit();
+    CHECK(service.Busy() && service.Snapshot().kit.phase == KitInstallPhase::kIdle);
+    hold = false;
+    Wait(service);
+    CHECK(service.Snapshot().pack.phase == PackInstallPhase::kInstalled);
+    CHECK(service.Snapshot().kit.phase == KitInstallPhase::kAvailable);
+    service.Shutdown();
+  }
+  // A staged update: skipped, the new Playden checks its own pin.
+  {
+    Fixture fixture;
+    fixture.root = zip_fixture::TempFolder("pack-staged");
+    Installed(fixture.root);
+    Publish(fixture.server, "v0.3.0");
+    Pack pack;
+    fixture.server.files[kPackUrl] = pack.bytes;
+    auto config = fixture.Config({0, 2, 0});
+    pack.Configure(config);
+    UpdateService service(config);
+    service.Check(false); Wait(service);
+    service.Install(); Wait(service);
+    CHECK(service.Snapshot().phase == UpdatePhase::kStaged);
+    service.CheckPack(); Wait(service);
+    CHECK(service.Snapshot().pack.phase == PackInstallPhase::kIdle && pack.installed.empty());
+    service.Shutdown();
+  }
   // Skip this version (#1085): saved, so a later start finds it quietly; it still installs; a newer one isn't quiet.
   {
     Fixture fixture;

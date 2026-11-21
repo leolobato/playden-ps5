@@ -273,6 +273,8 @@ class Controller {
   std::string self_update_rate_part_;
   bool kit_check_asked_ = false;  // the runtime started without a kit: CheckKit asked once
   bool kit_reload_asked_ = false;  // the kit-only install finished: the runtime asked to admit it
+  bool pack_check_asked_ = false;  // the publisher pack was looked for once (CheckPack: nothing when the feature is off)
+  bool pack_refresh_asked_ = false;  // the pack was installed: the runtime asked to look for it again
   void TickCloud();
   void TickRuntime();
   void TickCommunity();

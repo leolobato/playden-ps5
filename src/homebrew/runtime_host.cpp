@@ -7102,7 +7102,11 @@ std::string RuntimeHost::LoadPublisher(Composition& c, rt::Publisher publisher) 
     if (!c.publisher_pack || !rt::PublisherSupported(*c.publisher_pack, publisher)) {
       auto status = rt::CheckPublisherPack(root);
       Log("publisher pack " + status.message);
-      if (!status.present)
+      if (!rt::PublisherSupported(status, publisher) && config_.publisher_pack_download)
+        release.message = "Games from " + name + " need the " + name +
+                          " pack. Playden downloads it by itself; if the download stopped, try again in Settings › "
+                          "Publishers.";
+      else if (!status.present)
         release.message = "Games from " + name + " need the publisher pack. Install it from builds.playden.club.";
       else if (!rt::PublisherSupported(status, publisher))
         release.message = status.message;

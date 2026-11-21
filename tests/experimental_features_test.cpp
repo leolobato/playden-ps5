@@ -62,6 +62,18 @@ int main() {
     CHECK(ParseExperimentalFeatures("gog-store", DefaultExperimentalFeatures(true)).gog_store);
   }
 
+  // The publisher pack download: on in nightlies and dev builds, else by its line.
+  CHECK(!DefaultExperimentalFeatures(false).publisher_pack_download);
+  CHECK(DefaultExperimentalFeatures(true).publisher_pack_download);
+  {
+    std::vector<std::string> unknown;
+    const auto pack = ParseExperimentalFeatures("publisher-pack-download\npublisher-pack\n", {}, &unknown);
+    CHECK(pack.publisher_pack_download && !pack.gog_store);
+    CHECK((unknown == std::vector<std::string>{"publisher-pack"}));
+    CHECK(!ParseExperimentalFeatures("# publisher-pack-download\n").publisher_pack_download);
+    CHECK(ParseExperimentalFeatures("", DefaultExperimentalFeatures(true)).publisher_pack_download);
+  }
+
   // A line only turns a feature on: a default that is on stays on with any file.
   ExperimentalFeatures on;
   on.online_steam = true;

@@ -180,6 +180,9 @@ target_include_directories(playden_runtime_publisher PUBLIC "${CMAKE_SOURCE_DIR}
 target_compile_features(playden_runtime_publisher PUBLIC cxx_std_17)
 target_link_libraries(playden_runtime_publisher PUBLIC playden_zstd playden_runtime_artifact_hash playden_steam_protocol
     playden_storage)
+# Puts a downloaded publisher pack archive in place (runtime/publisher_pack_install), through platform::ManagedDirectory.
+add_library(playden_runtime_publisher_install STATIC "${CMAKE_SOURCE_DIR}/src/runtime/publisher_pack_install.cpp")
+target_link_libraries(playden_runtime_publisher_install PUBLIC playden_runtime_publisher playden_managed_directory)
 # Publisher runtimes extracted from the 7z archive inside a game's installer (runtime/publisher_runtime):
 # LZMA, the x86 BCJ filter (Bra86.c) and BCJ2 only; the other 7z methods and filters are compiled out.
 add_library(playden_publisher_runtime STATIC "${CMAKE_SOURCE_DIR}/src/runtime/publisher_runtime.cpp"
@@ -320,7 +323,7 @@ target_link_libraries(playden_homebrew_runtime_host PUBLIC playden_native_coordi
     playden_runtime_installs playden_runtime_install_service playden_runtime_package_installer
     playden_runtime_private_directories playden_runtime_launch_service playden_runtime_session_reconciler
     playden_storage playden_steam_cm_codec playden_runtime_steamworks playden_runtime_layout_migration playden_local_store
-    playden_self_update playden_steam_core playden_gog playden_steam_cm playden_runtime_publisher playden_publisher_runtime)
+    playden_self_update playden_steam_core playden_gog playden_steam_cm playden_runtime_publisher playden_runtime_publisher_install playden_publisher_runtime)
 
 add_library(playden_homebrew_artwork STATIC
     "${CMAKE_SOURCE_DIR}/src/homebrew/artwork.cpp"
@@ -776,6 +779,14 @@ if(BUILD_TESTING)
     add_executable(runtime_publisher_pack_test tests/runtime_publisher_pack_test.cpp)
     target_link_libraries(runtime_publisher_pack_test PRIVATE playden_runtime_publisher)
     add_test(NAME runtime_publisher_pack COMMAND runtime_publisher_pack_test "${CMAKE_SOURCE_DIR}/dependencies.lock.json")
+    add_executable(runtime_publisher_pack_install_test tests/runtime_publisher_pack_install_test.cpp)
+    target_link_libraries(runtime_publisher_pack_install_test PRIVATE playden_runtime_publisher_install)
+    add_test(NAME runtime_publisher_pack_install COMMAND runtime_publisher_pack_install_test)
+    add_executable(runtime_publisher_pack_install_native_policy_test tests/runtime_publisher_pack_install_test.cpp
+        "${CMAKE_SOURCE_DIR}/src/runtime/publisher_pack_install.cpp" "${CMAKE_SOURCE_DIR}/src/platform/managed_directory.cpp")
+    target_compile_definitions(runtime_publisher_pack_install_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1)
+    target_link_libraries(runtime_publisher_pack_install_native_policy_test PRIVATE playden_runtime_publisher)
+    add_test(NAME runtime_publisher_pack_install_native_policy COMMAND runtime_publisher_pack_install_native_policy_test)
     add_executable(runtime_publisher_detect_test tests/runtime_publisher_detect_test.cpp)
     target_link_libraries(runtime_publisher_detect_test PRIVATE playden_runtime_publisher)
     add_test(NAME runtime_publisher_detect COMMAND runtime_publisher_detect_test)

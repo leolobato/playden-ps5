@@ -59,7 +59,7 @@ std::string Describe(const steam::HttpResponse& response) {
 // Follows redirects from url until a server answers the probe range. Returns the final URL.
 std::optional<std::string> Resolve(const DownloadOptions& options, std::string url, std::string* error) {
   for (int hop = 0; hop <= kMaxRedirects; ++hop) {
-    if (!AllowedDownloadUrl(url)) {
+    if (!AllowedDownloadUrl(url, options)) {
       *error = "download host not allowed";
       return std::nullopt;
     }
@@ -94,11 +94,22 @@ bool AllowedDownloadUrl(const std::string& url) {
   return host.size() > suffix.size() && host.compare(host.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
+bool AllowedDownloadUrl(const std::string& url, const DownloadOptions& options) {
+  if (options.allowed_url_prefix.empty()) return AllowedDownloadUrl(url);
+  const auto& prefix = options.allowed_url_prefix;
+  // The prefix names its host with a "/" after it, so "https://host.evil/" and "https://host@evil/" don't match; a
+  // URL that could climb out of the prefix ("..", escapes, backslashes) is refused.
+  const auto host_end = prefix.find('/', 8);
+  return prefix.compare(0, 8, "https://") == 0 && host_end != std::string::npos && host_end > 8 &&
+         url.compare(0, prefix.size(), prefix) == 0 && url.find_first_of("\\@%") == std::string::npos &&
+         url.find("/..") == std::string::npos;
+}
+
 std::optional<std::string> FetchSmall(const std::string& url, std::size_t limit, const DownloadOptions& options,
                                       const std::string& accept, std::string* error) {
   std::string target = url;
   for (int hop = 0; hop <= kMaxRedirects; ++hop) {
-    if (!AllowedDownloadUrl(target)) {
+    if (!AllowedDownloadUrl(target, options)) {
       *error = "host not allowed";
       return std::nullopt;
     }

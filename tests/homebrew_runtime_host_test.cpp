@@ -11290,6 +11290,23 @@ void PublisherGameWithoutPackSaysWhy() {
   host.Shutdown();
 }
 
+// With the pack download on (publisher-pack-download), a missing pack points to Settings, where its download is.
+void PublisherGameWithoutPackPointsToTheDownload() {
+  PublisherFixture f;
+  f.config.publisher_release = nullptr;  // the real pack lookup
+  f.config.publisher_root = "/data/playden/publisher";
+  f.config.publisher_pack_download = true;
+  RuntimeHost host(f.config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(Hl2());
+  const auto refused = WaitFor(host, [](const RuntimeSnapshot& s) { return s.prepares_handled > 0; }, 60);
+  const std::string wanted = "Games from Rockstar Games need the Rockstar Games pack. Playden downloads it by itself; "
+                             "if the download stopped, try again in Settings › Publishers.";
+  CHECK(refused.refusals.count(220) && refused.refusals.at(220) == wanted);
+  host.Shutdown();
+}
+
 namespace {
 // A publisher game whose Steam entry is a launcher (Start.exe) and whose pack may name the program
 // that starts the game instead: app 4300, both 64-bit, the title folder found by title.rgl.
@@ -11877,6 +11894,7 @@ int main(int argc, char** argv) {
   PublisherProgramStartsAFreshlyPreparedGame();
   PublisherProgramReachesAPreparedGame();
   PublisherGameWithoutPackSaysWhy();
+  PublisherGameWithoutPackPointsToTheDownload();
   PlacesPublisherCredentialForAStartFromHome();
   NotifiesAtQuitWhenAHomeStartLacksTheSignIn();
   NotifiesAboutTheStatusOfAStartFromHome();

@@ -110,6 +110,23 @@ int main() {
                           "https://github.com.evil.com/x", "https://user@github.com/x", "https://github.com:8443/x",
                           "https://evilgithubusercontent.com/x", "ftp://github.com/x"})
     CHECK(!AllowedDownloadUrl(bad));
+  // A download with its own prefix (the publisher pack): only URLs under it, over HTTPS; GitHub is not allowed then.
+  {
+    DownloadOptions options;
+    CHECK(AllowedDownloadUrl("https://github.com/o/r", options));
+    options.allowed_url_prefix = "https://builds.playden.club/packs/";
+    CHECK(AllowedDownloadUrl("https://builds.playden.club/packs/1/playden-rgschost-1.tzst", options));
+    for (const char* bad : {"https://github.com/o/r", "http://builds.playden.club/packs/1/a.tzst",
+                            "https://builds.playden.club/kits/a.zip", "https://builds.playden.club.evil.com/packs/a",
+                            "https://builds.playden.club/packs/../kits/a.zip", "https://builds.playden.club/packs/%2e%2e/a",
+                            "https://builds.playden.club/packs/a\\..\\b", "https://builds.playden.club/packs/@evil.com/a"})
+      CHECK(!AllowedDownloadUrl(bad, options));
+    // A prefix that doesn't name its host up to a "/" allows nothing.
+    for (const char* prefix : {"https://builds.playden.club", "http://builds.playden.club/packs/", "https:///packs/"}) {
+      options.allowed_url_prefix = prefix;
+      CHECK(!AllowedDownloadUrl("https://builds.playden.club/packs/1/a.tzst", options));
+    }
+  }
 
   // Plain download: redirect, four ranged chunks, progress, hash check, rename.
   {

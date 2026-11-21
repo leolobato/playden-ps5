@@ -219,6 +219,7 @@ int main(int argc, char** argv) {
       const auto* entry = archives->Find(release.archive);
       CHECK(entry && entry->Find("sha256")->text() == release.sha256);
       CHECK(entry->Find("tree_sha256")->text() == release.tree_sha256);
+      CHECK(entry->Find("size") && entry->Find("size")->AsUint64() == release.size && release.size > 0);
     }
   }
 
@@ -232,6 +233,7 @@ int main(int argc, char** argv) {
     CHECK(status.version_matches);
     for (const auto& release : PinnedPublisherReleases()) {
       CHECK(status.verified.at(release.publisher));
+      CHECK(fs::file_size(real_pack / kPublisherPackVersion / release.archive) == release.size);
       reason.clear();
       const bool ok = PreparePublisherRelease(real_pack.string(), (real_pack / "cache").string(), release, &directory,
                                               &reason);

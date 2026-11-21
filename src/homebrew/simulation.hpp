@@ -256,6 +256,12 @@ struct LiveSelfUpdate {
     std::uint64_t kit_done = 0;
     std::uint64_t kit_total = 0;
     std::string kit_error;
+    // The Rockstar Games pack download (feature publisher-pack-download; never offered, it just runs): idle (feature
+    // off, or not looked for yet), not-needed, downloading, installing, installed, failed.
+    std::string pack_phase = "idle";
+    std::uint64_t pack_done = 0;
+    std::uint64_t pack_total = 0;
+    std::string pack_error;
 };
 // Live: publisher accounts (Rockstar Games) for games that start through their publisher, projected
 // from the runtime host. The credential itself never reaches the UI.

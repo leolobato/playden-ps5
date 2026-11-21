@@ -3857,6 +3857,8 @@ void Controller::TickSelfUpdate() {
     else if (request == "kit-check") self_update_->CheckKit();
     else if (request == "kit-install") self_update_->InstallKit();
     else if (request == "kit-cancel") self_update_->Cancel();
+    else if (request == "pack-check") self_update_->CheckPack();
+    else if (request == "pack-cancel") self_update_->Cancel();
     else if (request.rfind("skip ", 0) == 0) self_update_skip_pending_ = request.substr(5);
   }
   // A skip waits for the worker like a check: a busy worker would drop it.
@@ -3868,6 +3870,13 @@ void Controller::TickSelfUpdate() {
   if (self_update_check_pending_ && !self_update_->Busy()) {
     self_update_check_pending_ = false;
     self_update_->Check(true);
+  }
+  // The Rockstar Games pack (feature publisher-pack-download) is looked for once, after the startup update check and
+  // before the kit check, which waits for the worker: it needs no kit, so a first run gets it too. It downloads with
+  // no offer when it isn't in place.
+  if (!pack_check_asked_ && !self_update_->Busy()) {
+    pack_check_asked_ = true;
+    self_update_->CheckPack();
   }
   // The runtime started without a usable kit (a first run), or with another kit than the one this
   // version was made for: the running version's kit is looked for once, after the startup update
@@ -3885,13 +3894,19 @@ void Controller::TickSelfUpdate() {
     kit_reload_asked_ = true;
     runtime_->ReloadKit();
   }
+  // A pack put in place: the runtime looks for it again (as after an upload while Playden runs).
+  const bool pack_installed = snapshot.pack.phase == update::PackInstallPhase::kInstalled;
+  if (pack_installed && !pack_refresh_asked_ && runtime_) runtime_->RefreshPublishers();
+  pack_refresh_asked_ = pack_installed;
   const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
   const bool kit_downloading = snapshot.kit.phase == update::KitInstallPhase::kDownloading;
-  const bool downloading = snapshot.phase == update::UpdatePhase::kDownloading || kit_downloading;
-  const std::string rate_part = kit_downloading ? std::string("kit-only") : snapshot.part;
-  const std::uint64_t rate_done = kit_downloading ? snapshot.kit.done : snapshot.done;
-  const std::uint64_t rate_total = kit_downloading ? snapshot.kit.total : snapshot.total;
+  const bool pack_downloading = snapshot.pack.phase == update::PackInstallPhase::kDownloading;
+  const bool downloading = snapshot.phase == update::UpdatePhase::kDownloading || kit_downloading || pack_downloading;
+  // One download at a time runs on the worker.
+  const std::string rate_part = kit_downloading ? std::string("kit-only") : pack_downloading ? std::string("pack") : snapshot.part;
+  const std::uint64_t rate_done = kit_downloading ? snapshot.kit.done : pack_downloading ? snapshot.pack.done : snapshot.done;
+  const std::uint64_t rate_total = kit_downloading ? snapshot.kit.total : pack_downloading ? snapshot.pack.total : snapshot.total;
   if (downloading) {
     if (self_update_rate_part_ != rate_part) {
       self_update_rate_.Reset();
@@ -3939,6 +3954,10 @@ void Controller::TickSelfUpdate() {
   live.kit_done = snapshot.kit.done;
   live.kit_total = snapshot.kit.total;
   live.kit_error = snapshot.kit.error;
+  live.pack_phase = update::PackInstallPhaseName(snapshot.pack.phase);
+  live.pack_done = snapshot.pack.done;
+  live.pack_total = snapshot.pack.total;
+  live.pack_error = snapshot.pack.error;
   model_.UpdateSelfUpdate(live);
 }
 

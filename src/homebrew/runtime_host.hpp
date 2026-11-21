@@ -215,12 +215,15 @@ struct RuntimeHostConfig {
   // Console path of the folder holding the games' Cloud indexes (.playden-saves on console storage).
   std::string cloud_saves_root;
   std::function<bool(std::string* error)> finish_games_move;
-  // Publisher games (runtime/publisher_*.h): the console folder with the uploaded pack
-  // (<root>/<version>/). The upload tool creates it over FTP, so Playden can't write there.
+  // Publisher games (runtime/publisher_*.h): the console folder with the pack (<root>/<version>/). The upload tool
+  // creates it over FTP, so Playden writes there only as root (the pack download, update::UpdateService::CheckPack).
   std::string publisher_root = runtime::kPublisherPackRoot;
+  // Playden downloads the pack itself (feature publisher-pack-download): a missing pack points to Settings, not to
+  // builds.playden.club.
+  bool publisher_pack_download = false;
   // Playden's own publisher folder (console path): unpacked releases (<work>/cache/) and the
   // runtimes made from games' installers (<work>/runtime/<publisher>/).
-  std::string publisher_work_root = "/data/playden/publisher-work";
+  std::string publisher_work_root = runtime::kPublisherWorkRoot;
   // Where pack releases are unpacked (console path); empty: <publisher_work_root>/cache.
   std::string publisher_cache_root;
   // Where publisher accounts are kept (the Steam state root, host path); empty: state_root.

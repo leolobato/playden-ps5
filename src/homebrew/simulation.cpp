@@ -8,6 +8,7 @@
 #include "platform/random_id.h"
 #include "platform/usb_mount.h"
 #include "runtime/game_probe.h"
+#include "runtime/publisher_pack.h"
 
 #include "app/diagnostic_log.h"
 #include "community/recipe_import.h"
@@ -1003,7 +1004,7 @@ std::string action_label(const std::string& key) {
         {"prep-clear-completed", "Clear completed"}, {"prep-cancel-all", "Cancel all"}, {"prep-pause-all", "Pause all"}, {"prep-resume-all", "Resume all"}, {"storage-close", "Close"}, {"collection-new", "New collection…"}, {"collection-manage", "Manage collections"},
         {"about-version", "Version"}, {"self-update-install", "Download and install"}, {"self-update-skip", "Skip this version"},
         {"self-update-restart", "Restart Playden"}, {"self-update-cancel", "Cancel update"},
-        {"kit-install", "Download"}, {"kit-cancel", "Cancel download"},
+        {"kit-install", "Download"}, {"kit-cancel", "Cancel download"}, {"pack-cancel", "Cancel download"},
         {"self-update-back-confirm", "Go back"}, {"release-notes-ok", "OK"},
         {"about-build", "Build"},
         {"about-kit", "Runtime kit in use"}, {"about-kit-source", "Kit built from"},
@@ -3647,6 +3648,8 @@ void Simulation::UpdateSelfUpdate(const LiveSelfUpdate& update) {
                          before.whats_new != update.whats_new ||
                          before.kit_phase != update.kit_phase || before.kit_done != update.kit_done ||
                          before.kit_total != update.kit_total || before.kit_error != update.kit_error ||
+                         before.pack_phase != update.pack_phase || before.pack_done != update.pack_done ||
+                         before.pack_total != update.pack_total || before.pack_error != update.pack_error ||
                          !update.finished_message.empty();
     if (!changed) {
         show_update_prompt();
@@ -3698,6 +3701,10 @@ void Simulation::UpdateSelfUpdate(const LiveSelfUpdate& update) {
         push_notice({"kit-installed", "Runtime kit installed", "", false, kLiveNoticeSeconds, false,
                      "Games can be prepared and played now"});
     }
+    // The Rockstar Games pack: no offer and no alert. A failure shows in Settings › Publishers.
+    if (update.pack_phase == "installed" && before.pack_phase != "installed")
+        push_notice({"publisher-pack-installed", "Rockstar Games pack installed", "", false, kLiveNoticeSeconds, false,
+                     "Rockstar Games' games can be played now"});
     sync_self_update_job();
     show_update_prompt();
     rebuild_view();
@@ -3780,6 +3787,25 @@ void Simulation::sync_self_update_job() {
         }
         job.completed_bytes = update.kit_done;
         job.total_bytes = update.kit_total;
+        state_.jobs.push_back(std::move(job));
+    }
+    // The Rockstar Games pack: queued by itself, never offered.
+    if (update.pack_phase == "downloading" || update.pack_phase == "installing") {
+        Job job;
+        job.id = "publisher-pack";
+        job.kind = "self-update";
+        job.queue_order = -1;
+        job.title = "Rockstar Games pack";
+        const bool downloading = update.pack_phase == "downloading";
+        job.state = downloading ? JobState::Downloading : JobState::Verifying;
+        job.stage_text = downloading ? "Downloading the Rockstar Games pack" : "Installing the Rockstar Games pack";
+        job.state_text = downloading ? "Downloading" : "Installing";
+        if (downloading) {
+            job.bytes_per_second = update.bytes_per_second;
+            job.eta_seconds = update.eta_seconds;
+        }
+        job.completed_bytes = update.pack_done;
+        job.total_bytes = update.pack_total;
         state_.jobs.push_back(std::move(job));
     }
     if (update.phase != "downloading" && update.phase != "unpacking" && update.phase != "staged") return;
@@ -7646,6 +7672,34 @@ bool Simulation::scenario(const std::string& name) {
         update(GameId::Steam(900002), 1, JobState::Queued, 312'000'000, 0, "", false);
         update(GameId::Steam(900003), 2, JobState::Paused, 2'100'000'000, 640'000'000, "", false);
         state_.navigation.focus_key = "queue-downloads";
+    } else if (name == "publisher-pack-download") {
+        // Queue with the Rockstar Games pack downloading on its own (publisher-pack-download), ahead of a game.
+        state_.account().authentication = AuthState::SignedIn;
+        state_.navigation.route = Route::Downloads;
+        state_.navigation.modals.clear();
+        state_.jobs.clear();
+        Job pack;
+        pack.id = "publisher-pack";
+        pack.kind = "self-update";
+        pack.queue_order = -1;
+        pack.title = "Rockstar Games pack";
+        pack.state = JobState::Downloading;
+        pack.stage_text = "Downloading the Rockstar Games pack";
+        pack.state_text = "Downloading";
+        pack.total_bytes = 2'351'438;
+        pack.completed_bytes = 940'000;
+        pack.bytes_per_second = 1'800'000;
+        pack.eta_seconds = 1;
+        state_.jobs.push_back(std::move(pack));
+        Job game;
+        game.id = "install-" + ToKey(GameId::Steam(900002));
+        game.game_id = GameId::Steam(900002);
+        game.queue_order = 0;
+        game.state = JobState::Queued;
+        game.total_bytes = 312'000'000;
+        game.volume_id = "internal";
+        state_.jobs.push_back(std::move(game));
+        state_.navigation.focus_key = "job-publisher-pack";
     } else if (name == "moving") {
         // Queue with moves to another drive: one copying (Play waits for it), one switching its title to the copy
         // (it must finish), one queued.
@@ -11325,6 +11379,28 @@ void Simulation::rebuild_view() {
                 item.subtitle = "Sign in with your phone to play its games";
             }
         }
+        // The Rockstar Games pack that Playden downloads by itself (feature publisher-pack-download; idle: off).
+        if (live() && state_.self_update.pack_phase != "idle") {
+            const auto& update = state_.self_update;
+            const auto& phase = update.pack_phase;
+            auto& pack = add("settings-publisher-pack", RowKind::Action, "Rockstar Games pack", "publisher-pack");
+            if (phase == "failed") {
+                pack.value = "Try again";
+                pack.subtitle = update.pack_error;
+            } else if (phase == "downloading") {
+                pack.value = update.pack_total ? std::to_string(update.pack_done * 100 / update.pack_total) + "%" : "Working…";
+                pack.subtitle = "Downloading from builds.playden.club";
+            } else if (phase == "installing") {
+                pack.value = "Installing…";
+                pack.subtitle = "Putting the downloaded pack in place";
+            } else {
+                pack.value = "Ready";
+                pack.subtitle = std::string("Version ") + rt::kPublisherPackVersion;
+                pack.kind = RowKind::Status;
+                pack.action.clear();
+                pack.enabled = false;
+            }
+        }
         heading("Community");
         // The Playden account shares and reports credit (plan 2026-11-06 Phase D).
         auto& account_row = add("settings-account-link", RowKind::Action, "Playden account", "account-link");
@@ -13331,6 +13407,8 @@ void Simulation::activate() {
         state_.notices.push_back({"estimate", "Fixture estimate is still unavailable", "install-estimate-retry", true, 0});
     } else if (action_name == "job-action" && selected.key == "job-kit-install") {
         open_modal({"job-actions", "Runtime kit", selected.key, {"kit-cancel", "cancel"}, 0, false});
+    } else if (action_name == "job-action" && selected.key == "job-publisher-pack") {
+        open_modal({"job-actions", "Rockstar Games pack", selected.key, {"pack-cancel", "cancel"}, 0, false});
     } else if (action_name == "job-action" && selected.key == "job-playden-update") {
         const auto& phase = state_.self_update.phase;
         std::vector<std::string> actions;
@@ -15259,6 +15337,14 @@ void Simulation::activate() {
     }
     else if (live() && action_name == "kit-install") { close_modal(); self_update_requests_.push_back("kit-install"); }
     else if (live() && action_name == "kit-cancel") { close_modal(); self_update_requests_.push_back("kit-cancel"); }
+    else if (live() && action_name == "publisher-pack") {
+        const auto& phase = state_.self_update.pack_phase;
+        if (phase == "downloading" || phase == "installing") {
+            state_.navigation.route = Route::Downloads;
+            state_.navigation.focus_key = "job-publisher-pack";
+        } else if (phase == "failed") self_update_requests_.push_back("pack-check");
+    }
+    else if (live() && action_name == "pack-cancel") { close_modal(); self_update_requests_.push_back("pack-cancel"); }
     else if (live() && action_name == "self-update-cancel") { close_modal(); self_update_requests_.push_back("cancel"); }
     else if (live() && action_name == "self-update-restart") { close_modal(); request_self_update_restart(); }
     else if (live() && action_name == "self-update-notes") open_release_notes(false);

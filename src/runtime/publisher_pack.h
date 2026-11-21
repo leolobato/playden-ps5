@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -8,9 +9,11 @@ namespace playden::runtime {
 
 // The publisher pack: the closed helper programs Rockstar Games' Steam games need for their
 // account. Playden doesn't ship them: they live at <pack_root>/<version>/ (release.json and the
-// archive), put there by tools/console_publisher_upload.py or the builds page's Install button.
-// Each Playden build accepts exactly one pack version, pinned below: one helper release, whose
-// tree hash is computed as the macOS Playden's PublisherAssetCache does.
+// archive), put there by tools/console_publisher_upload.py, the builds page's Install button, or
+// Playden itself, which downloads the pinned archive from builds.playden.club when the
+// publisher-pack-download feature is on (runtime/publisher_pack_install.h). Each Playden build
+// accepts exactly one pack version, pinned below: one helper release, whose tree hash is computed
+// as the macOS Playden's PublisherAssetCache does.
 enum class Publisher { kRockstar };
 inline constexpr Publisher kPublishers[] = {Publisher::kRockstar};
 
@@ -20,10 +23,14 @@ struct PublisherRelease {
   std::string sha256;       // of the archive file
   std::string tree_sha256;  // PublisherTreeDigest of the unpacked files
   std::vector<std::string> required;  // files that must be at the unpacked root
+  std::uint64_t size = 0;             // of the archive file, for the download (0: not pinned)
 };
 
 inline constexpr const char* kPublisherPackVersion = "20261121.1";
 inline constexpr const char* kPublisherPackRoot = "/data/playden/publisher";
+// Playden's own publisher files: the unpacked archives in <work root>/cache, the publishers' runtimes.
+inline constexpr const char* kPublisherWorkRoot = "/data/playden/publisher-work";
+inline constexpr const char* kPublisherCacheRoot = "/data/playden/publisher-work/cache";
 const std::vector<PublisherRelease>& PinnedPublisherReleases();
 // The pin of one publisher's archive: every publisher has one.
 const PublisherRelease& PinnedPublisherRelease(Publisher publisher);

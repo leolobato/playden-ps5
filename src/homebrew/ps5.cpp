@@ -37,6 +37,8 @@
 #include "runtime/artifact_hash.h"
 #include "runtime/kit_admission.h"
 #include "runtime/kit_trust.h"
+#include "runtime/publisher_pack.h"
+#include "runtime/publisher_pack_install.h"
 #include "runtime/steamworks.h"
 #include "update/update_service.h"
 #include "web/address.h"
@@ -324,6 +326,8 @@ int main() {
             features_root + "/" + playden::app::kExperimentalFeaturesFileName, features, &unknown);
         if (features.online_steam) playden::app::AppendLogLine(log_root, "launch.log", "experimental feature online-steam on");
         if (features.gog_store) playden::app::AppendLogLine(log_root, "launch.log", "experimental feature gog-store on");
+        if (features.publisher_pack_download)
+            playden::app::AppendLogLine(log_root, "launch.log", "experimental feature publisher-pack-download on");
         for (const auto& name : unknown)
             playden::app::AppendLogLine(log_root, "launch.log", "experimental feature unknown: " + name.substr(0, 64));
     }
@@ -598,6 +602,34 @@ int main() {
         };
         update_config.log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "update.log", line); };
         update_config.local_release_dir = paths.title_root + "/dev/update-local";
+        // The Rockstar Games pack (publisher-pack-download): the pinned archive from builds.playden.club, put in
+        // place without asking whenever it isn't there.
+        if (features.publisher_pack_download) {
+            namespace rt = playden::runtime;
+            const auto& release = rt::PinnedPublisherRelease(rt::Publisher::kRockstar);
+            auto& pack = update_config.pack;
+            pack.name = "Rockstar Games pack";
+            pack.url = rt::PublisherArchiveUrl(rt::kPublisherPackVersion, release);
+            pack.allowed_url_prefix = rt::kPublisherPackBaseUrl;
+            pack.archive = release.archive;
+            pack.size = release.size;
+            pack.sha256 = release.sha256;
+            pack.ready = [] {
+                const auto status = rt::CheckPublisherPack(rt::kPublisherPackRoot);
+                return rt::PublisherSupported(status, rt::Publisher::kRockstar);
+            };
+            pack.install = [release](const std::string& archive, std::string* reason) {
+                rt::PublisherPackInstall install;
+                install.pack_root = rt::kPublisherPackRoot;
+                install.version = rt::kPublisherPackVersion;
+                install.release = release;
+                install.cache_root = rt::kPublisherCacheRoot;
+                // The pack folder may be root's (an FTP upload): the steps there run as root, briefly.
+                install.as_root = [](const std::function<bool()>& work) { return playden::ps5::WithRoot(work); };
+                install.log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "update.log", line); };
+                return rt::InstallPublisherPack(install, archive, reason);
+            };
+        }
         playden::update::UpdateService self_update(std::move(update_config));
         playden::app::AppendLogLine(log_root, "update.log",
                                     "self-update: Playden " + playden::update::CurrentVersion().ToString() + " started");
@@ -677,6 +709,7 @@ int main() {
             config.runtime_dir = paths.title_root + "/runtime";
             // Publisher accounts sit beside the Steam session, in the user data root.
             config.publisher_account_root = user_root;
+            config.publisher_pack_download = features.publisher_pack_download;
             // A game set to Steam features = Online signs in with the account's refresh token and Playden's device
             // fields, under a login ID of its own so neither session replaces the other.
             config.online_session = [&online_sessions, &online_storage,

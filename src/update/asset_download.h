@@ -26,6 +26,9 @@ struct DownloadOptions {
   std::function<void(const std::string& line)> log;
   std::function<std::optional<std::string>(const std::string& path)> hash_file;  // SHA-256 hex
   const std::atomic<bool>* cancel = nullptr;
+  // When set, the only URLs fetched (redirects included): those starting with it, over HTTPS. It must end with "/"
+  // after the host, e.g. "https://builds.playden.club/packs/". Empty: the GitHub hosts of AllowedDownloadUrl.
+  std::string allowed_url_prefix;
 };
 
 struct DownloadResult {
@@ -35,13 +38,17 @@ struct DownloadResult {
 };
 
 // Downloads url (size bytes) into path. Bytes go to "<path>.part" first; a later call resumes from
-// what it holds. Redirects are followed by hand, at most 5, and only to HTTPS GitHub hosts. When
+// what it holds. Redirects are followed by hand, at most 5, and only to HTTPS GitHub hosts (or to
+// options.allowed_url_prefix). When
 // sha256 is set the finished file must match it. On success "<path>.part" becomes path.
 DownloadResult DownloadAsset(const std::string& url, std::uint64_t size, const std::string& sha256,
                              const std::string& path, const DownloadOptions& options);
 
 // HTTPS on github.com, api.github.com, or a host ending in ".githubusercontent.com".
 bool AllowedDownloadUrl(const std::string& url);
+
+// url is one options allow: under allowed_url_prefix when it is set, else AllowedDownloadUrl.
+bool AllowedDownloadUrl(const std::string& url, const DownloadOptions& options);
 
 // A JSON or other small GET (at most limit bytes), following allowed redirects. Empty on failure.
 std::optional<std::string> FetchSmall(const std::string& url, std::size_t limit, const DownloadOptions& options,

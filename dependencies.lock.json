@@ -287,11 +287,12 @@
   },
   "publisher_pack": {
     "version": "20261121.1",
-    "source": "external, not distributed with Playden: the Rockstar helper archive of one helper-tools release, hosted at https://builds.playden.club/packs/<version>/. Install with tools/console_publisher_upload.py or the builds page; src/runtime/publisher_pack.cpp holds the same pins.",
+    "source": "external, not distributed with Playden: the Rockstar helper archive of one helper-tools release, hosted at https://builds.playden.club/packs/<version>/, where Playden downloads it from (feature publisher-pack-download). Also installed with tools/console_publisher_upload.py or the builds page; src/runtime/publisher_pack.cpp holds the same pins.",
     "archives": {
       "playden-rgschost-20261121.1.tzst": {
         "sha256": "18864f63998b12310f984b9e0fff1e6f3bc4526e7a7efe6e59c675263a789f5c",
-        "tree_sha256": "b56b72fadd8c632c3bb2596976204a7fe3c96d2861757c54d14fd8b9e7305901"
+        "tree_sha256": "b56b72fadd8c632c3bb2596976204a7fe3c96d2861757c54d14fd8b9e7305901",
+        "size": 2351438
       }
     }
   }

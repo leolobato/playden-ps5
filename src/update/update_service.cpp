@@ -67,6 +67,12 @@ std::string Gigabytes(std::uint64_t bytes) {
   return text;
 }
 
+std::string Megabytes(std::uint64_t bytes) {
+  char text[32];
+  std::snprintf(text, sizeof text, "%.0f MB", static_cast<double>(bytes) / 1e6 + 0.5);
+  return text;
+}
+
 // An app file's mode on the console: 0777 for executables, 0666 for everything else, whatever the
 // zip has. Someone may install a build by hand over a self-updated app, with FTP or the web file
 // manager. They run as other users, and root has no DAC bypass on /data, so they can only write over
@@ -109,6 +115,18 @@ const char* KitInstallPhaseName(KitInstallPhase phase) {
     case KitInstallPhase::kUnpacking: return "unpacking";
     case KitInstallPhase::kInstalled: return "installed";
     case KitInstallPhase::kFailed: return "failed";
+  }
+  return "?";
+}
+
+const char* PackInstallPhaseName(PackInstallPhase phase) {
+  switch (phase) {
+    case PackInstallPhase::kIdle: return "idle";
+    case PackInstallPhase::kNotNeeded: return "not-needed";
+    case PackInstallPhase::kDownloading: return "downloading";
+    case PackInstallPhase::kInstalling: return "installing";
+    case PackInstallPhase::kInstalled: return "installed";
+    case PackInstallPhase::kFailed: return "failed";
   }
   return "?";
 }
@@ -416,6 +434,10 @@ DownloadOptions UpdateService::Downloads(const std::string& part) {
   if (part == "kit-only")
     options.progress = [this](std::uint64_t done, std::uint64_t total) {
       Set([&](UpdateSnapshot& s) { s.kit.done = done; s.kit.total = total; });
+    };
+  else if (part == "pack")
+    options.progress = [this](std::uint64_t done, std::uint64_t total) {
+      Set([&](UpdateSnapshot& s) { s.pack.done = done; s.pack.total = total; });
     };
   else if (!part.empty())
     options.progress = [this, part](std::uint64_t done, std::uint64_t total) {
@@ -868,6 +890,65 @@ void UpdateService::InstallKit() {
     if (!kit_asset_ || !kit_part_) DoCheckKit();
     if (Snapshot().kit.phase != KitInstallPhase::kAvailable) return;
     DoInstallKit();
+  });
+}
+
+void UpdateService::CheckPack() {
+  if (config_.pack.url.empty() || !config_.pack.ready || !config_.pack.install) return;
+  Run([this] { DoPack(); });
+}
+
+void UpdateService::FailPack(const std::string& message, const std::string& detail) {
+  Log("publisher pack install failed: " + message + (detail.empty() ? "" : " (" + detail + ")"));
+  Set([&](UpdateSnapshot& s) {
+    s.pack.phase = PackInstallPhase::kFailed;
+    s.pack.error = message;
+  });
+}
+
+void UpdateService::DoPack() {
+  const auto phase = Snapshot().phase;
+  // A staged update may pin another pack: the new Playden checks its own when it starts.
+  if (phase == UpdatePhase::kStaged || phase == UpdatePhase::kDownloading || phase == UpdatePhase::kUnpacking) return;
+  const auto& pack = config_.pack;
+  if (pack.ready()) {
+    Set([](UpdateSnapshot& s) { s.pack = {}; s.pack.phase = PackInstallPhase::kNotNeeded; });
+    return;
+  }
+  Log("publisher pack: " + pack.archive + " is not in place, downloading " + pack.url);
+  Set([&](UpdateSnapshot& s) {
+    s.pack = {};
+    s.pack.phase = PackInstallPhase::kDownloading;
+    s.pack.total = pack.size;
+  });
+  if (!PrepareWorkRoot() || !MakeFolders(config_.work_root + "/downloads"))
+    return FailPack("Playden could not create its download folder.", config_.work_root);
+  if (config_.free_bytes) {
+    const std::uint64_t needed = pack.size * 3;  // the download, its copy in place and some room to spare
+    const auto free = config_.free_bytes(config_.work_root);
+    if (free && *free < needed)
+      return FailPack("The " + pack.name + " needs " + Megabytes(needed) + " of free space; " + Megabytes(*free) +
+                          " is free.",
+                      "free space");
+  }
+  const std::string path = config_.work_root + "/downloads/" + pack.archive;
+  auto options = Downloads("pack");
+  options.allowed_url_prefix = pack.allowed_url_prefix;
+  const auto download = DownloadAsset(pack.url, pack.size, pack.sha256, path, options);
+  if (!download.ok) {
+    if (download.cancelled) return FailPack("The " + pack.name + " download was cancelled.", "cancelled");
+    return FailPack("Playden could not download the " + pack.name + ". Check the network and try again.",
+                    download.error);
+  }
+  Set([](UpdateSnapshot& s) { s.pack.phase = PackInstallPhase::kInstalling; });
+  std::string reason;
+  const bool installed = pack.install(path, &reason);
+  RemoveTree(path);
+  if (!installed) return FailPack("Playden could not install the " + pack.name + ".", reason);
+  Log("publisher pack: " + pack.archive + " installed");
+  Set([](UpdateSnapshot& s) {
+    s.pack.phase = PackInstallPhase::kInstalled;
+    s.pack.done = s.pack.total;
   });
 }
 

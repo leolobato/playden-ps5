@@ -2282,6 +2282,92 @@ void live_kit_install(const std::filesystem::path& base) {
     check(both.state().navigation.modals.empty(), "kit: no kit offer while a newer Playden is on offer");
 }
 
+// The Rockstar Games pack download (publisher-pack-download): never offered, shown on the Queue while it runs, and in
+// Settings › Publishers with its state; a failure says why there, with no alert, and Try again asks for it again.
+void live_publisher_pack(const std::filesystem::path& base) {
+    using namespace playden::homebrew;
+    std::filesystem::create_directories(base);
+    auto model = make_live(base);
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    check(model.UpdateLibrary({{}, false, {}, false, true, 100}), "pack: library delivered");
+    // Feature off: the phase stays idle, nothing shows.
+    LiveSelfUpdate update;
+    update.current = "0.12.0";
+    model.UpdateSelfUpdate(update);
+    check(!find_row(model, "settings-publisher-pack"), "pack: no row while the feature is off");
+
+    update.pack_phase = "downloading";
+    update.pack_done = 600000;
+    update.pack_total = 2400000;
+    model.UpdateSelfUpdate(update);
+    check(model.state().navigation.modals.empty(), "pack: never offered");
+    const auto job = std::find_if(model.state().jobs.begin(), model.state().jobs.end(),
+                                  [](const Job& item) { return item.id == "publisher-pack"; });
+    check(job != model.state().jobs.end() && job->title == "Rockstar Games pack" && job->completed_bytes == 600000 &&
+              job->total_bytes == 2400000 && job->stage_text == "Downloading the Rockstar Games pack" &&
+              job->state == JobState::Downloading && job->queue_order == -1,
+          "pack: the download shows on the Queue, first");
+    const auto to = [&](Route route) {
+        for (int i = 0; i < 8 && model.state().navigation.route != route; ++i) model.action("r1");
+        check(model.state().navigation.route == route, "pack: the page opens");
+    };
+    to(Route::Settings);
+    const auto* row = find_row(model, "settings-publisher-pack");
+    check(row && row->value == "25%" && row->subtitle == "Downloading from builds.playden.club",
+          "pack: Settings shows the progress");
+    update.pack_phase = "installing";
+    model.UpdateSelfUpdate(update);
+    check(std::any_of(model.state().jobs.begin(), model.state().jobs.end(),
+                      [](const Job& item) { return item.id == "publisher-pack" && item.stage_text ==
+                                                   "Installing the Rockstar Games pack"; }),
+          "pack: installing shows on the Queue");
+
+    // Failed: no alert; Settings says why and tries again.
+    update.pack_phase = "failed";
+    update.pack_error = "Playden could not download the Rockstar Games pack. Check the network and try again.";
+    model.UpdateSelfUpdate(update);
+    model.action("r1");
+    check(model.state().navigation.modals.empty(), "pack: a failure raises no alert");
+    check(std::none_of(model.state().jobs.begin(), model.state().jobs.end(),
+                       [](const Job& item) { return item.id == "publisher-pack"; }),
+          "pack: a failed download leaves the Queue");
+    model.TakeSelfUpdateRequests();
+    to(Route::Settings);
+    activate(model, "settings-publisher-pack");
+    row = find_row(model, "settings-publisher-pack");
+    check(row && row->value == "Try again" && row->subtitle == update.pack_error, "pack: Settings says why it stopped");
+    check(model.TakeSelfUpdateRequests() == std::vector<std::string>{"pack-check"}, "pack: Try again asks for it again");
+
+    // Installed: a notice, the job gone, the row ready.
+    update.pack_phase = "downloading";
+    model.UpdateSelfUpdate(update);
+    update.pack_phase = "installed";
+    update.pack_done = update.pack_total;
+    model.UpdateSelfUpdate(update);
+    check(std::any_of(model.state().notices.begin(), model.state().notices.end(),
+                      [](const Notice& notice) { return notice.id == "publisher-pack-installed"; }),
+          "pack: a notice says it is installed");
+    to(Route::Settings);
+    row = find_row(model, "settings-publisher-pack");
+    check(row && row->value == "Ready" && row->subtitle.rfind("Version ", 0) == 0 && !row->enabled,
+          "pack: Settings shows it ready, with its version");
+    update.pack_phase = "not-needed";
+    model.UpdateSelfUpdate(update);
+    row = find_row(model, "settings-publisher-pack");
+    check(row && row->value == "Ready", "pack: already in place reads Ready");
+
+    // The Queue job's actions: Cancel download asks the service to stop.
+    update.pack_phase = "downloading";
+    model.UpdateSelfUpdate(update);
+    model.TakeSelfUpdateRequests();
+    to(Route::Downloads);
+    check(model.action("focus:job-publisher-pack") && model.action("cross"), "pack: the job opens its actions");
+    check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().title == "Rockstar Games pack",
+          "pack: the job's actions");
+    check(model.action("cross") && model.TakeSelfUpdateRequests() == std::vector<std::string>{"pack-cancel"},
+          "pack: Cancel download asks to stop");
+}
+
 // Playden's own update: the prompts, the Downloads job, the Settings row and the requests.
 void live_self_update(const std::filesystem::path& base) {
     using namespace playden::homebrew;
@@ -4924,6 +5010,7 @@ int main() {
     account_commands_dispatch_refresh_and_switch_barriers(base);
     live_self_update(base);
     live_kit_install(base / "kit");
+    live_publisher_pack(base / "pack");
     live_update_check(base / "update-check");
     live_update_check_stores(base / "update-check-stores");
     live_manage_games_tabs(base / "manage-games");

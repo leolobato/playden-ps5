@@ -11,10 +11,10 @@ namespace playden::app {
 ExperimentalFeatures DefaultExperimentalFeatures(bool all_on) {
   // Online and GOG are on in every build since 0.12.0-beta.1. 0.11.0, the oldest release a beta updates from and
   // the release a nightly falls back to, reads GOG records and resets games set to Online, so going back stays safe.
-  (void)all_on;
   ExperimentalFeatures features;
   features.online_steam = true;
   features.gog_store = true;
+  features.publisher_pack_download = all_on;
   return features;
 }
 
@@ -32,6 +32,7 @@ ExperimentalFeatures ParseExperimentalFeatures(std::string_view text, Experiment
     if (line == "community-recipes") continue;
     if (line == "online-steam") features.online_steam = true;
     else if (line == "gog-store") features.gog_store = true;
+    else if (line == "publisher-pack-download") features.publisher_pack_download = true;
     else if (unknown) unknown->emplace_back(line);
   }
   return features;

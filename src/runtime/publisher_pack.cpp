@@ -197,7 +197,8 @@ const std::vector<PublisherRelease>& PinnedPublisherReleases() {
        "b56b72fadd8c632c3bb2596976204a7fe3c96d2861757c54d14fd8b9e7305901",
        {"pdstub-sc.exe", "pdstub-sc32.exe", "pdlaunch-sc.dll", "pdlaunch-sc32.dll", "pdlaunch-helper.exe", "pdscpatch.dll", "pdscpatch32.dll",
         "bink2w64.dll", "binkw32.dll", "SocialClubD3D12Renderer.dll", "SocialClubVulkanLayer.dll",
-        "playden-signin-shim.js", "stage.json", "signin/index.html"}},
+        "playden-signin-shim.js", "stage.json", "signin/index.html"},
+       2351438},
   };
   return releases;
 }

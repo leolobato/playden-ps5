@@ -104,7 +104,8 @@ function(playden_add_homebrew_ps5_title)
         playden_runtime_settings_publication playden_runtime_settings_publication_journal playden_runtime_publication_backup
         playden_runtime_publication_contract playden_runtime_publication_verifier playden_runtime_package_installer
         playden_runtime_kit_trust playden_runtime_kit_admission playden_runtime_kit_manifest
-        playden_runtime_publisher playden_publisher_runtime playden_lzma_dec playden_zstd playden_phone_relay)
+        playden_runtime_publisher_install playden_runtime_publisher playden_publisher_runtime playden_lzma_dec playden_zstd
+        playden_phone_relay)
     set(title_database_archives)
     foreach(target IN LISTS title_database_targets)
         list(APPEND title_database_archives $<TARGET_FILE:${target}>)

@@ -56,6 +56,20 @@ struct UpdateConfig {
   // Console testing: when this folder holds release.json, the check reads the release from it and
   // takes playden-update.json and the release's zips from it too, instead of from GitHub.
   std::string local_release_dir;
+  // The publisher pack's archive (runtime/publisher_pack_install.h): CheckPack downloads it when ready() says the
+  // pinned one is not in place, and install() puts it there. No url: no pack download (feature
+  // publisher-pack-download off).
+  struct PublisherPack {
+    std::string name = "publisher pack";  // for the player: "the <name>"
+    std::string url;
+    std::string allowed_url_prefix;  // the only URLs downloaded from (redirects included)
+    std::string archive;             // file name
+    std::uint64_t size = 0;
+    std::string sha256;
+    std::function<bool()> ready;
+    std::function<bool(const std::string& archive_path, std::string* reason)> install;
+  };
+  PublisherPack pack;
 };
 
 enum class UpdatePhase {
@@ -96,6 +110,25 @@ struct KitInstallSnapshot {
   std::string error;                 // for kFailed: one short sentence
 };
 
+// The publisher pack download (CheckPack): never offered, it runs as soon as the pack is found missing.
+enum class PackInstallPhase {
+  kIdle,
+  kNotNeeded,    // the pinned pack is in place
+  kDownloading,
+  kInstalling,
+  kInstalled,    // in place: the runtime can use it now
+  kFailed,       // also a cancelled download: CheckPack again resumes it
+};
+
+const char* PackInstallPhaseName(PackInstallPhase phase);
+
+struct PackInstallSnapshot {
+  PackInstallPhase phase = PackInstallPhase::kIdle;
+  std::uint64_t done = 0;
+  std::uint64_t total = 0;
+  std::string error;  // for kFailed: one short sentence
+};
+
 struct UpdateSnapshot {
   std::uint64_t revision = 0;
   UpdatePhase phase = UpdatePhase::kIdle;
@@ -125,6 +158,7 @@ struct UpdateSnapshot {
   std::string finished_message;
   bool finished_failed = false;
   KitInstallSnapshot kit;
+  PackInstallSnapshot pack;
 };
 
 class UpdateService {
@@ -150,6 +184,10 @@ class UpdateService {
   // Downloads the kit CheckKit found and puts it in place at once (the installed one, if any, is
   // moved aside). In the background.
   void InstallKit();
+  // Downloads and installs the publisher pack's archive when the pinned one is not in place (config.pack), with no
+  // offer first. Skipped while an update is staged or on its way (the new Playden checks its own pin). In the
+  // background; Cancel stops it.
+  void CheckPack();
   // Stops offering `version` in a dialog (it stays in Settings): saved in the work root, so it holds
   // after a restart, until a newer version is published. Only while it is the available version. In
   // the background; refused while the worker is busy, so the caller asks again once Busy() is false.
@@ -200,6 +238,8 @@ class UpdateService {
   void DoCheckKit();
   void DoInstallKit();
   void FailKit(const std::string& message, const std::string& detail);
+  void DoPack();
+  void FailPack(const std::string& message, const std::string& detail);
   std::optional<std::vector<Release>> FetchReleases(std::string* error);
   bool StageApp(const Release& release, const UpdateManifest& manifest);
   void Fail(const std::string& message, const std::string& detail);

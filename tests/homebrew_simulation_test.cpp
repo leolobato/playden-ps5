@@ -1811,6 +1811,11 @@ void game_update_scenarios(const std::filesystem::path& fixtures, const std::fil
     check(simulation.action("details:900001") && row("details-play") && !row("details-play")->enabled &&
               row("details-play")->value == "Finishing the update…" && !row("details-update"),
           "an update putting its files in place locks Play");
+    check(simulation.scenario("publisher-pack-download") &&
+              simulation.state().navigation.route == playden::homebrew::Route::Downloads &&
+              simulation.state().jobs.size() == 2 && simulation.state().jobs.front().id == "publisher-pack" &&
+              row("job-publisher-pack") && row("job-publisher-pack")->title == "Rockstar Games pack",
+          "publisher-pack-download opens the queue with the pack first");
     check(simulation.scenario("moving") && simulation.state().navigation.route == playden::homebrew::Route::Downloads &&
               simulation.state().jobs.size() == 3 && simulation.state().jobs.front().move &&
               simulation.state().jobs.front().stage_text.rfind("Moving to ", 0) == 0,
