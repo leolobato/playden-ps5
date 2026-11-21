@@ -11,10 +11,12 @@ namespace playden::app {
 ExperimentalFeatures DefaultExperimentalFeatures(bool all_on) {
   // Online and GOG are on in every build since 0.12.0-beta.1. 0.11.0, the oldest release a beta updates from and
   // the release a nightly falls back to, reads GOG records and resets games set to Online, so going back stays safe.
+  // The publisher pack download is on in every build since 0.12.0-beta.4.
+  (void)all_on;
   ExperimentalFeatures features;
   features.online_steam = true;
   features.gog_store = true;
-  features.publisher_pack_download = all_on;
+  features.publisher_pack_download = true;
   return features;
 }
 

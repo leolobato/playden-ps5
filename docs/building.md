@@ -78,7 +78,7 @@ the input changed. The PS5 build is reproducible, so the same sources give the s
 build turns on for dev builds needs no `features.txt` line (Online and GOG are on in every build), and the package has a `dev-build`
 marker that `tools/write_update_manifest.py` refuses. A release is built with `PLAYDEN_DEV_BUILD=OFF scripts/build-homebrew-ps5.sh`.
 The `gog-store` line, what it turns on and how to go back to an older build with it are in [GOG store](gog-store.md).
-The `publisher-pack-download` line (on in dev builds and nightlies) makes Playden download the Rockstar Games pack it
+The `publisher-pack-download` feature (on in every build since 0.12.0-beta.4, the line is still accepted) makes Playden download the Rockstar Games pack it
 pins from `https://builds.playden.club/packs/<version>/` and install it in `/data/playden/publisher/<version>/` when it
 isn't there, as a Queue item; the archive must match the pin in `src/runtime/publisher_pack.cpp`. Without it, the pack
 is installed with `tools/console_publisher_upload.py` or the builds page's Install button.

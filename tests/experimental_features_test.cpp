@@ -62,8 +62,8 @@ int main() {
     CHECK(ParseExperimentalFeatures("gog-store", DefaultExperimentalFeatures(true)).gog_store);
   }
 
-  // The publisher pack download: on in nightlies and dev builds, else by its line.
-  CHECK(!DefaultExperimentalFeatures(false).publisher_pack_download);
+  // The publisher pack download: on in every build since 0.12.0-beta.4, and its line is still accepted.
+  CHECK(DefaultExperimentalFeatures(false).publisher_pack_download);
   CHECK(DefaultExperimentalFeatures(true).publisher_pack_download);
   {
     std::vector<std::string> unknown;

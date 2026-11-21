@@ -28,13 +28,13 @@ struct ExperimentalFeatures {
   // the whole runtime install records file when one record names GOG.
   bool gog_store = false;
   // Line publisher-pack-download: Playden downloads and installs the Rockstar Games pack (runtime/publisher_pack_install)
-  // from builds.playden.club when the pinned one is not in place. Without it the player installs the pack by hand.
-  // On in nightlies and local dev builds.
+  // from builds.playden.club when the pinned one is not in place. On by default in every build since 0.12.0-beta.4;
+  // the line is still accepted.
   bool publisher_pack_download = false;
 };
 
-// What a build has on before features.txt. Online and GOG are on in every build; all_on (nightlies and local dev
-// builds) also turns on the publisher pack download.
+// What a build has on before features.txt. Online, GOG and the publisher pack download are on in every build; all_on
+// (nightlies and local dev builds) turns on nothing more today.
 ExperimentalFeatures DefaultExperimentalFeatures(bool all_on);
 // defaults with the features text names turned on. unknown: each line that names no feature, as written.
 ExperimentalFeatures ParseExperimentalFeatures(std::string_view text, ExperimentalFeatures defaults = {},
