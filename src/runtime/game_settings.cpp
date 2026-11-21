@@ -3210,6 +3210,37 @@ bool AddWatcomTranslator(const std::string& install_root, const std::string& on_
   recipe->detected = facts + rest;
   return true;
 }
+// Steam's program now only starts the game (a .NET launcher once taken for an XNA game: Borderlands 2's 2K launcher):
+// the game's own program goes first, found and set up as a new setup finds it. Steam's entries stay as they were,
+// after it: their ids may be the player's saved choice, and their folders are as the setup made them. False when the
+// first program is the player's pick or the game itself, or no game program is found.
+bool StartGameProgramFirst(const std::string& install_root, const std::string& on_disk, const GameProbe& probe,
+                           const KitCapabilities& kit, GameRecipe* recipe) {
+  if (recipe->launch_entries.front().id.rfind("launch-", 0) != 0 || WhyStartsTheGameOnly(on_disk, probe).empty())
+    return false;
+  std::vector<LaunchEntry> steam;
+  for (const auto& entry : recipe->launch_entries)
+    if (entry.id.rfind("launch-", 0) == 0) steam.push_back(entry);
+  GameRecipe remade;
+  std::string why;
+  const auto kept = [&] {
+    return static_cast<std::size_t>(std::count_if(remade.launch_entries.begin(), remade.launch_entries.end(),
+                                                  [](const LaunchEntry& entry) {
+                                                    return entry.id.rfind("launch-", 0) == 0;
+                                                  }));
+  };
+  if (steam.size() != recipe->launch_entries.size() ||
+      !GenerateGameRecipe(RecipeGame(*recipe), recipe->app_id, recipe->name, steam, install_root, &remade, &why, kit) ||
+      remade.id != recipe->id || remade.launch_entries.front().id != "game" || kept() != steam.size())
+    return false;
+  auto healed = remade;
+  healed.launch_entries.resize(1);
+  healed.launch_entries.insert(healed.launch_entries.end(), steam.begin(), steam.end());
+  GameRecipe checked;
+  if (!ParseGameRecipe(SerializeGameRecipe(healed), &checked, &why)) return false;
+  *recipe = std::move(checked);
+  return true;
+}
 }  // namespace
 
 bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe) {
@@ -3243,37 +3274,18 @@ bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilitie
     recipe->defaults_revision = DefaultsRevision(recipe->detected);
     current = moved = true;
   }
+  // A program with no engine and nothing it draws (DefaultsRevision 1): one that imports a Qt web view only starts the
+  // game (Fahrenheit Remastered's Aspyr launcher, #1197), so it's read once for the game's own program to start
+  // first. Any other keeps what it was set up with and takes the revision.
+  if (!current && engine == "unknown") {
+    if (StartGameProgramFirst(install_root, *on_disk, ProbeGame(install_root, *on_disk), kit, recipe)) return true;
+    recipe->defaults_revision = DefaultsRevision(recipe->detected);
+    current = moved = true;
+  }
   if (current && !MayNeedWatcomTranslator(*recipe)) return moved;
   if (current) return AddWatcomTranslator(install_root, *on_disk, recipe) || moved;
   const auto probe = ProbeGame(install_root, *on_disk);
-  // Steam's program now only starts the game (a .NET launcher once taken for an XNA game: Borderlands 2's 2K launcher):
-  // the game's own program goes first, found and set up as a new setup finds it. Steam's entries stay as they were,
-  // after it: their ids may be the player's saved choice, and their folders are as the setup made them.
-  if (recipe->launch_entries.front().id.rfind("launch-", 0) == 0 && !WhyStartsTheGameOnly(*on_disk, probe).empty()) {
-    std::vector<LaunchEntry> steam;
-    for (const auto& entry : recipe->launch_entries)
-      if (entry.id.rfind("launch-", 0) == 0) steam.push_back(entry);
-    GameRecipe remade;
-    std::string why;
-    const auto kept = [&] {
-      return static_cast<std::size_t>(std::count_if(remade.launch_entries.begin(), remade.launch_entries.end(),
-                                                    [](const LaunchEntry& entry) {
-                                                      return entry.id.rfind("launch-", 0) == 0;
-                                                    }));
-    };
-    if (steam.size() == recipe->launch_entries.size() &&
-        GenerateGameRecipe(RecipeGame(*recipe), recipe->app_id, recipe->name, steam, install_root, &remade, &why, kit) &&
-        remade.id == recipe->id && remade.launch_entries.front().id == "game" && kept() == steam.size()) {
-      auto healed = remade;
-      healed.launch_entries.resize(1);
-      healed.launch_entries.insert(healed.launch_entries.end(), steam.begin(), steam.end());
-      GameRecipe checked;
-      if (ParseGameRecipe(SerializeGameRecipe(healed), &checked, &why)) {
-        *recipe = std::move(checked);
-        return true;
-      }
-    }
-  }
+  if (StartGameProgramFirst(install_root, *on_disk, probe, kit, recipe)) return true;
   RuntimeAbilities abilities;
   abilities.shared_sections = kit.shared_sections;
   abilities.wine_mono = kit.wine_mono;

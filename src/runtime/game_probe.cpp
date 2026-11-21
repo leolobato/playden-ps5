@@ -813,6 +813,9 @@ int DefaultsRevision(std::string_view engine) {
   // 1: Unreal needs Unreal's own folders beside Engine (UnrealLayout), so a game set up before is read again: another
   // engine's root program beside an "engine" folder (Cyberpunk 2077's REDprelauncher.exe, #1163) is not Unreal's.
   if (engine == "unreal" || engine == "unreal5") return 1;
+  // 1: a program that draws nothing and imports a Qt web view only starts the game (Fahrenheit Remastered, #1197), so a
+  // game set up before with no engine is read once for the game's own program.
+  if (engine == "unknown") return 1;
   return 0;
 }
 

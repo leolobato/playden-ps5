@@ -633,6 +633,8 @@ bool IsGeneratedRecipeId(std::string_view id);
 // now only starts the game is made again, as a new setup makes it, when that finds the game's own program. An Unreal
 // recipe set up before DefaultsRevision 1 is read again only when its program sat beside an "engine" folder that isn't
 // Unreal's (TakenForUnrealBefore: Cyberpunk 2077, #1163); any other keeps what it was set up with and takes the revision.
+// So is one with no engine ("unknown") set up before DefaultsRevision 1: only a Steam program that now only starts the
+// game (a Qt web-view launcher: Fahrenheit Remastered, #1197) gives way to the game's own program.
 bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe);
 // Sets each launch entry's working folder to its spelling on disk under install_root. Windows ignores case, so Steam
 // and recipes made on it may name System/ as "system" (Unreal Tournament, #844); the console's disk doesn't. A folder

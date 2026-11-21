@@ -577,7 +577,9 @@ int main() {
     plain.defaults.erase("cpu");
     plain.detected = "unknown graphics=auto";
     plain.launch_entries.front().executable = "Plain.exe";
-    CHECK(!RefreshRecipeDefaults(root.string(), kit, &plain) && !plain.defaults.count("cpu"));
+    // It takes "unknown"'s revision 1 once (no launcher in front of it), and nothing else.
+    CHECK(RefreshRecipeDefaults(root.string(), kit, &plain) && !plain.defaults.count("cpu") && plain.defaults_revision == 1);
+    CHECK(!RefreshRecipeDefaults(root.string(), kit, &plain));
     auto x64 = plain;
     x64.launch_entries.front().executable = "falloutwHR.exe";
     x64.architecture = "pe64";
@@ -1393,6 +1395,34 @@ int main() {
                              {}, choices));
     CHECK(recipe.launch_entries[0].executable == "Fahrenheit.exe" && recipe.launch_entries[0].id == kProgramEntryId);
 
+    // A copy set up before the web-view rule: Steam's launcher first, no engine, defaults revision 0. Its next Play
+    // starts the game's own program and keeps Steam's after it; then it's left alone.
+    const auto picked = recipe;
+    CHECK(DefaultsRevision("unknown graphics=auto") == 1);
+    CHECK(GenerateGameRecipe(312840, "Fahrenheit: Indigo Prophecy Remastered", {{"", "", "Fahrenheit.exe", "", ""}},
+                             root.string(), &recipe, &reason, {}));
+    auto old = recipe;
+    old.launch_entries.erase(old.launch_entries.begin());
+    CHECK(old.launch_entries.size() == 1 && old.launch_entries[0].id.rfind("launch-", 0) == 0);
+    old.detected = "unknown graphics=auto";
+    old.graphics = "auto";
+    old.defaults_revision = 0;
+    auto missing = old;
+    CHECK(!RefreshRecipeDefaults((root / "not-plugged-in").string(), {}, &missing) && missing.defaults_revision == 0);
+    CHECK(RefreshRecipeDefaults(root.string(), {}, &old));
+    CHECK(old.launch_entries.size() == 2 && old.launch_entries[0].executable == "FahrenheitSub.exe" &&
+          old.launch_entries[0].id == "game" && old.launch_entries[1].executable == "Fahrenheit.exe");
+    CHECK(old.id == recipe.id && old.graphics == "dxvk" && old.detected == recipe.detected);
+    CHECK(!RefreshRecipeDefaults(root.string(), {}, &old));
+    // The player's pick from before stays, and takes the revision once.
+    auto mine = picked;
+    mine.detected = "unknown graphics=auto";
+    mine.defaults_revision = 0;
+    CHECK(RefreshRecipeDefaults(root.string(), {}, &mine));
+    CHECK(mine.launch_entries[0].executable == "Fahrenheit.exe" && mine.defaults_revision == 1 &&
+          mine.detected == "unknown graphics=auto" && mine.graphics == picked.graphics);
+    CHECK(!RefreshRecipeDefaults(root.string(), {}, &mine));
+
     // A game that draws (Direct3D, OpenGL or Vulkan) and shows a Qt web view as well is the game, not a launcher.
     for (const char* graphics : {"d3d9.dll", "OPENGL32.dll", "vulkan-1.dll"}) {
       const auto game = fresh();
@@ -1411,6 +1441,14 @@ int main() {
     CHECK(GenerateGameRecipe(2, "Tool", {{"", "", "Tool.exe", "", ""}}, widgets.string(), &recipe, &reason, {}, {}, nullptr,
                              &plain));
     CHECK(recipe.launch_entries[0].executable == "Tool.exe" && plain.steam_default.empty());
+    // Set up before as an unknown engine, it keeps what it was set up with (its own arguments too) and takes the revision.
+    auto tool = recipe;
+    tool.defaults_revision = 0;
+    tool.arguments = "-old";
+    CHECK(tool.detected.rfind("unknown", 0) == 0);
+    CHECK(RefreshRecipeDefaults(widgets.string(), {}, &tool));
+    CHECK(tool.launch_entries[0].executable == "Tool.exe" && tool.arguments == "-old" && tool.defaults_revision == 1);
+    CHECK(!RefreshRecipeDefaults(widgets.string(), {}, &tool));
   }
 
   {  // A program's own imports decide, not the libraries beside it: Hotline Miami's launcher sits next to cgGL.dll.
