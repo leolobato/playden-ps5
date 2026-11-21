@@ -227,6 +227,21 @@ void TestSolidAndRetention() {
   CHECK(fs::is_directory(scratch.runtime() / "notes"));
 }
 
+// The x86 BCJ filter over LZMA (Social Club 2.4.0.302's installer, GTA V Enhanced). The fixture's one file runs
+// past Playden's 1 MiB decode block with a converted CALL across the block's end, so the bytes the filter holds
+// back must carry over and the code after them needs the right position; the file's CRC is checked.
+void TestBcjExtraction() {
+  Scratch scratch;
+  scratch.Install(Fixture("bcj.7z"));
+  const auto result = scratch.Ensure();
+  if (!result.ok) std::fprintf(stderr, "reason: %s\n", result.reason.c_str());
+  CHECK(result.ok && result.extracted && result.version == "1.2.3.9");
+  const auto dll = fs::path(result.version_dir) / "x86/runtime.dll";
+  CHECK(PeFileVersion(ReadFile(dll)) == std::string("1.2.3.9"));
+  CHECK(fs::file_size(dll) == (1u << 20) + 3 + 16 * 1024);
+  CHECK(fs::is_regular_file(fs::path(result.version_dir) / kPublisherRuntimeCompleteMarker));
+}
+
 void TestInstallerLookup() {
   Scratch scratch;
   auto missing = scratch.Ensure();
@@ -344,6 +359,7 @@ int main(int argc, char** argv) {
   TestPeFileVersion();
   TestBcj2ExtractionAndReuse();
   TestSolidAndRetention();
+  TestBcjExtraction();
   TestInstallerLookup();
   TestRefusals();
   TestDamagedArchive();

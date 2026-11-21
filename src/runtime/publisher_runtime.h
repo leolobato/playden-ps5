@@ -15,8 +15,8 @@ namespace playden::runtime {
 //   <runtime_root>/<a.b.c.d>/<mapped folder>/...
 // The version is the VERSIONINFO file version of the spec's version_file. Extraction goes
 // through <runtime_root>/.staging-<version> and a rename; <version>/.complete marks a finished
-// one. At most two versions are kept. Supported 7z coders: LZMA, and BCJ2 over three LZMA
-// streams; anything else is refused. Every file's CRC is checked, and folders are decoded to
+// one. At most two versions are kept. Supported 7z coders: LZMA, the x86 BCJ filter over LZMA,
+// and BCJ2 over three LZMA streams; anything else is refused. Every file's CRC is checked, and folders are decoded to
 // disk through fixed buffers (memory: the LZMA dictionary plus a few MB).
 inline constexpr const char* kPublisherRuntimeCompleteMarker = ".complete";
 

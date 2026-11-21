@@ -3,6 +3,7 @@
 #include "7z.h"
 #include "7zCrc.h"
 #include "Bcj2.h"
+#include "Bra.h"
 #include "LzmaDec.h"
 
 #include <algorithm>
@@ -38,6 +39,7 @@ constexpr std::size_t kSideInputBytes = 64u << 10;
 constexpr std::size_t kSliceBytes = 1u << 20;  // most bytes per decode step (progress, cancel)
 constexpr std::uint32_t kMethodLzma = 0x030101;
 constexpr std::uint32_t kMethodBcj2 = 0x0303011B;
+constexpr std::uint32_t kMethodBcjX86 = 0x03030103;
 constexpr std::uint32_t kAttributeReparsePoint = 0x400;
 constexpr std::uint32_t kAttributeUnixExtension = 0x8000;
 constexpr const char* kStagingPrefix = ".staging-";
@@ -491,7 +493,7 @@ class FolderSink {
   Fd fd_;
 };
 
-// Decodes 7z folders (LZMA, or BCJ2 over three LZMA streams) through fixed buffers.
+// Decodes 7z folders (LZMA, the x86 BCJ filter over LZMA, or BCJ2 over three LZMA streams) through fixed buffers.
 class FolderDecoder {
  public:
   FolderDecoder(int fd, const Archive& archive)
@@ -530,6 +532,37 @@ class FolderDecoder {
         if (size == 0) break;
         if (!sink->Accept(bytes, size, reason)) return false;
       }
+      return sink->Finish(reason);
+    }
+
+    // The x86 BCJ filter over one LZMA stream (as SzFolder_Decode2 expects it): coder 0 is LZMA on pack stream 0,
+    // coder 1 the filter on its output. The filter converts all but the last few bytes it is given, so those wait
+    // for the next block; the archive's last bytes stay as they are.
+    if (folder.NumCoders == 2 && is_lzma(0) && folder.Coders[1].MethodID == kMethodBcjX86 &&
+        folder.Coders[1].NumStreams == 1 && folder.Coders[1].PropsSize == 0 && folder.NumPackStreams == 1 &&
+        folder.PackStreams[0] == 0 && folder.NumBonds == 1 && folder.Bonds[0].InIndex == 1 &&
+        folder.Bonds[0].OutIndex == 0) {
+      if (unpacked[0] != total) return (*reason = "the installer's archive is damaged"), false;
+      if (!main_.Start(fd_, pack_offset(0), pack_size(0), props(0), folder.Coders[0].PropsSize, total, largest_, reason))
+        return false;
+      UInt32 state = Z7_BRANCH_CONV_ST_X86_STATE_INIT_VAL;
+      UInt32 pc = 0;
+      std::size_t kept = 0;
+      std::uint64_t read = 0;
+      while (read < total) {
+        std::size_t got = 0;
+        if (!main_.Read(output_.data() + kept, output_.size() - kept, &got) || got == 0)
+          return (*reason = "the installer's archive is damaged"), false;
+        read += got;
+        const std::size_t filled = kept + got;
+        const Byte* converted = z7_BranchConvSt_X86_Dec(output_.data(), filled, pc, &state);
+        const std::size_t done = read < total ? static_cast<std::size_t>(converted - output_.data()) : filled;
+        if (!sink->Accept(output_.data(), done, reason)) return false;
+        pc += static_cast<UInt32>(done);
+        kept = filled - done;
+        std::memmove(output_.data(), output_.data() + done, kept);
+      }
+      if (!main_.Ended()) return (*reason = "the installer's archive is damaged"), false;
       return sink->Finish(reason);
     }
 

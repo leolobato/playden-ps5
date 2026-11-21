@@ -9,6 +9,9 @@ VERSIONINFO resource, pseudo x86 code (so BCJ2 has calls and jumps to convert) a
   plain.7z     1.2.3.6  LZMA, one file per folder, uncompressed header (the test patches names)
   lzma2.7z     1.2.3.7  LZMA2 (unsupported)
   link.7z      1.2.3.8  LZMA, holds a symbolic link
+  bcj.7z       1.2.3.9  the x86 BCJ filter over LZMA: one x86/runtime.dll past Playden's 1 MiB decode block, with
+                        a converted CALL whose operand straddles the block's end (the filter holds those bytes
+                        back for the next block) and pseudo code after it (which needs the right position)
 """
 
 import os
@@ -122,6 +125,15 @@ def main():
                 write(root, "x86/b.txt", b"b\n")
                 write(root, "x64/zz.bin", b"zz\n")
             seven_zip(root, name, *switches)
+
+        root = os.path.join(scratch, "bcj")
+        head = pe_image((1, 2, 3, 9), code_size=0)
+        block = 1 << 20
+        # The folder holds this file alone, so file offsets are folder offsets: E8 two bytes before the block's end,
+        # its operand (most significant byte 0, so the filter converts it) running across it.
+        code = bytes(block - 2 - len(head)) + b"\xE8" + struct.pack("<i", 0x2010) + pseudo_code(16 * 1024, 60)
+        write(root, "x86/runtime.dll", head + code)
+        seven_zip(root, "bcj.7z", "-m0=BCJ", "-m1=LZMA:d=64k", items=("x86",))
 
         root = os.path.join(scratch, "lzma2")
         write(root, "x86/runtime.dll", pe_image((1, 2, 3, 7), code_size=1024, seed=40))

@@ -181,7 +181,7 @@ target_compile_features(playden_runtime_publisher PUBLIC cxx_std_17)
 target_link_libraries(playden_runtime_publisher PUBLIC playden_zstd playden_runtime_artifact_hash playden_steam_protocol
     playden_storage)
 # Publisher runtimes extracted from the 7z archive inside a game's installer (runtime/publisher_runtime):
-# LZMA and BCJ2 only, the other 7z methods and filters are compiled out.
+# LZMA, the x86 BCJ filter (Bra86.c) and BCJ2 only; the other 7z methods and filters are compiled out.
 add_library(playden_publisher_runtime STATIC "${CMAKE_SOURCE_DIR}/src/runtime/publisher_runtime.cpp"
     "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/7zArcIn.c"
     "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/7zDec.c"
@@ -189,7 +189,8 @@ add_library(playden_publisher_runtime STATIC "${CMAKE_SOURCE_DIR}/src/runtime/pu
     "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/7zBuf.c"
     "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/7zCrc.c"
     "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/7zCrcOpt.c"
-    "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/Bcj2.c")
+    "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/Bcj2.c"
+    "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/Bra86.c")
 target_include_directories(playden_publisher_runtime PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_compile_definitions(playden_publisher_runtime PRIVATE Z7_NO_METHODS_FILTERS Z7_NO_METHOD_LZMA2)
 target_compile_features(playden_publisher_runtime PUBLIC cxx_std_17)

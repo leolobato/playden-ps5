@@ -1,4 +1,4 @@
-# LZMA SDK (LZMA1 decoder, 7z reader, BCJ2)
+# LZMA SDK (LZMA1 decoder, 7z reader, BCJ2, x86 BCJ)
 
 - Source: https://github.com/ip7z/7zip, tag `24.09`, directory `C/`
   (fetched as `https://raw.githubusercontent.com/ip7z/7zip/24.09/C/<file>`)
@@ -22,13 +22,15 @@
   - `Bcj2.c`     52f5c6bbaf512f867fe46a378d79888825a5b4e31abbd4c94f007058a890174e
   - `Bcj2.h`     e45c841e5d805deeb2ae3f212c8860ce312252efdc55f713f52f837cf8c4452f
   - `Bra.h`      bf4addce6209562a700edf040a8efc5b392bb33d4427b1513b6e3a877d04f431
+  - `Bra86.c`    0925d655955bdd2b7b25a01bbb3d2d395e5bac6d572f2cfd273141d1896af0ec
   - `Delta.h`    ce359ff7eb4c9d806777e21d0ec0416cf06c1f556242cbbcf565492b47141eeb
   - `Lzma2Dec.h` a4b97083c3817d3e1e3049f8b1abc0b4ca3e91192606497c02bb5351b57422c7
 - `CpuArch.c` is not needed (`CpuArch.h` macros only).
 - The 7z files are built with `Z7_NO_METHODS_FILTERS` and `Z7_NO_METHOD_LZMA2`, so `7zDec.c` only
-  decodes LZMA, BCJ2 and copy; `Bra.h`, `Delta.h` and `Lzma2Dec.h` are included but none of their
-  code is used (their `.c` files are not copied).
+  decodes LZMA, BCJ2 and copy; `Delta.h` and `Lzma2Dec.h` are included but none of their code is used
+  (their `.c` files are not copied). `Bra86.c` (the x86 BCJ filter) is used directly by
+  `publisher_runtime.cpp`, not through `7zDec.c`; the other `Bra*.c` converters are not copied.
 - Used by `src/steam/backend/depot_chunk.cpp` for Steam "VZ" (LZMA1) depot chunks, and by
   `src/runtime/publisher_runtime.cpp`, which reads a 7z archive inside a game's installer with
   `7zArcIn.c` (the header; `7zDec.c` decodes a compressed header) and decodes the files itself, to
-  disk through fixed buffers, with `LzmaDec.c` and `Bcj2.c`.
+  disk through fixed buffers, with `LzmaDec.c`, `Bcj2.c` and `Bra86.c`.
