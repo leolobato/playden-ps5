@@ -135,15 +135,12 @@ std::string SteamLibraryFolder(const rt::KitCapabilities& kit, const rt::Runtime
   return record.steam_install_dir.empty() ? std::to_string(record.runtime_number) : record.steam_install_dir;
 }
 
-// Publishers whose games Playden stages from the pack's stage manifest. EA's and Ubisoft's games
-// are left as they are.
-constexpr rt::Publisher kStagedPublishers[] = {rt::Publisher::kRockstar};
-bool Staged(rt::Publisher publisher) {
-  return std::find(std::begin(kStagedPublishers), std::end(kStagedPublishers), publisher) != std::end(kStagedPublishers);
-}
 // The publisher's name for the player (before its manifest, which names its account, is read).
 std::string PublisherDisplayName(rt::Publisher publisher) {
-  return publisher == rt::Publisher::kRockstar ? "Rockstar Games" : rt::PublisherName(publisher);
+  switch (publisher) {
+    case rt::Publisher::kRockstar: return "Rockstar Games";
+  }
+  return rt::PublisherName(publisher);
 }
 
 // Why the kit cannot run a recipe Playden ships (its requirements), for the player; empty when it
@@ -1005,7 +1002,7 @@ void RuntimeHost::SignOutPublisher(rt::Publisher publisher) {
 }
 
 void RuntimeHost::CheckPublisher(rt::Publisher publisher) {
-  if (!config_.publisher_refresh || !Staged(publisher)) return;
+  if (!config_.publisher_refresh) return;
   auto request = std::make_unique<PublisherRequest>();
   request->kind = PublisherRequest::Kind::kRenew;
   request->publisher = publisher;
@@ -1024,7 +1021,7 @@ void RuntimeHost::RefreshPublishers() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopping_) return;
-    for (const auto publisher : kStagedPublishers) {
+    for (const auto publisher : rt::kPublishers) {
       auto request = std::make_unique<PublisherRequest>();
       request->publisher = publisher;
       publisher_requests_.push_back(std::move(request));
@@ -4879,7 +4876,7 @@ const rt::GameRecipe* RuntimeHost::GenerateRecipeForPrepare(Composition& c, cons
     std::vector<std::string> targets;
     for (const auto& launch : request.launches) targets.push_back(launch.executable);
     const auto detected = rt::DetectPublisher(root.string(), targets);
-    if (detected.found && Staged(detected.publisher))
+    if (detected.found)
       if (auto program = PublisherProgram(c, request.runtime_number, detected.publisher); !program.empty()) {
         Log("publisher program app=" + std::to_string(request.runtime_number) + " program=" + program);
         if (rt::GameProgramArchitecture(root.string(), program).empty()) {
@@ -7078,7 +7075,7 @@ const RuntimeHost::InstallPublisher* RuntimeHost::PublisherOf(Composition& c, co
     if (!record.launch_path.empty()) targets.push_back(record.launch_path);
     const auto root = HostPath(record.install_path);
     const auto detected = rt::DetectPublisher(root.string(), targets);
-    if (detected.found && Staged(detected.publisher)) {
+    if (detected.found) {
       result = InstallPublisher{detected.publisher,
                                 (detected.title_directory.empty() ? root : root / detected.title_directory).string(),
                                 record.install_path};
@@ -7113,15 +7110,10 @@ std::string RuntimeHost::LoadPublisher(Composition& c, rt::Publisher publisher) 
         c.publisher_pack = std::move(status);
     }
     if (release.message.empty()) {
-      const rt::PublisherRelease* pinned = nullptr;
-      for (const auto& candidate : rt::PinnedPublisherReleases())
-        if (candidate.publisher == publisher) pinned = &candidate;
       const auto cache = HostPath(config_.publisher_cache_root.empty() ? config_.publisher_work_root + "/cache"
                                                                        : config_.publisher_cache_root);
       std::string directory, reason;
-      if (!pinned) {
-        release.message = "This Playden has no publisher pack for " + name + " games.";
-      } else if (rt::PreparePublisherRelease(root, cache.string(), *pinned, &directory, &reason)) {
+      if (rt::PreparePublisherRelease(root, cache.string(), rt::PinnedPublisherRelease(publisher), &directory, &reason)) {
         release.ok = true;
         release.directory = directory;
       } else {
@@ -7559,7 +7551,7 @@ std::string RuntimeHost::RestorePublisher(Composition& c, const rt::RuntimeInsta
 
 void RuntimeHost::PublishPublishers(Composition& c) {
   std::map<rt::Publisher, RuntimePublisherView> views;
-  for (const auto publisher : kStagedPublishers) {
+  for (const auto publisher : rt::kPublishers) {
     RuntimePublisherView view;
     view.publisher = publisher;
     view.name = PublisherDisplayName(publisher);
@@ -7595,10 +7587,10 @@ void RuntimeHost::RunPublisherRequest(Composition* c, PublisherRequest& request)
     c->publisher_pack.reset();
     c->publishers.erase(request.publisher);
     c->publisher_failures.erase(request.publisher);
-    if (Staged(request.publisher)) LoadPublisher(*c, request.publisher);
+    LoadPublisher(*c, request.publisher);
     PublishPublishers(*c);
     // Starts from the PS5 Home screen since Playden last ran left their statuses.
-    if (Staged(request.publisher)) ApplyHomeStatuses(*c, request.publisher);
+    ApplyHomeStatuses(*c, request.publisher);
     return;
   }
   if (request.kind == PublisherRequest::Kind::kRenew) {
@@ -7618,8 +7610,6 @@ void RuntimeHost::RunPublisherRequest(Composition* c, PublisherRequest& request)
   outcome.publisher = request.publisher;
   if (!c) {
     outcome.message = "The runtime services are unavailable.";
-  } else if (!Staged(request.publisher)) {
-    outcome.message = "Playden doesn't keep " + PublisherDisplayName(request.publisher) + " accounts.";
   } else if (auto failed = LoadPublisher(*c, request.publisher); !failed.empty()) {
     outcome.message = failed;
   } else if ([&] {
@@ -8196,8 +8186,7 @@ bool RuntimeHost::RunServices() {
     for (auto& request : publisher_requests) RunPublisherRequest(composition.get(), *request);
     publisher_requests.clear();
     if (renew_check && composition)
-      for (const auto publisher : kStagedPublishers)
-        if (Staged(publisher)) RenewPublisher(*composition, publisher, false);
+      for (const auto publisher : rt::kPublishers) RenewPublisher(*composition, publisher, false);
     for (const auto& [app, install_path] : scans) {
       const auto kit = composition && composition->kit
           ? rt::KitCapabilitiesFromManifest(composition->kit->capabilities, true) : rt::KitCapabilities{};

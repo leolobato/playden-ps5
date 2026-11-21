@@ -71,7 +71,7 @@ class PublisherUploadTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.folder = Path(self.temp.name)
-        self.archives = {'playden-steamhost-1.tzst': b'steam', 'playden-ubisoft-1.tzst': b'ubi'}
+        self.archives = {'playden-rgschost-1.tzst': b'rockstar', 'playden-other-1.tzst': b'other'}
         for name, data in self.archives.items():
             (self.folder / name).write_bytes(data)
         self.lock = {'publisher_pack': {'version': '1.test', 'archives': {
@@ -100,19 +100,19 @@ class PublisherUploadTests(unittest.TestCase):
             upload.check_pack(self.folder, self.lock)
 
     def test_refuses_a_changed_archive(self):
-        (self.folder / 'playden-ubisoft-1.tzst').write_bytes(b'tampered')
+        (self.folder / 'playden-other-1.tzst').write_bytes(b'tampered')
         with self.assertRaisesRegex(upload.PackError, 'does not match its pin'):
             upload.check_pack(self.folder, self.lock)
 
     def test_refuses_a_release_that_lists_other_archives(self):
-        self.write_release('1.test', **{'playden-ubisoft-1.tzst': '0' * 64})
+        self.write_release('1.test', **{'playden-other-1.tzst': '0' * 64})
         with self.assertRaisesRegex(upload.PackError, 'lists another'):
             upload.check_pack(self.folder, self.lock)
 
     def test_accepts_a_pack_with_some_archives(self):
-        (self.folder / 'playden-steamhost-1.tzst').unlink()
+        (self.folder / 'playden-rgschost-1.tzst').unlink()
         version, names = upload.check_pack(self.folder, self.lock)
-        self.assertEqual(names, ['playden-ubisoft-1.tzst'])
+        self.assertEqual(names, ['playden-other-1.tzst'])
 
     def test_refuses_a_pack_with_no_archives(self):
         for name in self.archives:
@@ -126,7 +126,7 @@ class PublisherUploadTests(unittest.TestCase):
         version, names = upload.check_pack(self.folder, self.lock)
         problems = upload.upload(ftp, self.folder, version, names, '/data/playden/publisher', log=lambda _: None)
         self.assertEqual(problems, [])
-        self.assertEqual(ftp.files['/data/playden/publisher/1.test/playden-ubisoft-1.tzst'], b'ubi')
+        self.assertEqual(ftp.files['/data/playden/publisher/1.test/playden-other-1.tzst'], b'other')
         self.assertIn('/data/playden/publisher/1.test/release.json', ftp.files)
         self.assertNotIn('/data/playden/publisher/0.old', ftp.folders)
         self.assertNotIn('/data/playden/publisher/.1.test.upload', ftp.folders)
@@ -154,7 +154,7 @@ class PublisherUploadTests(unittest.TestCase):
         lock = json.loads((ROOT / 'dependencies.lock.json').read_text())
         pack = lock['publisher_pack']
         self.assertEqual(pack['version'], '20261121.1')
-        self.assertEqual(len(pack['archives']), 4)
+        self.assertEqual(list(pack['archives']), ['playden-rgschost-20261121.1.tzst'])
 
 
 if __name__ == '__main__':

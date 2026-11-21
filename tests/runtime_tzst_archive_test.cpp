@@ -117,20 +117,6 @@ int main() {
                   &reason));
   CHECK(seen == 2);
 
-  // The real Ubisoft archive, when the pack is at hand.
-  if (const char* pack = std::getenv("PLAYDEN_PUBLISHER_ARCHIVES")) {
-    listing = List(std::string(pack) + "/playden-ubisoft-20261003.11.tzst");
-    CHECK(listing.ok);
-    for (const char* name : {"pdstub-ubi.exe", "uplay_r264.dll", "uplay_r2.dll", "ubiorbitapi_r2.dll", "uplay_r1.dll",
-                             "uplay_aux_r1.dll"})
-      CHECK(listing.files.count(name) == 1);
-    listing = List(std::string(pack) + "/playden-steamhost-20261003.3.tzst");
-    CHECK(listing.ok);
-    std::printf("steam host archive: %zu files\n", listing.files.size());
-  } else {
-    std::printf("PLAYDEN_PUBLISHER_ARCHIVES unset: real archives not read\n");
-  }
-
   fs::remove_all(root);
   std::printf("runtime_tzst_archive: ok\n");
   return 0;

@@ -11,9 +11,6 @@
 namespace playden::runtime {
 namespace {
 
-constexpr const char* kUbisoftLoaders[] = {"upc_r2_loader64.dll", "upc_r2_loader.dll", "upc_r1_loader.dll",
-                                           "uplay_r1_loader64.dll", "uplay_r1_loader.dll"};
-
 std::string Lower(std::string text) {
   std::transform(text.begin(), text.end(), text.begin(),
                  [](unsigned char c) { return static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c); });
@@ -60,23 +57,6 @@ bool StartsWithMagic(const std::string& path, const char* magic, std::size_t siz
   return got == static_cast<ssize_t>(size) && std::equal(head, head + size, magic);
 }
 
-// A launch target's folder, relative to the game; nothing for URIs and paths that leave it.
-std::optional<std::string> ProgramFolder(std::string target) {
-  if (target.find("://") != std::string::npos) return std::nullopt;
-  std::replace(target.begin(), target.end(), '\\', '/');
-  if (target.empty() || target.front() == '/' || target.find(':') != std::string::npos) return std::nullopt;
-  std::size_t begin = 0;
-  for (;;) {
-    const auto end = target.find('/', begin);
-    const auto part = target.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
-    if (part == "..") return std::nullopt;
-    if (end == std::string::npos) break;
-    begin = end + 1;
-  }
-  const auto slash = target.rfind('/');
-  return slash == std::string::npos ? std::string() : target.substr(0, slash);
-}
-
 bool StartsWithNoCase(const std::string& text, const std::string& prefix) {
   return text.size() >= prefix.size() && Lower(text.substr(0, prefix.size())) == prefix;
 }
@@ -85,9 +65,8 @@ bool StartsWithNoCase(const std::string& text, const std::string& prefix) {
 
 PublisherDetection DetectPublisher(const std::string& install_root, const std::vector<std::string>& launch_targets) {
   PublisherDetection detection;
-  const auto found = [&](Publisher publisher, std::string evidence, std::string title = {}) {
+  const auto found = [&](std::string evidence, std::string title) {
     detection.found = true;
-    detection.publisher = publisher;
     detection.evidence = std::move(evidence);
     detection.title_directory = std::move(title);
     return detection;
@@ -96,13 +75,17 @@ PublisherDetection DetectPublisher(const std::string& install_root, const std::v
   if (::lstat(install_root.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return detection;
   const auto root = List(install_root);
 
-  // EA
+  // EA's launcher comes first: a game it starts is not Rockstar's, even with Social Club files beside it.
   for (const auto& target : launch_targets)
-    if (StartsWithNoCase(target, "link2ea://") || StartsWithNoCase(target, "steam2ea://"))
-      return found(Publisher::kEa, target.substr(0, target.find("://") + 3));
+    if (StartsWithNoCase(target, "link2ea://") || StartsWithNoCase(target, "steam2ea://")) {
+      detection.evidence = "EA: " + target.substr(0, target.find("://") + 3);
+      return detection;
+    }
   for (const auto& folder : root.folders)
-    if (Lower(folder) == "__installer" && FindFile(List(install_root + "/" + folder), "installerdata.xml"))
-      return found(Publisher::kEa, "__Installer/installerdata.xml");
+    if (Lower(folder) == "__installer" && FindFile(List(install_root + "/" + folder), "installerdata.xml")) {
+      detection.evidence = "EA: __Installer/installerdata.xml";
+      return detection;
+    }
 
   // Rockstar: the root, then direct child folders in case-insensitive order.
   std::vector<std::string> candidates{""};
@@ -118,20 +101,11 @@ PublisherDetection DetectPublisher(const std::string& install_root, const std::v
     const auto folder = candidate.empty() ? install_root : install_root + "/" + candidate;
     const auto listing = candidate.empty() ? root : List(folder);
     if (const auto rgl = FindFile(listing, "title.rgl"); rgl && StartsWithMagic(folder + "/" + *rgl, "RGLM", 4))
-      return found(Publisher::kRockstar, "title.rgl", candidate);
+      return found("title.rgl", candidate);
     for (const char* name : {"socialclub.dll", "socialclub64.dll"})
-      if (FindFile(listing, name)) return found(Publisher::kRockstar, name, candidate);
+      if (FindFile(listing, name)) return found(name, candidate);
   }
 
-  // Ubisoft
-  std::vector<std::string> folders{""};
-  for (const auto& target : launch_targets)
-    if (const auto folder = ProgramFolder(target); folder && !folder->empty()) folders.push_back(*folder);
-  for (const auto& relative : folders) {
-    const auto listing = relative.empty() ? root : List(install_root + "/" + relative);
-    for (const char* loader : kUbisoftLoaders)
-      if (FindFile(listing, loader)) return found(Publisher::kUbisoft, loader);
-  }
   return detection;
 }
 

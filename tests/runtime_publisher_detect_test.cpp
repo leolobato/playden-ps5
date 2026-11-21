@@ -44,17 +44,17 @@ int main() {
   Write(root / "steam_api64.dll", "MZ");
   CHECK(!Detect(root).found);
 
-  // EA by launch URI (any case) or by its installer metadata.
+  // A game EA's launcher starts (launch URI in any case, or its installer metadata) is not Rockstar's, even with
+  // Social Club beside it.
   root = fresh();
+  Write(root / "socialclub.dll", "MZ");
+  CHECK(Detect(root).found);
   auto found = Detect(root, {"LINK2EA://launchgame/123"});
-  CHECK(found.found && found.publisher == Publisher::kEa);
-  CHECK(Detect(root, {"steam2ea://x"}).publisher == Publisher::kEa);
+  CHECK(!found.found && found.evidence.find("EA") != std::string::npos);
+  CHECK(!Detect(root, {"steam2ea://x"}).found);
   Write(root / "__Installer/installerdata.xml", "<DiPManifest/>");
   found = Detect(root);
-  CHECK(found.found && found.publisher == Publisher::kEa);
-  // EA comes first even with Social Club beside it.
-  Write(root / "socialclub.dll", "MZ");
-  CHECK(Detect(root).publisher == Publisher::kEa);
+  CHECK(!found.found && found.evidence.find("installerdata.xml") != std::string::npos);
 
   // Rockstar: title.rgl with its magic, in a child folder; the folder is reported.
   root = fresh();
@@ -80,18 +80,6 @@ int main() {
   Write(root / "alpha/title.rgl", "RGLM");
   CHECK(Detect(root).title_directory == "alpha");
 
-  // Ubisoft: a loader in the root, or beside the launch program (either separator).
-  root = fresh();
-  Write(root / "UPC_R2_LOADER64.dll", "MZ");
-  found = Detect(root);
-  CHECK(found.found && found.publisher == Publisher::kUbisoft);
-  root = fresh();
-  Write(root / "bin/farcry3_d3d11.exe", "MZ");
-  Write(root / "bin/uplay_r1_loader.dll", "MZ");
-  CHECK(!Detect(root).found);
-  CHECK(Detect(root, {"bin\\farcry3_d3d11.exe"}).publisher == Publisher::kUbisoft);
-  CHECK(Detect(root, {"bin/farcry3_d3d11.exe"}).publisher == Publisher::kUbisoft);
-
   // Links are not followed.
   root = fresh();
   Write(base / "elsewhere/socialclub.dll", "MZ");
@@ -99,7 +87,7 @@ int main() {
   fs::create_symlink(base / "elsewhere/socialclub.dll", root / "socialclub64.dll");
   CHECK(!Detect(root).found);
   // A launch target that climbs out of the game folder is ignored.
-  Write(base / "uplay_r1_loader.dll", "MZ");
+  Write(base / "title.rgl", "RGLM");
   CHECK(!Detect(root, {"../x.exe"}).found);
 
   // A missing folder is simply not a publisher game.

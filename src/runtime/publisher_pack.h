@@ -6,17 +6,17 @@
 
 namespace playden::runtime {
 
-// The publisher pack: the closed helper programs some Steam games need for their publisher's
-// account (EA, Rockstar Games, Ubisoft Connect), plus the Steam client host they start
-// through. Playden never ships or downloads them: the player uploads the pack to
-// <pack_root>/<version>/ (tools/console_publisher_upload.py), and each Playden build accepts
-// exactly one pack version, pinned below: one helper release, whose tree hashes are computed as
-// the macOS Playden's PublisherAssetCache does.
-enum class Publisher { kSteamHost, kEa, kRockstar, kUbisoft };
+// The publisher pack: the closed helper programs Rockstar Games' Steam games need for their
+// account. Playden doesn't ship them: they live at <pack_root>/<version>/ (release.json and the
+// archive), put there by tools/console_publisher_upload.py or the builds page's Install button.
+// Each Playden build accepts exactly one pack version, pinned below: one helper release, whose
+// tree hash is computed as the macOS Playden's PublisherAssetCache does.
+enum class Publisher { kRockstar };
+inline constexpr Publisher kPublishers[] = {Publisher::kRockstar};
 
 struct PublisherRelease {
-  Publisher publisher = Publisher::kSteamHost;
-  std::string archive;      // file name, e.g. playden-ubisoft-20261003.11.tzst
+  Publisher publisher = Publisher::kRockstar;
+  std::string archive;      // file name, e.g. playden-rgschost-20261121.1.tzst
   std::string sha256;       // of the archive file
   std::string tree_sha256;  // PublisherTreeDigest of the unpacked files
   std::vector<std::string> required;  // files that must be at the unpacked root
@@ -25,7 +25,9 @@ struct PublisherRelease {
 inline constexpr const char* kPublisherPackVersion = "20261121.1";
 inline constexpr const char* kPublisherPackRoot = "/data/playden/publisher";
 const std::vector<PublisherRelease>& PinnedPublisherReleases();
-const char* PublisherName(Publisher publisher);  // "Steam host", "EA", "Rockstar", "Ubisoft"
+// The pin of one publisher's archive: every publisher has one.
+const PublisherRelease& PinnedPublisherRelease(Publisher publisher);
+const char* PublisherName(Publisher publisher);  // "Rockstar"
 
 // SHA-256 over each file's relative path, a zero byte, its hex SHA-256 and a zero byte, in
 // byte order of the paths: the macOS PublisherAssetCache.treeDigest.
@@ -45,7 +47,7 @@ PublisherPackStatus CheckPublisherPack(const std::string& pack_root);
 PublisherPackStatus CheckPublisherPack(const std::string& pack_root, const std::string& version,
                                        const std::vector<PublisherRelease>& releases);
 
-// Whether a publisher's games can use the pack: its own archive verified, and for EA and Ubisoft the Steam host's.
+// Whether a publisher's games can use the pack: the pinned version, with its archive verified.
 bool PublisherSupported(const PublisherPackStatus& status, Publisher publisher);
 
 // Unpacks a verified archive into <cache_root>/<archive name without .tzst>/ (through a staging

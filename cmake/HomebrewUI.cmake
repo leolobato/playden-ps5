@@ -169,7 +169,7 @@ target_link_libraries(playden_depot_codec PUBLIC playden_curl_8_22 playden_steam
 if(PLAYDEN_PLATFORM_PS5)
     target_compile_options(playden_depot_codec PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
 endif()
-# The publisher pack: .tzst archives of the closed EA/Rockstar/Ubisoft helpers (runtime/publisher_*).
+# The publisher pack: the .tzst archive of the closed Rockstar helpers (runtime/publisher_*).
 add_library(playden_runtime_publisher STATIC "${CMAKE_SOURCE_DIR}/src/runtime/tzst_archive.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/publisher_pack.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/publisher_detect.cpp"

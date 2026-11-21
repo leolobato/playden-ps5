@@ -65,7 +65,7 @@ int main() {
   const auto spec = Spec();
   const auto file = root / "state" / "publisher-account-rockstar.v1";
   CHECK(PublisherAccountFileName(Publisher::kRockstar) == "publisher-account-rockstar.v1");
-  CHECK(std::string(PublisherSlug(Publisher::kUbisoft)) == "ubisoft");
+  CHECK(std::string(PublisherSlug(Publisher::kRockstar)) == "rockstar");
 
   // Nothing stored: signed out, no stage value, sign-out and expiry are no-ops.
   std::string reason, display, value;
@@ -79,7 +79,7 @@ int main() {
   CHECK(display == "Player \"One\"");
   CHECK(Mode(file) == 0600);
   // Owner-only on the console's open tree too, and kept so by the self-heal.
-  for (const auto publisher : {Publisher::kSteamHost, Publisher::kEa, Publisher::kRockstar, Publisher::kUbisoft})
+  for (const auto publisher : kPublishers)
     CHECK(playden::platform::data_roots::IsSecretFile(PublisherAccountFileName(publisher)));
   CHECK(Read(file) == R"({"version":1,"obtained_at":1760000000,"state":"signed_in","display":"Player \"One\"","blob":)" +
                           blob + "}");
@@ -88,7 +88,6 @@ int main() {
   CHECK(account.state == PublisherAccountState::kSignedIn && account.display == "Player \"One\"");
   CHECK(account.obtained_at == 1760000000);
   CHECK(PublisherStageValue(state, Publisher::kRockstar, spec, &value, &reason) && value == kToken);
-  CHECK(LoadPublisherAccount(state, Publisher::kEa).state == PublisherAccountState::kSignedOut);
 
   // A later sign-in replaces it; no display field leaves the name empty.
   const std::string second = R"({"Token":"ZXhhbXBsZTI="})";
@@ -334,7 +333,6 @@ int main() {
     CHECK(PublisherUntestedNoticeSeen(state, Publisher::kRockstar, 110800) &&
           PublisherUntestedNoticeSeen(state, Publisher::kRockstar, 12200));
     CHECK(!PublisherUntestedNoticeSeen(state, Publisher::kRockstar, 204100));
-    CHECK(!PublisherUntestedNoticeSeen(state, Publisher::kEa, 110800));  // per publisher
     CHECK(SignOutPublisherAccount(state, Publisher::kRockstar, &reason));
     CHECK(PublisherUntestedNoticeSeen(state, Publisher::kRockstar, 110800));
     // A damaged file holds nothing: the notice shows again, and the next note starts it over.

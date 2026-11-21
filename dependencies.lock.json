@@ -287,23 +287,11 @@
   },
   "publisher_pack": {
     "version": "20261121.1",
-    "source": "external, not distributed: the EA, Rockstar, Ubisoft and Steam host helper archives of one helper-tools release. Upload with tools/console_publisher_upload.py; src/runtime/publisher_pack.cpp holds the same pins.",
+    "source": "external, not distributed with Playden: the Rockstar helper archive of one helper-tools release, hosted at https://builds.playden.club/packs/<version>/. Install with tools/console_publisher_upload.py or the builds page; src/runtime/publisher_pack.cpp holds the same pins.",
     "archives": {
-      "playden-steamhost-20261121.1.tzst": {
-        "sha256": "25e381710a1d03e5191c450e1fdced0934f48678cbaee04ac1db49de4afa81db",
-        "tree_sha256": "59c6cfbdca76e2cf44a2c1b7472edf0ff16fe248551de4bfed13f620e4bb1312"
-      },
-      "playden-eahost-20261121.1.tzst": {
-        "sha256": "db0bf6a6ae8d5747ce738618a3b64145e93ef2e7cc7dba4ce6ebe71a7190ac7c",
-        "tree_sha256": "13266376838a6d85bc1c2d830c772a24ce609957b15593282fcda3e9defd8f68"
-      },
       "playden-rgschost-20261121.1.tzst": {
         "sha256": "18864f63998b12310f984b9e0fff1e6f3bc4526e7a7efe6e59c675263a789f5c",
         "tree_sha256": "b56b72fadd8c632c3bb2596976204a7fe3c96d2861757c54d14fd8b9e7305901"
-      },
-      "playden-ubisoft-20261121.1.tzst": {
-        "sha256": "e35815adc1f8e212fac43b9ecea0ee585035ba56972354ece5d39edbf7766662",
-        "tree_sha256": "b28b6ce315160ab2194c990d57456c3c2c40f76b472d3f09ffa313b19812496a"
       }
     }
   }

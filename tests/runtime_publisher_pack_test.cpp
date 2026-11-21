@@ -75,28 +75,20 @@ int main(int argc, char** argv) {
   // The tree digest is the macOS one: sorted "name\0sha\0" pairs, hashed once.
   CHECK(PublisherTreeDigest({{"b", "2"}, {"a", "1"}}) == Sha(std::string("a\0001\000b\0002\000", 8)));
 
-  // Steam host: its files under the Wine path, with the empty "bin\\shaders" quirk directory.
-  const std::string nested = "home/xuser/.wine/drive_c/Program Files (x86)/Steam";
-  const std::map<std::string, std::string> steam_files = {
-      {"steam.exe", "MZsteam"}, {"steamclient64.dll", "MZclient"}, {"bin/SteamService.exe", "MZservice"}};
-  std::string steam_tar = fx::Directory(nested) + fx::Directory(nested + "/bin") +
-                          fx::Directory(nested + "/bin\\shaders");
-  for (const auto& [path, data] : steam_files) steam_tar += fx::PaxFile(nested + "/" + path, data);
-  steam_tar += fx::End();
-  auto steam = Build(Publisher::kSteamHost, "playden-steamhost-1.tzst", steam_tar, steam_files,
-                     {"steam.exe", "steamclient64.dll"});
-  // Ubisoft: files at the archive root.
-  const std::map<std::string, std::string> ubi_files = {{"pdstub-ubi.exe", "MZubi"}, {"uplay_r264.dll", "MZuplay"}};
-  auto ubi = Build(Publisher::kUbisoft, "playden-ubisoft-1.tzst",
-                   fx::File("pdstub-ubi.exe", "MZubi") + fx::File("uplay_r264.dll", "MZuplay") + fx::End(), ubi_files,
-                   {"pdstub-ubi.exe", "uplay_r264.dll"});
-  const std::vector<PublisherRelease> releases = {steam.release, ubi.release};
+  // Rockstar: files at the archive root, one in a subfolder.
+  const std::map<std::string, std::string> rockstar_files = {
+      {"pdstub-sc.exe", "MZsc"}, {"pdlaunch-sc.dll", "MZlaunch"}, {"signin/index.html", "<html>"}};
+  auto rockstar = Build(Publisher::kRockstar, "playden-rgschost-1.tzst",
+                        fx::File("pdstub-sc.exe", "MZsc") + fx::File("pdlaunch-sc.dll", "MZlaunch") +
+                            fx::Directory("signin") + fx::PaxFile("signin/index.html", "<html>") + fx::End(),
+                        rockstar_files, {"pdstub-sc.exe", "pdlaunch-sc.dll", "signin/index.html"});
+  const std::vector<PublisherRelease> releases = {rockstar.release};
   const std::string version = "1.test";
 
   // No pack at all.
   auto status = CheckPublisherPack(pack.string(), version, releases);
   CHECK(!status.present);
-  CHECK(!PublisherSupported(status, Publisher::kUbisoft));
+  CHECK(!PublisherSupported(status, Publisher::kRockstar));
   CHECK(!status.message.empty());
 
   // Another version only: present, but not this build's.
@@ -107,75 +99,81 @@ int main(int argc, char** argv) {
   CHECK(status.message.find("0.old") != std::string::npos && status.message.find(version) != std::string::npos);
   fs::remove_all(pack / "0.old");
 
-  // The right version with a damaged Ubisoft archive: Steam host verified, Ubisoft not.
+  // The right version without the archive: not installed.
   Write(pack / version / "release.json", ReleaseJson(version, releases));
-  Write(pack / version / steam.release.archive, steam.archive_bytes);
-  Write(pack / version / ubi.release.archive, ubi.archive_bytes + "x");
   status = CheckPublisherPack(pack.string(), version, releases);
   CHECK(status.present && status.version_matches);
-  CHECK(status.verified.at(Publisher::kSteamHost));
-  CHECK(!status.verified.at(Publisher::kUbisoft));
-  CHECK(!PublisherSupported(status, Publisher::kUbisoft));
+  CHECK(!status.verified.at(Publisher::kRockstar));
+  CHECK(!PublisherSupported(status, Publisher::kRockstar));
+  CHECK(status.message.find("Rockstar not installed") != std::string::npos);
+
+  // A damaged archive: not verified, and not unpacked.
+  Write(pack / version / rockstar.release.archive, rockstar.archive_bytes + "x");
+  status = CheckPublisherPack(pack.string(), version, releases);
+  CHECK(!status.verified.at(Publisher::kRockstar));
+  CHECK(!PublisherSupported(status, Publisher::kRockstar));
+  CHECK(status.message.find("Rockstar damaged") != std::string::npos);
   std::string directory, reason;
-  CHECK(!PreparePublisherRelease(pack.string(), version, cache.string(), ubi.release, &directory, &reason));
+  CHECK(!PreparePublisherRelease(pack.string(), version, cache.string(), rockstar.release, &directory, &reason));
   CHECK(!reason.empty());
 
-  // A damaged archive and one that isn't there are told apart.
-  CHECK(status.message.find("Ubisoft damaged") != std::string::npos);
-  fs::remove(pack / version / steam.release.archive);
+  // A good archive: supported, unless the version doesn't match.
+  Write(pack / version / rockstar.release.archive, rockstar.archive_bytes);
   status = CheckPublisherPack(pack.string(), version, releases);
-  CHECK(status.message.find("Steam host not installed") != std::string::npos);
-  Write(pack / version / steam.release.archive, steam.archive_bytes);
-
-  // A pack with only some archives: each publisher is checked alone. Ubisoft starts through the Steam host, so it
-  // needs both; Rockstar's helpers run on their own (the builds page hosts the Rockstar archive by itself).
+  CHECK(status.verified.at(Publisher::kRockstar));
+  CHECK(PublisherSupported(status, Publisher::kRockstar));
+  CHECK(status.message.find("is ready") != std::string::npos);
   {
-    PublisherPackStatus partial;
-    partial.present = partial.version_matches = true;
-    partial.verified = {{Publisher::kSteamHost, false}, {Publisher::kRockstar, true}, {Publisher::kUbisoft, true},
-                        {Publisher::kEa, true}};
-    CHECK(PublisherSupported(partial, Publisher::kRockstar));
-    CHECK(!PublisherSupported(partial, Publisher::kUbisoft));
-    CHECK(!PublisherSupported(partial, Publisher::kEa));
-    partial.version_matches = false;
-    CHECK(!PublisherSupported(partial, Publisher::kRockstar));
+    auto other = status;
+    other.version_matches = false;
+    CHECK(!PublisherSupported(other, Publisher::kRockstar));
   }
 
-  // Both good: Ubisoft is supported (it needs the Steam host too), EA is not part of this pack.
-  Write(pack / version / ubi.release.archive, ubi.archive_bytes);
-  status = CheckPublisherPack(pack.string(), version, releases);
-  CHECK(PublisherSupported(status, Publisher::kUbisoft));
-  CHECK(!PublisherSupported(status, Publisher::kEa));
+  // release.json may be the trimmed one (the builds page's and Playden's own: the Rockstar archive alone) or the
+  // full helper-tools one, which also lists archives this build doesn't pin and a vendor block.
+  Write(pack / version / "release.json",
+        "{\"version\":\"" + version + "\",\"source_revision\":\"abc\",\"ea_properties_included\":true," +
+            "\"artifacts\":{\"playden-eahost-1.tzst\":\"" + std::string(64, 'e') + "\",\"" + rockstar.release.archive +
+            "\":\"" + rockstar.release.sha256 + "\",\"playden-ubisoft-1.tzst\":\"" + std::string(64, 'u') + "\"}," +
+            "\"tree_sha256\":{\"playden-eahost-1.tzst\":\"" + std::string(64, 'f') + "\",\"" + rockstar.release.archive +
+            "\":\"" + rockstar.release.tree_sha256 + "\"},\"vendor\":{\"steam\":{\"manifest\":\"x\"}}}");
+  CHECK(PublisherSupported(CheckPublisherPack(pack.string(), version, releases), Publisher::kRockstar));
+  Write(pack / version / "release.json",
+        "{\"version\":\"" + version + "\",\"artifacts\":{\"" + rockstar.release.archive + "\":\"" +
+            rockstar.release.sha256 + "\"}}");  // no tree_sha256: the archive's own hash is enough
+  CHECK(PublisherSupported(CheckPublisherPack(pack.string(), version, releases), Publisher::kRockstar));
   // A release.json that disagrees with the pins does not verify.
   auto wrong = releases;
-  wrong[1].sha256 = std::string(64, '0');
+  wrong[0].sha256 = std::string(64, '0');
   Write(pack / version / "release.json", ReleaseJson(version, wrong));
-  CHECK(!CheckPublisherPack(pack.string(), version, releases).verified.at(Publisher::kUbisoft));
+  CHECK(!CheckPublisherPack(pack.string(), version, releases).verified.at(Publisher::kRockstar));
+  wrong = releases;
+  wrong[0].tree_sha256 = std::string(64, '0');
+  Write(pack / version / "release.json", ReleaseJson(version, wrong));
+  CHECK(!CheckPublisherPack(pack.string(), version, releases).verified.at(Publisher::kRockstar));
+  Write(pack / version / "release.json", ReleaseJson("2.other", releases));
+  CHECK(!CheckPublisherPack(pack.string(), version, releases).verified.at(Publisher::kRockstar));
   Write(pack / version / "release.json", ReleaseJson(version, releases));
 
-  // Unpack: Ubisoft at the root, the Steam host from its nested folder without the quirk directory.
+  // Unpack, clearing a staging folder left behind.
   fs::create_directories(cache / ".installing-stale");
-  CHECK(PreparePublisherRelease(pack.string(), version, cache.string(), ubi.release, &directory, &reason));
-  CHECK(directory == (cache / "playden-ubisoft-1").string());
-  CHECK(Read(fs::path(directory) / "pdstub-ubi.exe") == "MZubi");
-  CHECK(PublisherCacheValid(directory, ubi.release));
+  CHECK(PreparePublisherRelease(pack.string(), version, cache.string(), rockstar.release, &directory, &reason));
+  CHECK(directory == (cache / "playden-rgschost-1").string());
+  CHECK(Read(fs::path(directory) / "pdstub-sc.exe") == "MZsc");
+  CHECK(Read(fs::path(directory) / "signin/index.html") == "<html>");
+  CHECK(PublisherCacheValid(directory, rockstar.release));
   CHECK(!fs::exists(cache / ".installing-stale"));
-  CHECK(PreparePublisherRelease(pack.string(), version, cache.string(), steam.release, &directory, &reason));
-  CHECK(Read(fs::path(directory) / "bin/SteamService.exe") == "MZservice");
-  CHECK(!fs::exists(fs::path(directory) / "bin\\shaders"));
-  CHECK(!fs::exists(fs::path(directory) / "home"));
-  CHECK(PublisherCacheValid(directory, steam.release));
   struct stat info {};
-  CHECK(::stat((fs::path(directory) / "steam.exe").c_str(), &info) == 0 && (info.st_mode & 0777) == 0644);
+  CHECK(::stat((fs::path(directory) / "pdstub-sc.exe").c_str(), &info) == 0 && (info.st_mode & 0777) == 0644);
 
   // A changed file invalidates the cache; preparing again repairs it.
-  Write(fs::path(directory) / "steam.exe", "MZchanged");
-  CHECK(!PublisherCacheValid(directory, steam.release));
-  CHECK(PreparePublisherRelease(pack.string(), version, cache.string(), steam.release, &directory, &reason));
-  CHECK(Read(fs::path(directory) / "steam.exe") == "MZsteam");
+  Write(fs::path(directory) / "pdstub-sc.exe", "MZchanged");
+  CHECK(!PublisherCacheValid(directory, rockstar.release));
+  CHECK(PreparePublisherRelease(pack.string(), version, cache.string(), rockstar.release, &directory, &reason));
+  CHECK(Read(fs::path(directory) / "pdstub-sc.exe") == "MZsc");
   // An extra file invalidates it too.
   Write(fs::path(directory) / "extra.dll", "MZ");
-  CHECK(!PublisherCacheValid(directory, steam.release));
+  CHECK(!PublisherCacheValid(directory, rockstar.release));
 
   // Path rules: each archive below is refused and leaves no cache behind.
   const std::vector<std::pair<std::string, std::string>> refused = {
@@ -187,24 +185,25 @@ int main(int argc, char** argv) {
       {"missing", fx::File("other.exe", "x") + fx::End()},
   };
   for (const auto& [label, tar] : refused) {
-    auto bad = Build(Publisher::kUbisoft, "playden-ubisoft-" + label + ".tzst", tar, {{"pdstub-ubi.exe", "x"}},
-                     {"pdstub-ubi.exe"});
+    auto bad = Build(Publisher::kRockstar, "playden-rgschost-" + label + ".tzst", tar, {{"pdstub-sc.exe", "x"}},
+                     {"pdstub-sc.exe"});
     Write(pack / version / bad.release.archive, bad.archive_bytes);
     reason.clear();
     CHECK(!PreparePublisherRelease(pack.string(), version, cache.string(), bad.release, &directory, &reason));
     CHECK(!reason.empty());
-    CHECK(!fs::exists(cache / ("playden-ubisoft-" + label)));
+    CHECK(!fs::exists(cache / ("playden-rgschost-" + label)));
   }
   // An archive whose files don't match the pinned tree hash is refused.
-  auto lying = Build(Publisher::kUbisoft, "playden-ubisoft-lying.tzst", fx::File("pdstub-ubi.exe", "evil") + fx::End(),
-                     {{"pdstub-ubi.exe", "good"}}, {"pdstub-ubi.exe"});
+  auto lying = Build(Publisher::kRockstar, "playden-rgschost-lying.tzst", fx::File("pdstub-sc.exe", "evil") + fx::End(),
+                     {{"pdstub-sc.exe", "good"}}, {"pdstub-sc.exe"});
   Write(pack / version / lying.release.archive, lying.archive_bytes);
   CHECK(!PreparePublisherRelease(pack.string(), version, cache.string(), lying.release, &directory, &reason));
   for (const auto& entry : fs::directory_iterator(cache))
     CHECK(entry.path().filename().string().rfind(".installing", 0) != 0);
 
-  // The pinned releases: four archives, each with its required files.
-  CHECK(PinnedPublisherReleases().size() == 4);
+  // The pinned releases: the Rockstar archive alone.
+  CHECK(PinnedPublisherReleases().size() == 1);
+  CHECK(PinnedPublisherRelease(Publisher::kRockstar).archive == "playden-rgschost-20261121.1.tzst");
   CHECK(std::string(kPublisherPackVersion) == "20261121.1");
   // dependencies.lock.json (read by the upload tool) pins the same pack.
   if (argc > 1) {
@@ -240,8 +239,8 @@ int main(int argc, char** argv) {
       CHECK(ok);
       CHECK(PublisherCacheValid(directory, release));
     }
-    CHECK(PublisherSupported(status, Publisher::kUbisoft));
-    std::printf("real publisher pack: all four archives match their pins\n");
+    CHECK(PublisherSupported(status, Publisher::kRockstar));
+    std::printf("real publisher pack: the archive matches its pin\n");
   } else {
     std::printf("PLAYDEN_PUBLISHER_ARCHIVES unset: real archives not checked\n");
   }

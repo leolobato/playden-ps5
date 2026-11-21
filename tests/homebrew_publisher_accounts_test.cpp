@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <netinet/in.h>
+#include <optional>
 #include <string>
 #include <sys/socket.h>
 #include <thread>
@@ -65,7 +66,7 @@ std::string Post(const std::string& address, const std::string& body) {
 
 bool Has(const std::string& text, const std::string& part) { return text.find(part) != std::string::npos; }
 
-PublisherAccounts::Config Loopback(int* submissions, Publisher* seen) {
+PublisherAccounts::Config Loopback(int* submissions, std::optional<Publisher>* seen) {
   PublisherAccounts::Config config;
   config.lan_address = [] { return std::optional<std::string>("127.0.0.1"); };
   config.port = 18199;
@@ -88,7 +89,7 @@ PublisherAccounts::Config Loopback(int* submissions, Publisher* seen) {
 
 void FollowsOneSignIn() {
   int submissions = 0;
-  Publisher seen = Publisher::kSteamHost;
+  std::optional<Publisher> seen;
   std::string logged;
   auto config = Loopback(&submissions, &seen);
   config.log = [&logged](const std::string& line) { logged += line + "\n"; };
@@ -123,7 +124,7 @@ void FollowsOneSignIn() {
 
 void ANewCodeClosesTheOldPage() {
   int submissions = 0;
-  Publisher seen = Publisher::kSteamHost;
+  std::optional<Publisher> seen;
   PublisherAccounts accounts(Loopback(&submissions, &seen));
   accounts.Begin(Publisher::kRockstar, "Rockstar Games", "");
   const auto first = accounts.Current().address;
@@ -145,7 +146,7 @@ void ANewCodeClosesTheOldPage() {
 
 void ExpiresAfterItsLifetime() {
   int submissions = 0;
-  Publisher seen = Publisher::kSteamHost;
+  std::optional<Publisher> seen;
   auto config = Loopback(&submissions, &seen);
   config.lifetime_ms = 300;
   PublisherAccounts accounts(std::move(config));
@@ -161,7 +162,7 @@ void ExpiresAfterItsLifetime() {
 
 void WithoutANetworkNothingOpens() {
   int submissions = 0;
-  Publisher seen = Publisher::kSteamHost;
+  std::optional<Publisher> seen;
   auto config = Loopback(&submissions, &seen);
   config.lan_address = [] { return std::optional<std::string>(); };
   PublisherAccounts accounts(std::move(config));
@@ -174,7 +175,7 @@ void ACheckStillRunningEndsBeforeShutdown() {
   // Cancel returns at once while the phone's credential is still being checked; the service
   // waits for that check when it goes away.
   int submissions = 0;
-  Publisher seen = Publisher::kSteamHost;
+  std::optional<Publisher> seen;
   auto config = Loopback(&submissions, &seen);
   config.submit = [&submissions](Publisher, std::string) {
     std::this_thread::sleep_for(std::chrono::milliseconds(300));

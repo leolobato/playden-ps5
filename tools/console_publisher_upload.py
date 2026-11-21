@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Upload the publisher pack to the console over FTP, then verify it.
 
-The publisher pack holds the closed EA, Rockstar, Ubisoft and Steam host helpers that some
-Steam games need. It is not part of Playden: each Playden build accepts exactly one pack
+The publisher pack holds the closed Rockstar Games helpers that Rockstar's Steam games need.
+It is not part of Playden: each Playden build accepts exactly one pack
 version, listed under "publisher_pack" in dependencies.lock.json. This tool refuses a pack of
 another version or with any archive that doesn't match its pin. The folder may hold only some of the archives:
 Playden checks each publisher's archive on its own.

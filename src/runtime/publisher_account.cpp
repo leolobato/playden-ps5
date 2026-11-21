@@ -262,10 +262,7 @@ const char* PublisherRefreshResultName(PublisherRefreshResult result) {
 
 const char* PublisherSlug(Publisher publisher) {
   switch (publisher) {
-    case Publisher::kSteamHost: return "steamhost";
-    case Publisher::kEa: return "ea";
     case Publisher::kRockstar: return "rockstar";
-    case Publisher::kUbisoft: return "ubisoft";
   }
   return "";
 }

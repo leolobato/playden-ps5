@@ -55,7 +55,7 @@ struct PublisherRefreshOutcome {
 
 const char* PublisherRefreshResultName(PublisherRefreshResult result);
 
-// "steamhost", "ea", "rockstar" or "ubisoft": the name used in file names and recipes.
+// "rockstar": the name used in file names and recipes.
 const char* PublisherSlug(Publisher publisher);
 // publisher-account-<slug>.v1
 std::string PublisherAccountFileName(Publisher publisher);

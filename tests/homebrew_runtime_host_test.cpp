@@ -11151,8 +11151,8 @@ void ExtractsPublisherRuntimeFromTheGamesInstaller() {
   host.Shutdown();
 }
 
-// A Rockstar game the pack doesn't list keeps its files and Play says it isn't supported; a game of
-// another publisher (EA) is left exactly as before: no pack, no files, Play goes on.
+// A Rockstar game the pack doesn't list keeps its files and Play says it isn't supported; a game EA's
+// launcher starts (even with Social Club files) is left exactly as before: no pack, no files, Play goes on.
 void PublisherGamesThePackDoesNotCoverAreUntouched() {
   {
     PublisherFixture f("999");
@@ -11579,7 +11579,7 @@ void NotifiesAtQuitWhenAHomeStartLacksTheSignIn() {
     CHECK(f.Notices().empty());
   }
   {
-    // Play on a waiting game of no staged publisher: nothing to say.
+    // Play on a waiting game EA's launcher starts: nothing to say.
     PublisherFixture f("220", false);
     RuntimeHost host(f.config);
     waiting(f, host);
