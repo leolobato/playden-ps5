@@ -198,21 +198,21 @@ class Unpacker {
 
 const std::vector<PublisherRelease>& PinnedPublisherReleases() {
   static const std::vector<PublisherRelease> releases = {
-      {Publisher::kSteamHost, "playden-steamhost-20261120.3.tzst",
-       "e94213f44f4c85155dd142d98b4b5e3199eccafc6d84a9a0bb105583cbd99c9d",
-       "01db3d27f3d7b94d76741dfde8128653f7eba70619440caf43e6fcdca30e5965", {"steam.exe", "steamclient64.dll"}},
-      {Publisher::kEa, "playden-eahost-20261120.3.tzst",
-       "5b1eb446329a731aa88f9d65b39362f9748c466a7aa639e5960f5ad24b684669",
-       "65de178254a2757dd5447b6ba626522746601188ff8fe8d6261839e8d4d6fded", {"pdstub-ea.exe", "pd-ea.properties"}},
-      {Publisher::kRockstar, "playden-rgschost-20261120.3.tzst",
-       "7844218302163b6a6d0b9f08c133e0236bfdcaa623d2854ae0ddd721810e2420",
-       "f19d9bebb13efacead2096b17f56b69763d54906d9afb0c662ee595bbdd26a5c",
+      {Publisher::kSteamHost, "playden-steamhost-20261121.1.tzst",
+       "25e381710a1d03e5191c450e1fdced0934f48678cbaee04ac1db49de4afa81db",
+       "59c6cfbdca76e2cf44a2c1b7472edf0ff16fe248551de4bfed13f620e4bb1312", {"steam.exe", "steamclient64.dll"}},
+      {Publisher::kEa, "playden-eahost-20261121.1.tzst",
+       "db0bf6a6ae8d5747ce738618a3b64145e93ef2e7cc7dba4ce6ebe71a7190ac7c",
+       "13266376838a6d85bc1c2d830c772a24ce609957b15593282fcda3e9defd8f68", {"pdstub-ea.exe", "pd-ea.properties"}},
+      {Publisher::kRockstar, "playden-rgschost-20261121.1.tzst",
+       "18864f63998b12310f984b9e0fff1e6f3bc4526e7a7efe6e59c675263a789f5c",
+       "b56b72fadd8c632c3bb2596976204a7fe3c96d2861757c54d14fd8b9e7305901",
        {"pdstub-sc.exe", "pdstub-sc32.exe", "pdlaunch-sc.dll", "pdlaunch-sc32.dll", "pdlaunch-helper.exe", "pdscpatch.dll", "pdscpatch32.dll",
         "bink2w64.dll", "binkw32.dll", "SocialClubD3D12Renderer.dll", "SocialClubVulkanLayer.dll",
         "playden-signin-shim.js", "stage.json", "signin/index.html"}},
-      {Publisher::kUbisoft, "playden-ubisoft-20261120.3.tzst",
-       "83d3731af9d2ca67a4e0cd661720cfee22189445519ad32e7dd7ddf6d7e92f4b",
-       "154ec871e7070f16d3661577a435b772f4d84030bdf2064357fd5979f07c0e77",
+      {Publisher::kUbisoft, "playden-ubisoft-20261121.1.tzst",
+       "e35815adc1f8e212fac43b9ecea0ee585035ba56972354ece5d39edbf7766662",
+       "b28b6ce315160ab2194c990d57456c3c2c40f76b472d3f09ffa313b19812496a",
        {"pdstub-ubi.exe", "uplay_r264.dll", "uplay_r2.dll", "ubiorbitapi_r2.dll", "uplay_r1.dll", "uplay_aux_r1.dll"}},
   };
   return releases;

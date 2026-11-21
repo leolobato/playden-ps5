@@ -22,7 +22,7 @@ struct PublisherRelease {
   std::vector<std::string> required;  // files that must be at the unpacked root
 };
 
-inline constexpr const char* kPublisherPackVersion = "20261120.3";
+inline constexpr const char* kPublisherPackVersion = "20261121.1";
 inline constexpr const char* kPublisherPackRoot = "/data/playden/publisher";
 const std::vector<PublisherRelease>& PinnedPublisherReleases();
 const char* PublisherName(Publisher publisher);  // "Steam host", "EA", "Rockstar", "Ubisoft"
