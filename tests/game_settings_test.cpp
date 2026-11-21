@@ -2515,6 +2515,32 @@ int main(int argc, char** argv) {
     CHECK(environment.find("PW_DEBUG_REGISTERS_ZERO=1") != std::string::npos &&
           environment.find("PW_SUBPAGE_FIXES=1") != std::string::npos);
   }
+  // GTA V Enhanced starts from Legacy's recipe: GTA5_Enhanced.exe itself (not the PlayGTAV.exe stub) with the same
+  // launcher arguments for its own app, the microphone off, the Steam emulator and the same Wine switches; its Direct3D 12
+  // goes to vkd3d-proton.
+  {
+    GameRecipe enhanced;
+    CHECK(ParseGameRecipe(ReadText(source / "runtime/recipes/steam-3240220-gta5enhanced-v1.json"), &enhanced, &reason));
+    CHECK(enhanced.app_id == 3240220 && enhanced.launch_entries.size() == 1 &&
+          enhanced.launch_entries[0].executable == "GTA5_Enhanced.exe");
+    KitCapabilities kit;
+    kit.registry = true;
+    kit.environment = true;
+    kit.audio_microphone = true;
+    kit.vkd3d_proton = true;
+    EffectiveSettings settings;
+    SettingsError error;
+    CHECK(BuildEffectiveSettings(enhanced, nullptr, {}, kit, &settings, &error));
+    CHECK(settings.graphics == "dxvk" && settings.architecture == "pe64" &&
+          settings.arguments.find("-steamAppId=3240220") != std::string::npos &&
+          settings.arguments.find("-scCommerceProvider=4") != std::string::npos);
+    CHECK(settings.values.at("microphone").value == "off");
+    CHECK(settings.values.at("steam_features").value == "emulate");
+    CHECK(settings.vkd3d_proton && settings.values.at("d3d12").value == "vkd3d-proton");
+    const auto& environment = settings.values.at("environment").value;
+    CHECK(environment.find("PW_DEBUG_REGISTERS_ZERO=1") != std::string::npos &&
+          environment.find("PW_SUBPAGE_FIXES=1") != std::string::npos);
+  }
   CHECK(!ParseSettingsPresets(R"({"presets":[{"id":"x","name":"X","settings":{"graphics":"gdi"}}]})", &presets, &reason));
   CHECK(!ParseSettingsPresets(R"({"presets":[{"id":"x","name":"X","settings":{"extra_arguments":"-a"}}]})", &presets, &reason));
   // The "my-" prefix is the player's own presets'; a built-in one may not take it.
@@ -2659,8 +2685,8 @@ int main(int argc, char** argv) {
   std::vector<SettingsPreset> loaded_presets;
   std::vector<GameRecipe> loaded_recipes;
   CHECK(LoadSettingsData((source / "runtime").string(), &loaded_presets, &loaded_recipes, &reason));
-  CHECK(loaded_presets.size() == 4 && loaded_recipes.size() == 9 && loaded_recipes.front().app_id == 220 &&
-        loaded_recipes.back().id == "steam-271590-gta5legacy-v1");
+  CHECK(loaded_presets.size() == 4 && loaded_recipes.size() == 10 && loaded_recipes.front().app_id == 220 &&
+        loaded_recipes.back().id == "steam-3240220-gta5enhanced-v1");
   CHECK(!LoadSettingsData((source / "missing").string(), &loaded_presets, &loaded_recipes, &reason));
 
   // ApplyGameSettings writes the profile and a Playden dxvk.conf, removes it when nothing is
