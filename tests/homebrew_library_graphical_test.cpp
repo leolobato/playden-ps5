@@ -268,6 +268,15 @@ int main(int argc,char** argv) {
       };
       capture_live("details-play.png");
       {
+        // A Play the publisher pack refuses says why (#1210).
+        LiveRuntimeGame refused=ready; refused.play_detail="Could not start: This game isn't supported yet.";
+        refused.play_refusal="This game isn't supported yet.";
+        live.UpdateRuntime(RuntimeState::Ready, {refused});
+        capture_live("details-play-refused.png");
+        while(!live.state().navigation.modals.empty()) assert(live.action("circle"));
+        live.UpdateRuntime(RuntimeState::Ready, {ready});
+      }
+      {
         // A game's programs: same file names in long folders still read apart.
         std::map<GameId, LiveGameSetup> setups;
         setups[SteamId(42)].scanned = true;

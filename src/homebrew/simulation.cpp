@@ -3860,7 +3860,10 @@ void Simulation::UpdateRuntime(RuntimeState runtime, const std::vector<LiveRunti
                 const auto told = start_failures_told_.find(id);
                 const bool said = told != start_failures_told_.end() && state_.clock_ticks - told->second <= 60;
                 if (told != start_failures_told_.end()) start_failures_told_.erase(told);
-                if (!said) NotifyPlayStopped(id, "The game could not start. Open Logs in Settings for details.");
+                // Playden's own reason says what to do ("This game isn't supported yet."); the launch
+                // service's stays in the logs.
+                const bool own = !game.play_refusal.empty() && game.play_detail == "Could not start: " + game.play_refusal;
+                if (!said) NotifyPlayStopped(id, own ? game.play_refusal : "The game could not start. Open Logs in Settings for details.");
             }
             else if (game.play_detail == "The game's PS5 title may still be running. Close it, then press Play." ||
                      game.play_detail == "Choose which Cloud saves to keep, or press Play again to start without syncing." ||

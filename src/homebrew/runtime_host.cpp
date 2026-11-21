@@ -246,6 +246,15 @@ std::size_t RebaseCloudIndexes(const std::filesystem::path& saves, const std::st
 }
 }  // namespace
 
+PlayRefusalView PlayRefusalFor(const RuntimeSnapshot& snapshot, std::uint32_t app) {
+  const auto refused = snapshot.play_refusals.find(app);
+  if (refused == snapshot.play_refusals.end()) return {};
+  if (const auto code = snapshot.play_refusal_codes.find(app);
+      code != snapshot.play_refusal_codes.end() && code->second == kPlayRefusalPublisherSignIn)
+    return {};
+  return {"Could not start: " + refused->second, snapshot.play_refusals_for_player.count(app) ? refused->second : std::string()};
+}
+
 // Newest wrapper session log under <data root>/library/logs, first 32 KiB and last 128 KiB.
 // The first head and last tail bytes of a regular file, without following links; a
 // marker line stands for what lies between them.
@@ -4117,22 +4126,30 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
   rt::LaunchResult result;
   rt::LaunchSnapshot snapshot;
   std::string refusal_code;
+  // The refusal is guidance written for the player (play_refusals_for_player), not a diagnostic for the logs.
+  bool for_player = false;
   {
     std::lock_guard<std::mutex> lock(launch_mutex_);
     if (!c.launch) {
       result = rt::LaunchResult::Failure(rt::LaunchError::kPersistence, "Play is unavailable.");
+      for_player = true;
     } else if (!record) {
       result = rt::LaunchResult::Failure(rt::LaunchError::kNotFound, "This game has no PS5 title yet.");
+      for_player = true;
     } else if (const auto replaced = KitReplaced(c); !replaced.empty()) {
       result = rt::LaunchResult::Failure(rt::LaunchError::kPreflight, replaced);
+      for_player = true;
     } else if (record->state == rt::PreparationState::kReady && FilesChanged(*record)) {
       // Its launch names the files from before the update: Prepare makes it again first.
       result = rt::LaunchResult::Failure(rt::LaunchError::kPreflight,
                                          "This game was updated. Press Play again to set it up for the new version.");
+      for_player = true;
     } else if (const auto unwritable = EnsureWritable(record->install_path,
                                                       WorkingFolder(record->launch_working_directory, record->launch_path, record->launch_in_install_root));
                !unwritable.empty()) {
+      // It names the folder, which the player can fix over FTP.
       result = rt::LaunchResult::Failure(rt::LaunchError::kPreflight, unwritable);
+      for_player = true;
     } else {
       // Settings changed since the title's publication take effect now, while nothing of
       // the game runs: Home and Playden then start the same published profile.
@@ -4155,8 +4172,10 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
         if (!idle) {
           auto busy = MaintenanceRefusal(c, *record);
           settings = busy.empty() ? std::string("Close the game first.") : std::move(busy);
+          for_player = true;
         } else if (!record->moved_from.empty()) {
           settings = "This game needs an update for Playden 0.6 first: press Play once.";
+          for_player = true;
         } else {
           settings = RepublishSettings(c, *record, nullptr, true, nullptr, nullptr, nullptr, false, setup_program);
         }
@@ -4167,6 +4186,7 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
         if (!idle) {
           auto busy = MaintenanceRefusal(c, *record);
           settings = "This game needs an update for Playden 0.6 first: " + (busy.empty() ? "Close the game first." : busy);
+          for_player = true;
         } else {
           Publish([&](RuntimeSnapshot& s) { s.play_progress[app_id] = kPlayUpdatingForLayout; });
           bool again = false;
@@ -4195,6 +4215,7 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
       // A launcher or setup run publishes its own program and controls: "play setup program" names it instead.
       if (settings.empty() && setup_program.empty())
         if (const auto latest = current ? current : c.records.Find(record->install_id)) LogPlaySettings(c, *latest);
+      if (refusal_code == kPlayRefusalPublisherUnsupported) for_player = true;
       result = settings.empty() ? c.launch->Request(record->install_id)
                                 : rt::LaunchResult::Failure(rt::LaunchError::kPreflight, settings);
       // What this Play asked of the bridge once is for this start only, kept handoff or not.
@@ -4230,6 +4251,8 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
     else if (result.accepted) s.play_notices.erase(app_id);
     if (result.accepted || refusal_code.empty()) s.play_refusal_codes.erase(app_id);
     else s.play_refusal_codes[app_id] = refusal_code;
+    if (result.accepted || !for_player || result.message.empty()) s.play_refusals_for_player.erase(app_id);
+    else s.play_refusals_for_player.insert(app_id);
   });
   Log("play request app=" + std::to_string(app_id) + " accepted=" + std::to_string(result.accepted) +
       " session=" + result.session_id + " code=" + result.code + " message=" + result.message);
@@ -8186,6 +8209,8 @@ bool RuntimeHost::RunServices() {
       } else {
         Publish([&](RuntimeSnapshot& s) {
           s.play_refusals[app] = s.reason.empty() ? "The runtime services are unavailable." : s.reason;
+          s.play_refusals_for_player.erase(app);
+          s.play_refusal_codes.erase(app);
           ++s.plays_handled;
         });
       }
@@ -8444,6 +8469,8 @@ bool RuntimeHost::RunServices() {
     if (reload) {
       s.refusals.clear();
       s.play_refusals.clear();
+      s.play_refusals_for_player.clear();
+      s.play_refusal_codes.clear();
     }
   });
   return reload;

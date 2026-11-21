@@ -328,6 +328,9 @@ struct LiveRuntimeGame {
     bool can_play = false;
     std::string play_status;  // e.g. "Starting…", "Playing"; empty when idle
     std::string play_detail;  // the last launch's outcome or refusal
+    // A refused Play's reason when Playden's own check wrote it for the player (play_detail is then
+    // "Could not start: " and this); empty when the reason is technical and stays in the logs.
+    std::string play_refusal;
     // Uninstall removes the game's PS5 title first; has_title says there is one.
     bool has_title = false;
     std::string uninstall_status;  // e.g. "Syncing saves…", "Removing PS5 title…"; empty when idle

@@ -488,6 +488,9 @@ struct RuntimeSnapshot {
   // (kPlayRefusalPublisherSignIn opens the publisher's sign-in).
   std::map<std::uint32_t, std::string> play_refusals;
   std::map<std::uint32_t, std::string> play_refusal_codes;
+  // Refused Plays whose message Playden's own checks wrote for the player ("This game isn't supported yet.").
+  // The others come from the launch service, in its own terms: the UI keeps those in the logs.
+  std::set<std::uint32_t> play_refusals_for_player;
   // A checked session waits for Handoff on the application thread.
   bool handoff_ready = false;
   // Recipes Playden generated (from Steam's launch options or the game's files), for the settings sheet.
@@ -558,6 +561,15 @@ struct RuntimeSnapshot {
   std::map<runtime::Publisher, RuntimePublisherView> publishers;
   std::optional<RuntimePublisherSignIn> publisher_sign_in;
 };
+
+// What a refused Play shows for runtime number app (RuntimeSnapshot::play_refusals): "Could not start: …" and,
+// when Playden's own check wrote it, the reason for the player. A Play refused for the publisher's sign-in
+// shows neither: the sign-in it asks for (kPlayRefusalPublisherSignIn) is its message.
+struct PlayRefusalView {
+  std::string detail;
+  std::string for_player;
+};
+PlayRefusalView PlayRefusalFor(const RuntimeSnapshot& snapshot, std::uint32_t app);
 
 // Whether the game's preparation waits in the runtime's queue.
 inline bool PrepareQueued(const RuntimeSnapshot& snapshot, std::uint32_t runtime_number) {

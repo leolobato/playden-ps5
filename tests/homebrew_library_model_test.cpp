@@ -3541,6 +3541,15 @@ void live_launch_failure_remains_visible_without_a_details_status_line() {
     model.UpdateRuntime(RuntimeState::Ready, {ready});
     check(model.state().navigation.modals.size() == 1, "a fresh attempt can report the same refusal again");
     activate(model, "alert-ok");
+    // A reason Playden's own check wrote for the player is told instead (#1210).
+    ready.play_detail = "Could not start: This game isn't supported yet.";
+    ready.play_refusal = "This game isn't supported yet.";
+    model.UpdateRuntime(RuntimeState::Ready, {ready});
+    check(model.state().navigation.modals.size() == 1 &&
+              model.state().navigation.modals.back().body == "Synthetic · This game isn't supported yet.",
+          "a refusal written for the player is told as it is");
+    activate(model, "alert-ok");
+    ready.play_refusal.clear();
     ready.play_detail = "Cloud saves could not be checked. Press Play again to start without syncing.";
     model.UpdateRuntime(RuntimeState::Ready, {ready});
     check(model.state().navigation.modals.size() == 1 &&

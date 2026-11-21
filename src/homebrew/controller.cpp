@@ -1822,8 +1822,12 @@ void Controller::TickRuntime() {
       game.setup_other_kit = true;
       game.detail = "Started with an earlier version of the runtime kit · Recreate the bottle to finish (saves are kept)";
     }
-    if (const auto refused = snapshot.play_refusals.find(NumberIn(snapshot, id)); refused != snapshot.play_refusals.end())
-      game.play_detail = "Could not start: " + refused->second;
+    // A refusal is the latest Play's outcome (an accepted Play clears it): an earlier session's end doesn't replace it.
+    const bool refused_now = snapshot.play_refusals.count(NumberIn(snapshot, id)) != 0;
+    if (auto refused = PlayRefusalFor(snapshot, NumberIn(snapshot, id)); !refused.detail.empty()) {
+      game.play_detail = std::move(refused.detail);
+      game.play_refusal = std::move(refused.for_player);
+    }
     const bool launching = snapshot.launch && snapshot.launch->game == id;
     if (launching) {
       using runtime::LaunchState;
@@ -1832,8 +1836,11 @@ void Controller::TickRuntime() {
         case LaunchState::kReadyToHandoff:
         case LaunchState::kLaunching: game.play_status = "Starting…"; break;
         case LaunchState::kRunning: game.play_status = "Playing"; break;
-        case LaunchState::kExited: game.play_detail = "The last session ended."; break;
+        case LaunchState::kExited:
+          if (!refused_now) game.play_detail = "The last session ended.";
+          break;
         case LaunchState::kFailed:
+          if (refused_now) break;
           game.play_detail = snapshot.launch->message.empty() ? "The game could not start."
                                                               : "Could not start: " + snapshot.launch->message;
           break;

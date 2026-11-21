@@ -1780,6 +1780,9 @@ void PlaysReadyTitleThroughHandoff() {
   host.Play(220);
   const auto refused = WaitFor(host, [handled](const RuntimeSnapshot& s) { return s.plays_handled > handled; }, 30);
   CHECK(refused.play_refusals.count(220) && refused.launch && refused.launch->state == LaunchState::kLaunching);
+  // The launch service's own reason is for the logs: the player is told the game could not start.
+  CHECK(!refused.play_refusals_for_player.count(220) && PlayRefusalFor(refused, 220).for_player.empty() &&
+        !PlayRefusalFor(refused, 220).detail.empty());
   std::this_thread::sleep_for(std::chrono::milliseconds(2500));  // one more poll
   CHECK(host.Snapshot().play_refusals.count(220) && launches.size() == 1);
 
@@ -1914,6 +1917,7 @@ void ReplacedKitAsksForRestart() {
   const auto refused = WaitFor(host, [handled](const RuntimeSnapshot& s) { return s.plays_handled > handled; }, 30);
   CHECK(refused.play_refusals.count(220) &&
         refused.play_refusals.at(220).find("Quit Playden and start it again") != std::string::npos);
+  CHECK(PlayRefusalFor(refused, 220).for_player.find("Quit Playden and start it again") != std::string::npos);
   CHECK(!refused.handoff_ready && launches.empty());
   host.Prepare(Hl2());
   const auto held = WaitFor(host, [](const RuntimeSnapshot& s) { return s.refusals.count(220) != 0; }, 30);
@@ -3349,6 +3353,8 @@ void RunsSetupProgramOnce() {
   host.Play(4300, "Binaries/Missing.exe");
   const auto refused = WaitFor(host, [handled](const RuntimeSnapshot& s) { return s.plays_handled > handled; }, 30);
   CHECK(refused.play_refusals.count(4300) && refused.play_refusals.at(4300).find("missing") != std::string::npos);
+  // Settings publication's own wording stays in the logs: the player is told the game could not start.
+  CHECK(!refused.play_refusals_for_player.count(4300) && PlayRefusalFor(refused, 4300).for_player.empty());
   CHECK(game_published() && launches.size() == 4);
 
   // A game with a controller layout: the run still has the Mouse preset alone.
@@ -10981,6 +10987,8 @@ void StagesPublisherGameAndPlaysWithAccount() {
   auto refused = f.PlayHandled(host);
   CHECK(refused.play_refusal_codes.at(220) == kPlayRefusalPublisherSignIn);
   CHECK(refused.play_refusals.at(220).find("needs a Rockstar Games account.") != std::string::npos);
+  // The sign-in Play asks for is the message: no "Can't play" besides it.
+  CHECK(PlayRefusalFor(refused, 220).detail.empty() && PlayRefusalFor(refused, 220).for_player.empty());
   CHECK(!refused.handoff_ready && !fs::exists(f.title / "credential.txt"));
 
   // A sign-in that holds no usable credential is refused; a good one is kept.
@@ -11117,6 +11125,10 @@ void PublisherGamesThePackDoesNotCoverAreUntouched() {
     const auto refused = f.PlayHandled(host);
     CHECK(refused.play_refusal_codes.at(220) == kPlayRefusalPublisherUnsupported);
     CHECK(refused.play_refusals.at(220) == "This game isn't supported yet.");
+    // The player is told why (#1210), not only that the game could not start.
+    const auto shown = PlayRefusalFor(refused, 220);
+    CHECK(shown.detail == "Could not start: This game isn't supported yet." &&
+          shown.for_player == "This game isn't supported yet.");
     CHECK(!fs::exists(f.title / "credential.txt"));
     host.Shutdown();
   }
