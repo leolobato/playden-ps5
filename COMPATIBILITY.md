@@ -1,6 +1,6 @@
 # Compatibility
 
-Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-20.
+Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-21.
 
 > [!NOTE]
 > Games were checked on runtime kit **0.10**, the first stable kit, unless the Kit column names a newer one.
@@ -304,7 +304,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Guacamelee! Gold Edition](https://store.steampowered.com/app/214770) | ✅ Works | 0.18 | — | Default settings, DualSense. ([#682](https://github.com/leolobato/playden-ps5/issues/682), firmware 12.20) | 1 |
 | [Guardians of Middle-earth](https://store.steampowered.com/app/111900) | ✅ Works | 0.28 | — | Default settings. (player reports, firmware 7.00) | 1 |
 | [Guild Wars Reforged](https://store.steampowered.com/app/29720) | ✅ Works | 0.13 | — | Default settings, DualSense or a USB mouse and keyboard. ([#204](https://github.com/leolobato/playden-ps5/issues/204), firmware 13.60) | 1 |
-| [GUN](https://store.steampowered.com/app/2610) | ✅ Works | 0.10 | — · D3D9 · 32-bit | Menus and New Game with the controller. |
+| [GUN](https://store.steampowered.com/app/2610) | ✅ Works | 0.34 | — · D3D9 · 32-bit | Game settings › Controller = **PlayStation controller**: the right stick then turns the camera, and Square confirms in menus. ([#911](https://github.com/leolobato/playden-ps5/issues/911), firmware 12.70) | 1 |
 | [GUNTOUCHABLES](https://store.steampowered.com/app/2543510) | ✅ Works | 0.12 | — | Default settings, DualSense. Online play needs Steam online features ([#115](https://github.com/leolobato/playden-ps5/issues/115)). ([#124](https://github.com/leolobato/playden-ps5/issues/124), firmware 13.60) | 1 |
 | [Hades](https://store.steampowered.com/app/1145360) | ✅ Works | 0.18 | — | Default settings, DualSense. ([#498](https://github.com/leolobato/playden-ps5/pull/498), firmware 12.40) | 1 |
 | [Half Sword](https://store.steampowered.com/app/2397300) | ✅ Works | 0.28 | — | With changed Game settings; see the reports. (player reports, firmware 12.40) | 1 |
