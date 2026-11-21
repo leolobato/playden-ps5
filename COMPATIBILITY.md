@@ -1001,6 +1001,7 @@ Development builds carry the version they lead to, such as `0.12-dev.20261020.1`
 | --- | --- |
 | 0.31 | Games that use a microphone hear it: in 0.30 they found the microphone but got no sound. Bottles need no Recreate. |
 | 0.32 | Unity games such as Turbo Overkill show up on their first start, Killer Instinct finds its match servers, and a button mapped to a key no longer also presses a controller button. Bottles need no Recreate. |
+| 0.34 | Order of the Sinking Star gets past its gray screen, and Touchpad hold can switch a game to one of your controller layout templates. A Rockstar launcher on a USB drive finds the game's drive. Bottles need no Recreate. |
 | 0.33 | Controller layouts: a game can have its own layout of buttons, sticks and triggers, set in Game settings › Controls. Key combinations such as Ctrl + S keep their order, and the mouse's side buttons reach games. Bottles need no Recreate. |
 | 0.30 | Games can use the controller's or a headset's microphone, and Game settings get Volume and Microphone per game. System locale gives older games a code page such as Japanese (932), and Language and region sets the language Windows reports. Bottles need no Recreate. |
 | 0.29 | Unreal Engine 5 games on vkd3d-proton (Direct3D 12) no longer stop with "Fatal error!" as they start. Playden's data can be opened over FTP without breaking a game's start check. Bottles need no Recreate. |
