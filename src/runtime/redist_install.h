@@ -100,8 +100,11 @@ RedistInstallResult InstallRedistEntries(const std::string& game_root, const std
                                          bool burn_bundles, const RedistProgress& progress = {});
 
 // Microsoft's MFC library, which Wine doesn't provide, for the games that import it (runtime/game_probe.h
-// FindMfcImports): Playden downloads Microsoft's Visual C++ 2015-2022 redistributable once per console, keeps the
-// verified setup program, and installs only the MFC files of its "Additional" package into a game's bottle.
+// FindMfcImports): Playden downloads Microsoft's Visual C++ redistributable once per console, keeps the verified
+// setup program, and installs only its MFC files into a game's bottle. For MFC 14 (2015-2022), the MFC files of
+// the bundle's "Additional" package. For MFC 8 (2005), whose games ask for it as a side-by-side assembly
+// (Microsoft.VC80.MFC), the MFC and MFCLOC assembly folders under windows\winsxs, with each one's manifest also in
+// winsxs\manifests, where Wine looks assemblies up; the VC80 C runtime stays Wine's builtin.
 
 // The redistributable for one architecture, pinned to a release: the URL embeds its SHA-256.
 struct VcRedist {
@@ -109,15 +112,20 @@ struct VcRedist {
   std::string url;
   std::string sha256;        // lower case
   std::uint64_t bytes = 0;
-  std::string package_id;    // the bundle's MsiPackage with MFC
+  std::string package_id;    // MFC 14: the bundle's MsiPackage with MFC; MFC 8: the package in its cabinet
   std::string version;       // names the cache folder
+  std::string mfc = "140";   // the MFC it carries: "140" (a Burn bundle) or "80" (an IExpress setup program)
 };
-// Microsoft's 14.44.35211 for x86 and x64.
+// Microsoft's 14.44.35211 for x86 and x64, and 8.0.50727.6195 (Visual C++ 2005 SP1, MFC security update) for x86.
 std::vector<VcRedist> MicrosoftVcRedists();
 
 // Whether a file the package installs is one of MFC's (mfc140*.dll, mfcm140*.dll): the only ones Playden takes
 // from it, so the C runtime never replaces the kit's Wine builtins.
 bool MfcFileName(std::string_view name);
+// The same for Visual C++ 2005's package: whether a file it installs (a path below drive_c, '/' separators) is in
+// the folder of the Microsoft.VC80.MFC or Microsoft.VC80.MFCLOC assembly under Windows/winsxs. Their publisher
+// policies, the C runtime, ATL and OpenMP are left out.
+bool Mfc80AssemblyFile(std::string_view target);
 
 // One ranged GET: the bytes [offset, offset + length) of url, or nothing with a reason.
 using RangeFetch = std::function<std::optional<std::string>(const std::string& url, std::uint64_t offset,
@@ -144,12 +152,13 @@ MfcInstallResult InstallMfcRuntime(const VcRedist& redist, const std::string& ca
 bool MfcInstalled(const VcRedist& redist, const std::string& prefix_dir);
 
 // The latest MFC scan of a game (runtime/game_probe.h FindMfcImports), kept in its bottle (.playden-mfc) so Play
-// doesn't walk the game folder each time: the programs found, per architecture, and the game files' fingerprint
-// then.
+// doesn't walk the game folder each time: the programs found, per kind, and the game files' fingerprint then. A
+// record from before MFC 8 was looked for (version 1) is not read, so each game's folder is walked once more.
 struct MfcScanRecord {
   std::string fingerprint;
   std::string x86_program;
   std::string x64_program;
+  std::string x86_mfc80_program;
 };
 std::optional<MfcScanRecord> ReadMfcScan(const std::string& prefix_dir);
 bool WriteMfcScan(const std::string& prefix_dir, const MfcScanRecord& record);

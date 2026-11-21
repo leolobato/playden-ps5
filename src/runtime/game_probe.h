@@ -44,6 +44,9 @@ struct GameProbe {
   std::string unity_program;
   bool unreal5 = false;  // Unreal Engine 5 (its Shipping program names Nanite's settings)
   bool watcom = false;   // a 32-bit program linked by Watcom, whose runtime reloads FS
+  // The program imports a Qt web view (Qt5WebKit, QtWebEngine): with nothing it draws itself, a launcher showing a
+  // web page in front of the game (Aspyr's, which starts the game as a child process).
+  bool web_view = false;
 };
 
 inline constexpr unsigned long long kProbeScanBytes = 256ull * 1024ull * 1024ull;
@@ -88,11 +91,14 @@ std::string GameProgramInstead(const std::string& install_root, const std::strin
 // Which of a game's programs and libraries import Microsoft's MFC library (mfc140*.dll, mfcm140*.dll, directly
 // or delay-loaded), which Wine doesn't provide: Playden installs Microsoft's own into the game's bottle. Every
 // .exe and .dll of the game folder is read, kMfcScanDepth folders deep, at most kMfcScanPrograms of them (headers
-// only) in at most kMfcScanFolders folders, without following links; the walk ends once both architectures are
-// found. The first program found per architecture, relative to the root.
+// only) in at most kMfcScanFolders folders, without following links; the walk ends once every kind below is
+// found. The first program found per kind, relative to the root.
 struct MfcImports {
   std::string x86_program;  // a PE32 one
   std::string x64_program;  // a PE32+ one
+  // A PE32 one importing Visual C++ 2005's MFC (mfc80*.dll, mfcm80*.dll: Fahrenheit Remastered's game program). A
+  // PE32+ one isn't looked for: Playden has only the x86 package of that version.
+  std::string x86_mfc80_program;
   std::size_t programs = 0;  // programs read
   std::size_t folders = 0;   // folders listed
   bool truncated = false;    // stopped at kMfcScanPrograms or kMfcScanFolders

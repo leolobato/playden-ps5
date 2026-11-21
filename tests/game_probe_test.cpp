@@ -1327,14 +1327,90 @@ int main() {
     CHECK(found.x86_program.empty() && found.x64_program.empty());
     WritePe(plain / "a/b/c/d/e/f/Six.dll", {true, {"mfc140.dll"}});
     CHECK(FindMfcImports(plain.string()).x64_program == "a/b/c/d/e/f/Six.dll");
-    // Once both are found the walk ends: the folder after them isn't listed.
+    // Once every kind is found the walk ends: the folder after them isn't listed.
     const auto both = fresh();
     WritePe(both / "A.dll", {true, {"mfc140u.dll"}});
     WritePe(both / "B.dll", {false, {"mfc140u.dll"}});
+    WritePe(both / "D.dll", {false, {"MFC80U.DLL"}});
     WritePe(both / "later/C.dll", {true, {"KERNEL32.dll"}});
     found = FindMfcImports(both.string());
-    CHECK(!found.x86_program.empty() && !found.x64_program.empty() && found.folders == 1 && found.programs == 2);
+    CHECK(!found.x86_program.empty() && !found.x64_program.empty() && found.x86_mfc80_program == "D.dll" &&
+          found.folders == 1 && found.programs == 3);
     CHECK(!found.truncated);
+  }
+
+  {  // MFC 8 (Visual C++ 2005): Fahrenheit Remastered's game program imports MFC80.DLL. It is looked for on its own: a
+     // 32-bit program with MFC 14 found first doesn't hide it, nor does one with both.
+    const auto root = fresh();
+    WritePe(root / "A.exe", {false, {"KERNEL32.dll", "mfc140.dll"}});
+    WritePe(root / "FahrenheitSub.exe", {false, {"stlport_vc745.dll", "MFC80.DLL", "MSVCR80.dll", "d3d9.dll"}});
+    auto found = FindMfcImports(root.string());
+    CHECK(found.x86_program == "A.exe" && found.x86_mfc80_program == "FahrenheitSub.exe");
+    const auto one = fresh();
+    WritePe(one / "Both.exe", {false, {"mfc140u.dll", "mfcm80.dll"}});
+    found = FindMfcImports(one.string());
+    CHECK(found.x86_program == "Both.exe" && found.x86_mfc80_program == "Both.exe");
+    // Delay-loaded counts too; other DLLs named alike (MFC 4.2, 7.0, an MFC 8 locale's own name) don't.
+    const auto delayed = fresh();
+    WritePe(delayed / "Tool.exe", {false, {"KERNEL32.dll"}, false, false, "", 0x1400, false, {"mfc80u.dll"}});
+    WritePe(delayed / "Old.exe", {false, {"mfc42.dll", "mfc70.dll", "msvcr80.dll"}});
+    found = FindMfcImports(delayed.string());
+    CHECK(found.x86_mfc80_program == "Tool.exe" && found.x86_program.empty());
+    // Playden has only the x86 package of MFC 8: a 64-bit program importing it isn't recorded.
+    const auto x64 = fresh();
+    WritePe(x64 / "Game64.exe", {true, {"mfc80.dll"}});
+    found = FindMfcImports(x64.string());
+    CHECK(found.x86_mfc80_program.empty() && found.x64_program.empty());
+  }
+
+  {  // Fahrenheit Remastered: Steam starts Aspyr's launcher, a Qt web view that draws nothing itself and starts the game
+     // as a child process; its Qt and SDL libraries are in a Fahrenheit.exe.local folder. The game's own program starts.
+    GameRecipe recipe;
+    std::string reason;
+    const auto root = fresh();
+    WritePe(root / "Fahrenheit.exe", {false, {"SDL2.dll", "steam_api.dll", "libgcc_s_dw2-1.dll", "KERNEL32.dll",
+                                              "libstdc++-6.dll", "Qt5Core.dll", "Qt5Gui.dll", "Qt5Network.dll",
+                                              "Qt5WebKit.dll", "Qt5WebKitWidgets.dll", "Qt5Widgets.dll"}});
+    WritePe(root / "FahrenheitSub.exe",
+            {false, {"stlport_vc745.dll", "steam_api.dll", "MFC80.DLL", "MSVCR80.dll", "d3d9.dll", "DINPUT8.dll"},
+             false, false, "", 0x40000});
+    WritePe(root / "DrvSetup.exe", {false, {"KERNEL32.dll", "SETUPAPI.dll"}});
+    WritePe(root / "Fahrenheit.exe.local/Qt5Core.dll", {false, {"KERNEL32.dll"}});
+    CHECK(ProbeGame(root.string(), "Fahrenheit.exe").web_view);
+    CHECK(!ProbeGame(root.string(), "FahrenheitSub.exe").web_view);
+    GameRecipeDiagnostics swap;
+    CHECK(GenerateGameRecipe(312840, "Fahrenheit: Indigo Prophecy Remastered", {{"", "", "Fahrenheit.exe", "", ""}},
+                             root.string(), &recipe, &reason, {}, {}, nullptr, &swap));
+    CHECK(recipe.launch_entries.size() == 2 && recipe.launch_entries[0].executable == "FahrenheitSub.exe" &&
+          recipe.launch_entries[0].id == "game" && recipe.launch_entries[1].executable == "Fahrenheit.exe");
+    CHECK(recipe.graphics == "dxvk" && recipe.architecture == "pe32");
+    CHECK(swap.steam_default == "Fahrenheit.exe" && swap.steam_default_skipped_because == "web-view" &&
+          swap.game_instead == "FahrenheitSub.exe");
+    // A program the player picked starts as picked.
+    RecipeChoices choices;
+    choices.program = "Fahrenheit.exe";
+    CHECK(GenerateGameRecipe(312840, "Fahrenheit", {{"", "", "Fahrenheit.exe", "", ""}}, root.string(), &recipe, &reason,
+                             {}, choices));
+    CHECK(recipe.launch_entries[0].executable == "Fahrenheit.exe" && recipe.launch_entries[0].id == kProgramEntryId);
+
+    // A game that draws (Direct3D, OpenGL or Vulkan) and shows a Qt web view as well is the game, not a launcher.
+    for (const char* graphics : {"d3d9.dll", "OPENGL32.dll", "vulkan-1.dll"}) {
+      const auto game = fresh();
+      WritePe(game / "Game.exe", {false, {"KERNEL32.dll", "Qt5Core.dll", "Qt5Widgets.dll", "Qt5WebKitWidgets.dll", graphics}});
+      WritePe(game / "Other.exe", {false, {"KERNEL32.dll", "d3d9.dll"}, false, false, "", 0x40000});
+      GameRecipeDiagnostics kept;
+      CHECK(GenerateGameRecipe(1, "Game", {{"", "", "Game.exe", "", ""}}, game.string(), &recipe, &reason, {}, {}, nullptr,
+                               &kept));
+      CHECK(recipe.launch_entries[0].executable == "Game.exe" && kept.steam_default.empty());
+    }
+    // A Qt program without a web view (a Qt Widgets settings tool named like the game) isn't taken for this launcher.
+    const auto widgets = fresh();
+    WritePe(widgets / "Tool.exe", {false, {"KERNEL32.dll", "Qt5Core.dll", "Qt5Gui.dll", "Qt5Widgets.dll"}});
+    WritePe(widgets / "Game.exe", {false, {"KERNEL32.dll", "d3d9.dll"}, false, false, "", 0x40000});
+    GameRecipeDiagnostics plain;
+    CHECK(GenerateGameRecipe(2, "Tool", {{"", "", "Tool.exe", "", ""}}, widgets.string(), &recipe, &reason, {}, {}, nullptr,
+                             &plain));
+    CHECK(recipe.launch_entries[0].executable == "Tool.exe" && plain.steam_default.empty());
   }
 
   {  // A program's own imports decide, not the libraries beside it: Hotline Miami's launcher sits next to cgGL.dll.

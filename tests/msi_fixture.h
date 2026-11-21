@@ -571,6 +571,78 @@ inline std::string MfcBundle(bool x64, bool signed_form = true, bool with_sectio
   return BurnBundle(manifest, StoredCabinet(members), signed_form, with_section);
 }
 
+// Like Visual C++ 2005's vcredist.msi: side-by-side assembly folders under WindowsFolder\winsxs (MFC, its locale
+// resources MFCLOC, a publisher policy and the C runtime), each with its files and a manifest, from the external
+// vcredis1.cab (Vc2005Cabinet). Vc2005Setup wraps both in a cabinet inside a program, as its IExpress setup does.
+inline constexpr const char* kVc2005MfcFolder = "x86_microsoft.vc80.mfc_1fc8b3b9a1e18e3b_8.0.50727.6195_none_cbf5e994470a1a8f";
+inline constexpr const char* kVc2005LocFolder = "x86_microsoft.vc80.mfcloc_1fc8b3b9a1e18e3b_8.0.50727.6195_none_03ce2c72205943d3";
+inline std::string Vc2005Cabinet() {
+  return StoredCabinet({{"ul_mfc80.dll.9B", "MFC80"},
+                        {"ul_mfc80u.dll.9B", "MFC80U"},
+                        {"ul_manifest.9B", "<assembly>MFC</assembly>"},
+                        {"ul_catalog.9B", "CAT"},
+                        {"ul_mfc80ENU.dll.74", "ENU"},
+                        {"ul_manifest.74", "<assembly>MFCLOC</assembly>"},
+                        {"ul_manifest.68", "<policy/>"},
+                        {"ul_msvcr80.dll.98", "MICROSOFT-CRT"},
+                        {"ul_manifest.98", "<assembly>CRT</assembly>"}});
+}
+inline std::string Vc2005Package() {
+  std::vector<TableSpec> tables;
+  tables.push_back({"Property", {{"Property", 's'}, {"Value", 's'}},
+                    {{"ProductCode", "{7299052B-02A4-4627-81F2-1818DA5D550D}"},
+                     {"ProductName", "Microsoft Visual C++ 2005 Redistributable"}, {"ProductVersion", "8.0.61001"}}});
+  tables.push_back({"Directory", {{"Directory", 's'}, {"Directory_Parent", 's'}, {"DefaultDir", 's'}},
+                    {{"TARGETDIR", "", "SourceDir"},
+                     {"WindowsFolder", "TARGETDIR", "."},
+                     {"D_SXS", "WindowsFolder", "winsxs"},
+                     {"D_MFC", "D_SXS", kVc2005MfcFolder},
+                     {"D_LOC", "D_SXS", kVc2005LocFolder},
+                     {"D_POL", "D_SXS", "x86_policy.8.0.microsoft.vc80.mfc_1fc8b3b9a1e18e3b_8.0.50727.6195_none_49f31fd71413cdc6"},
+                     {"D_CRT", "D_SXS", "x86_microsoft.vc80.crt_1fc8b3b9a1e18e3b_8.0.50727.6195_none_d09154e044272b9a"}}});
+  tables.push_back({"Feature", {{"Feature", 's'}, {"Feature_Parent", 's'}, {"Level", 'i'}}, {{"F_Main", "", "1"}}});
+  tables.push_back({"Condition", {{"Feature_", 's'}, {"Level", 'i'}, {"Condition", 's'}}, {}});
+  tables.push_back({"Component",
+                    {{"Component", 's'}, {"ComponentId", 's'}, {"Directory_", 's'}, {"Attributes", 'i'}, {"Condition", 's'}, {"KeyPath", 's'}},
+                    {{"C_MFC", "{A}", "D_MFC", "0", "", ""}, {"C_LOC", "{B}", "D_LOC", "0", "", ""},
+                     {"C_POL", "{C}", "D_POL", "0", "", ""}, {"C_CRT", "{D}", "D_CRT", "0", "", ""}}});
+  tables.push_back({"FeatureComponents", {{"Feature_", 's'}, {"Component_", 's'}},
+                    {{"F_Main", "C_MFC"}, {"F_Main", "C_LOC"}, {"F_Main", "C_POL"}, {"F_Main", "C_CRT"}}});
+  tables.push_back({"File",
+                    {{"File", 's'}, {"Component_", 's'}, {"FileName", 's'}, {"FileSize", 'l'}, {"Version", 's'},
+                     {"Language", 's'}, {"Attributes", 'i'}, {"Sequence", 'i'}},
+                    {{"ul_mfc80.dll.9B", "C_MFC", "mfc80.dll", "5", "", "", "512", "1"},
+                     {"ul_mfc80u.dll.9B", "C_MFC", "mfc80u.dll", "6", "", "", "512", "2"},
+                     {"ul_manifest.9B", "C_MFC", "x86_Microsoft.VC80.MFC_1fc8b3b9a1e18e3b_8.0.50727.6195_x-ww_150c9e8b.manifest",
+                      "24", "", "", "512", "3"},
+                     {"ul_catalog.9B", "C_MFC", "x86_Microsoft.VC80.MFC_1fc8b3b9a1e18e3b_8.0.50727.6195_x-ww_150c9e8b.cat", "3",
+                      "", "", "512", "4"},
+                     {"ul_mfc80ENU.dll.74", "C_LOC", "mfc80ENU.dll", "3", "", "", "512", "5"},
+                     {"ul_manifest.74", "C_LOC", "x86_Microsoft.VC80.MFCLOC_1fc8b3b9a1e18e3b_8.0.50727.6195_x-ww_6a5bb789.manifest",
+                      "27", "", "", "512", "6"},
+                     {"ul_manifest.68", "C_POL", "8.0.50727.6195.policy", "9", "", "", "512", "7"},
+                     {"ul_msvcr80.dll.98", "C_CRT", "msvcr80.dll", "13", "", "", "512", "8"},
+                     {"ul_manifest.98", "C_CRT", "x86_Microsoft.VC80.CRT_1fc8b3b9a1e18e3b_8.0.50727.6195_x-ww_44262b86.manifest",
+                      "24", "", "", "512", "9"}}});
+  tables.push_back({"Media", {{"DiskId", 'i'}, {"LastSequence", 'i'}, {"DiskPrompt", 's'}, {"Cabinet", 's'}},
+                    {{"1", "9", "", "vcredis1.cab"}}});
+  tables.push_back({"Registry",
+                    {{"Registry", 's'}, {"Root", 'i'}, {"Key", 's'}, {"Name", 's'}, {"Value", 's'}, {"Component_", 's'}}, {}});
+  tables.push_back({"Environment", {{"Environment", 's'}, {"Name", 's'}, {"Value", 's'}, {"Component_", 's'}}, {}});
+  tables.push_back({"CustomAction", {{"Action", 's'}, {"Type", 'i'}, {"Source", 's'}, {"Target", 's'}}, {}});
+  return Package(tables, {});
+}
+// The program: a header, a cabinet signature that isn't one (its size runs past the end), then the real cabinet.
+inline std::string Vc2005Setup() {
+  std::string out = "MZ";
+  out.resize(0x200, '\0');
+  out += std::string("MSCF\0\0\0\0\xff\xff\xff\x7f", 12);
+  out.resize(0x400, '\0');
+  out += StoredCabinet({{"vcredist.msi", Vc2005Package()}, {"vcredis1.cab", Vc2005Cabinet()}});
+  out += std::string(0x100, 'z');
+  return out;
+}
+
 // A small package like XNA's or a runtime's: files in Program Files\<folder> from its own stored cabinet, and one
 // registry value ("Installed" under HKLM\SOFTWARE\<folder>).
 inline std::string RuntimePackage(const std::string& folder, const std::vector<std::pair<std::string, std::string>>& files) {

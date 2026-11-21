@@ -2935,6 +2935,8 @@ std::string WhyStartsTheGameOnly(const std::string& program, const GameProbe& pr
     if (name.find(word) != std::string::npos) return "installer";
   if (probe.dotnet) return probe.engine != "xna" ? "dotnet-launcher" : "";
   if (!probe.apis.empty() || !probe.engine.empty()) return "";
+  // A web page in front of the game, which it starts as a child process (Fahrenheit Remastered's Aspyr launcher).
+  if (probe.web_view) return "web-view";
   for (const char* word : {"launch", "updater", "config", "setup", "settings"})
     if (name.find(word) != std::string::npos) return std::string("name-") + word;
   return "";

@@ -1335,6 +1335,107 @@ void TestMfcInstallMemory() {
   std::filesystem::remove_all(base);
 }
 
+// Visual C++ 2005's MFC: its IExpress setup's cabinet holds vcredist.msi and vcredis1.cab. Only the MFC and MFCLOC
+// assembly folders go into the bottle's winsxs, with their manifests again in winsxs\manifests under the folder's name
+// (how Wine finds an assembly); the policy and the C runtime stay out. The bottle's own Windows folder is lower case.
+void TestMfc80Install() {
+  CHECK(Mfc80AssemblyFile(std::string("Windows/winsxs/") + playden::test::msi::kVc2005MfcFolder + "/mfc80.dll"));
+  CHECK(Mfc80AssemblyFile(std::string("windows/WinSxS/") + playden::test::msi::kVc2005LocFolder + "/x.manifest"));
+  CHECK(!Mfc80AssemblyFile("Windows/winsxs/x86_microsoft.vc80.crt_1fc8b3b9a1e18e3b_8.0.50727.6195_none_d0/msvcr80.dll"));
+  CHECK(!Mfc80AssemblyFile("Windows/winsxs/x86_policy.8.0.microsoft.vc80.mfc_1fc8b3b9a1e18e3b_8.0_none_49/8.0.policy"));
+  CHECK(!Mfc80AssemblyFile("Windows/system32/mfc80.dll") && !Mfc80AssemblyFile("Windows/winsxs/x86_microsoft.vc80.mfc_a/b/c.dll"));
+  CHECK(!Mfc80AssemblyFile("Windows/winsxs/x86_microsoft.vc80.mfc_a/") && !Mfc80AssemblyFile("Windows/winsxs/manifests"));
+
+  char pattern[] = "/tmp/playden-mfc80-XXXXXX";
+  CHECK(::mkdtemp(pattern));
+  const auto base = std::filesystem::canonical(pattern);
+  const auto setup = playden::test::msi::Vc2005Setup();
+  const VcRedist redist{"x86", "https://download.example/vcredist_x86.EXE", *HashArtifactBytes(setup), setup.size(),
+                        "vcredist.msi", "8.0.50727.6195", "80"};
+  int fetches = 0;
+  const RangeFetch fetch = [&](const std::string&, std::uint64_t offset, std::uint64_t length, std::string*) {
+    ++fetches;
+    return std::optional<std::string>(setup.substr(offset, length));
+  };
+  const auto prefix = MakeBottle(base / "prefix");
+  auto result = InstallMfcRuntime(redist, (base / "cache").string(), prefix.string(), fetch, 1700000000);
+  if (result.result != "installed") std::fprintf(stderr, "mfc80: %s\n", result.detail.c_str());
+  CHECK(result.result == "installed" && result.source == "download" && fetches == 1);
+  const auto sxs = prefix / "drive_c/windows/winsxs";
+  const std::string mfc = playden::test::msi::kVc2005MfcFolder, loc = playden::test::msi::kVc2005LocFolder;
+  CHECK(ReadText(sxs / mfc / "mfc80.dll") == "MFC80" && ReadText(sxs / mfc / "mfc80u.dll") == "MFC80U");
+  CHECK(ReadText(sxs / loc / "mfc80ENU.dll") == "ENU");
+  CHECK(ReadText(sxs / "manifests" / (mfc + ".manifest")) == "<assembly>MFC</assembly>");
+  CHECK(ReadText(sxs / "manifests" / (loc + ".manifest")) == "<assembly>MFCLOC</assembly>");
+  // MFC: 2 DLLs, its manifest and catalog; MFCLOC: a DLL and its manifest; the 2 manifest copies.
+  CHECK(result.files == 8);
+  std::size_t folders = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(sxs)) {
+    ++folders;
+    const auto name = entry.path().filename().string();
+    CHECK(name == mfc || name == loc || name == "manifests");
+  }
+  CHECK(folders == 3);
+  // The bottle's own folder takes them, as listed, whatever the host's file system makes of case.
+  for (const auto& entry : std::filesystem::directory_iterator(prefix / "drive_c"))
+    CHECK(entry.path().filename() == "windows");
+  for (const auto& entry : std::filesystem::directory_iterator(prefix / "drive_c/windows"))
+    CHECK(entry.path().filename() != "WinSxS" && entry.path().filename() != "Winsxs");
+  CHECK(MfcInstalled(redist, prefix.string()));
+  CHECK(ReadText(base / "cache/vc-8.0.50727.6195/x86/vcredist_x86.EXE") == setup);
+  // Once is enough; another bottle takes the kept copy.
+  CHECK(InstallMfcRuntime(redist, (base / "cache").string(), prefix.string(), fetch, 1700000100).result == "already");
+  const auto second = MakeBottle(base / "second");
+  result = InstallMfcRuntime(redist, (base / "cache").string(), second.string(), fetch, 1700000200);
+  CHECK(result.result == "installed" && result.source == "cache" && fetches == 1);
+  // A setup program without the package fails, and records nothing.
+  const auto other = std::string("MZ") + std::string(0x200, '\0');
+  const VcRedist broken{"x86", "https://download.example/other/vcredist_x86.EXE", *HashArtifactBytes(other), other.size(),
+                        "vcredist.msi", "broken", "80"};
+  const RangeFetch other_fetch = [&](const std::string&, std::uint64_t offset, std::uint64_t length, std::string*) {
+    return std::optional<std::string>(other.substr(offset, length));
+  };
+  const auto third = MakeBottle(base / "third");
+  result = InstallMfcRuntime(broken, (base / "cache").string(), third.string(), other_fetch, 1700000300);
+  CHECK(result.result == "failed" && !std::filesystem::exists(third / ".playden-redist"));
+  std::filesystem::remove_all(base);
+}
+
+// Microsoft's Visual C++ 2005 setup program, when PLAYDEN_TEST_VC2005_REDIST_X86 names a copy: installed from a cache
+// seeded with it; the MFC and MFCLOC assemblies land where Wine looks them up.
+void TestMicrosoftVc2005Redist() {
+  const char* path = std::getenv("PLAYDEN_TEST_VC2005_REDIST_X86");
+  if (!path || !*path) return;
+  for (const auto& redist : MicrosoftVcRedists()) {
+    if (redist.mfc != "80") continue;
+    const auto setup = ReadText(path);
+    CHECK(setup.size() == redist.bytes && HashArtifactBytes(setup) == redist.sha256);
+    char pattern[] = "/tmp/playden-vc2005-XXXXXX";
+    CHECK(::mkdtemp(pattern));
+    const auto base = std::filesystem::canonical(pattern);
+    WriteText(base / "cache/vc-8.0.50727.6195/x86/vcredist_x86.EXE", setup);
+    const auto prefix = MakeBottle(base / "prefix");
+    const auto result = InstallMfcRuntime(redist, (base / "cache").string(), prefix.string(), nullptr, 1700000000);
+    std::fprintf(stderr, "vc2005: %s %s files=%zu\n", result.result.c_str(), result.detail.c_str(), result.files);
+    CHECK(result.result == "installed" && result.source == "cache");
+    const auto manifests = prefix / "drive_c/windows/winsxs/manifests";
+    std::size_t found = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(manifests)) {
+      const auto name = entry.path().filename().string();
+      std::fprintf(stderr, "vc2005 manifest %s\n", name.c_str());
+      const auto folder = prefix / "drive_c/windows/winsxs" / name.substr(0, name.size() - 9);
+      CHECK(std::filesystem::is_directory(folder));
+      if (name.rfind("x86_microsoft.vc80.mfc_", 0) == 0) {
+        CHECK(std::filesystem::exists(folder / "mfc80.dll") && std::filesystem::exists(folder / "mfc80u.dll"));
+        CHECK(ReadText(entry.path()).find("name=\"Microsoft.VC80.MFC\" version=\"8.0.50727.6195\"") != std::string::npos);
+      }
+      ++found;
+    }
+    CHECK(found == 2);
+    std::filesystem::remove_all(base);
+  }
+}
+
 void TestMfcScanRecord() {
   char pattern[] = "/tmp/playden-mfc-scan-XXXXXX";
   CHECK(::mkdtemp(pattern));
@@ -1347,6 +1448,12 @@ void TestMfcScanRecord() {
   CHECK(WriteMfcScan(prefix.string(), {"", "", ""}));  // scanned, no MFC, no fingerprint
   read = ReadMfcScan(prefix.string());
   CHECK(read && read->fingerprint.empty() && read->x64_program.empty());
+  CHECK(WriteMfcScan(prefix.string(), {"files-2", "", "", "FahrenheitSub.exe"}));
+  read = ReadMfcScan(prefix.string());
+  CHECK(read && read->x86_mfc80_program == "FahrenheitSub.exe" && read->x86_program.empty());
+  // A scan from before MFC 8 was looked for isn't used: the folder is walked again.
+  WriteText(prefix / ".playden-mfc", "mfc-scan 1\nfiles files-1\nx64 Game_Data/Plugins/Chroma.dll\n");
+  CHECK(!ReadMfcScan(prefix.string()));
   // The fingerprint follows the install record and file list Playden writes at the game's root.
   const auto game = base / "game";
   std::filesystem::create_directories(game);
@@ -1378,6 +1485,7 @@ void TestMfcScanRecord() {
 // cache seeded with the copy, so nothing is downloaded).
 void TestMicrosoftVcRedist() {
   for (const auto& redist : MicrosoftVcRedists()) {
+    if (redist.mfc != "140") continue;  // Visual C++ 2005's: TestMicrosoftVc2005Redist
     const char* path = std::getenv(redist.architecture == "x64" ? "PLAYDEN_TEST_VC_REDIST_X64" : "PLAYDEN_TEST_VC_REDIST_X86");
     if (!path || !*path) continue;
     const auto bundle = ReadText(path);
@@ -1501,6 +1609,8 @@ int main() {
   TestMfcFilter();
   TestMfcInstall();
   TestMfcInstallMemory();
+  TestMfc80Install();
+  TestMicrosoftVc2005Redist();
   TestMfcScanRecord();
   TestMicrosoftVcRedist();
   return 0;

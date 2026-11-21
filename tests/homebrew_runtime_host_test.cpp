@@ -6161,11 +6161,14 @@ void PlayInstallsMfcForGameThatImportsIt() {
   };
   // Microsoft's bundles stand in for by synthetic ones, at their own pinned hashes.
   const auto x64_bundle = playden::test::msi::MfcBundle(true), x86_bundle = playden::test::msi::MfcBundle(false);
+  const auto vc2005_setup = playden::test::msi::Vc2005Setup();
   config.vc_redists = {
       {"x86", "https://download.example/x86/VC_redist.x86.exe", *HashArtifactBytes(x86_bundle), x86_bundle.size(),
        "vcRuntimeAdditional_x86", "14.44.35211"},
       {"x64", "https://download.example/x64/VC_redist.x64.exe", *HashArtifactBytes(x64_bundle), x64_bundle.size(),
-       "vcRuntimeAdditional_x64", "14.44.35211"}};
+       "vcRuntimeAdditional_x64", "14.44.35211"},
+      {"x86", "https://download.example/vc2005/vcredist_x86.EXE", *HashArtifactBytes(vc2005_setup), vc2005_setup.size(),
+       "vcredist.msi", "8.0.50727.6195", "80"}};
   config.redist_retry_wait = std::chrono::seconds(1);
   std::atomic<bool> online{false};
   std::atomic<int> fetches{0};
@@ -6182,7 +6185,8 @@ void PlayInstallsMfcForGameThatImportsIt() {
       *error = "offline";
       return std::nullopt;
     }
-    const auto& bundle = url.find("x64") != std::string::npos ? x64_bundle : x86_bundle;
+    const auto& bundle = url.find("vc2005") != std::string::npos ? vc2005_setup
+                         : url.find("x64") != std::string::npos ? x64_bundle : x86_bundle;
     return bundle.substr(offset, length);
   };
   const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
@@ -6201,9 +6205,9 @@ void PlayInstallsMfcForGameThatImportsIt() {
     CHECK(!done.refusals.count(220) && done.installs.size() == 1);
     const auto upgrades = logged("mfc upgrade ");
     CHECK(upgrades.size() == 2);
-    CHECK(upgrades[0] == "mfc upgrade app=220 arch=x64 program=bin/chroma.dll skipped: the download failed at byte 0: offline");
+    CHECK(upgrades[0] == "mfc upgrade app=220 arch=x64 mfc=140 program=bin/chroma.dll skipped: the download failed at byte 0: offline");
     // Three attempts; the preparation's later pass over its steps doesn't wait for the network again.
-    CHECK(upgrades[1] == "mfc upgrade app=220 arch=x64 program=bin/chroma.dll skipped: its download failed 0 s ago; "
+    CHECK(upgrades[1] == "mfc upgrade app=220 arch=x64 mfc=140 program=bin/chroma.dll skipped: its download failed 0 s ago; "
                          "it is tried again from 1 s");
     CHECK(fetches == 3);
     CHECK(logged("mfc scan app=220 programs=").size() >= 1);
@@ -6221,7 +6225,7 @@ void PlayInstallsMfcForGameThatImportsIt() {
   CHECK(!logged("startup settings app=220 applied").empty());
   CHECK(fetches == 3);
   CHECK(logged("mfc upgrade ").back() ==
-        "mfc upgrade app=220 arch=x64 program=bin/chroma.dll waits for Play: start-up and background work don't download");
+        "mfc upgrade app=220 arch=x64 mfc=140 program=bin/chroma.dll waits for Play: start-up and background work don't download");
   const auto end_session = [&] {
     const auto sessions = fixture.root / "data/playden/games/steam-220/logs/sessions";
     fs::create_directories(sessions);
@@ -6242,8 +6246,10 @@ void PlayInstallsMfcForGameThatImportsIt() {
   CHECK(host.Handoff());
   end_session();
 
-  // The game updates with a 32-bit tool that needs MFC as well; the next Play installs both.
+  // The game updates with a 32-bit tool that needs MFC as well, and a 32-bit program that needs Visual C++ 2005's
+  // (Fahrenheit Remastered's game); the next Play installs all three.
   Write(game / "tools/editor.dll", ImportingDll(false, "mfc140.dll"), 0644);
+  Write(game / "FahrenheitSub.exe", ImportingDll(false, "MFC80.DLL"), 0644);
   online = true;
   progress_shown = false;
   std::this_thread::sleep_for(std::chrono::milliseconds(1100));  // past the retry wait
@@ -6255,9 +6261,16 @@ void PlayInstallsMfcForGameThatImportsIt() {
   CHECK(!fs::exists(windows / "system32/msvcp140.dll") && !fs::exists(windows / "syswow64/msvcp140.dll"));
   CHECK(Read(fixture.root / "data/playden/redist/vc-14.44.35211/x64/VC_redist.x64.exe") == x64_bundle);
   CHECK(Read(fixture.root / "data/playden/redist/vc-14.44.35211/x86/VC_redist.x86.exe") == x86_bundle);
+  // MFC 8 as side-by-side assemblies, where Wine looks them up; its C runtime stays Wine's.
+  const std::string mfc80 = playden::test::msi::kVc2005MfcFolder;
+  CHECK(Read(windows / "winsxs" / mfc80 / "mfc80.dll") == "MFC80");
+  CHECK(Read(windows / "winsxs/manifests" / (mfc80 + ".manifest")) == "<assembly>MFC</assembly>");
+  CHECK(!fs::exists(windows / "winsxs/x86_microsoft.vc80.crt_1fc8b3b9a1e18e3b_8.0.50727.6195_none_d09154e044272b9a"));
+  CHECK(Read(fixture.root / "data/playden/redist/vc-8.0.50727.6195/x86/vcredist_x86.EXE") == vc2005_setup);
   auto upgrades = logged("mfc upgrade ");
-  CHECK(upgrades[upgrades.size() - 2].rfind("mfc upgrade app=220 arch=x86 program=tools/editor.dll installed files=2 from=download ms=", 0) == 0);
-  CHECK(upgrades.back().rfind("mfc upgrade app=220 arch=x64 program=bin/chroma.dll installed files=2 from=download ms=", 0) == 0);
+  CHECK(upgrades[upgrades.size() - 3].rfind("mfc upgrade app=220 arch=x86 mfc=140 program=tools/editor.dll installed files=2 from=download ms=", 0) == 0);
+  CHECK(upgrades[upgrades.size() - 2].rfind("mfc upgrade app=220 arch=x64 mfc=140 program=bin/chroma.dll installed files=2 from=download ms=", 0) == 0);
+  CHECK(upgrades.back().rfind("mfc upgrade app=220 arch=x86 mfc=80 program=FahrenheitSub.exe installed files=8 from=download ms=", 0) == 0);
   CHECK(host.Handoff());
   end_session();
 
@@ -6269,6 +6282,31 @@ void PlayInstallsMfcForGameThatImportsIt() {
   WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
   CHECK(logged("mfc ").size() == count && fetches == fetched);
   CHECK(Read(windows / "system32/mfc140u.dll") == "MFC64U");
+  CHECK(host.Handoff());
+  end_session();
+
+  // With everything found installed, an update the game's file list shows is still walked again: it may bring a
+  // program that needs another MFC. A scan from a known file list is kept while the list stays the same.
+  const auto prefix = fixture.root / "data/playden/games/steam-220/library/prefixes/game";
+  fs::remove(prefix / ".playden-mfc");
+  Write(game / ".playden-files", "f\thl2.exe\n", 0644);
+  const auto scans = [&] { return logged("mfc scan app=220 ").size(); };
+  auto before = scans();
+  host.Play(220);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+  CHECK(scans() == before + 1);
+  CHECK(host.Handoff());
+  end_session();
+  before = scans();
+  host.Play(220);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+  CHECK(scans() == before);
+  CHECK(host.Handoff());
+  end_session();
+  Write(game / ".playden-files", "f\thl2.exe\nf\tnew.exe\n", 0644);
+  host.Play(220);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+  CHECK(scans() == before + 1);
   current_host = nullptr;
   host.Shutdown();
 }

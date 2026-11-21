@@ -493,8 +493,13 @@ bool MfcLibrary(const std::string& lower) {
   return (lower.rfind("mfc140", 0) == 0 || lower.rfind("mfcm140", 0) == 0) && EndsWith(lower, ".dll");
 }
 
+// Visual C++ 2005's: mfc80.dll, mfc80u.dll, mfcm80.dll, mfcm80u.dll.
+bool Mfc80Library(const std::string& lower) {
+  return (lower.rfind("mfc80", 0) == 0 || lower.rfind("mfcm80", 0) == 0) && EndsWith(lower, ".dll");
+}
+
 bool MfcScanDone(const MfcImports& out) {
-  return out.truncated || (!out.x86_program.empty() && !out.x64_program.empty());
+  return out.truncated || (!out.x86_program.empty() && !out.x64_program.empty() && !out.x86_mfc80_program.empty());
 }
 
 void ScanMfc(const fs::path& root, const std::string& relative, int depth, MfcImports* out, std::size_t* seen) {
@@ -517,10 +522,15 @@ void ScanMfc(const fs::path& root, const std::string& relative, int depth, MfcIm
     const auto path = relative.empty() ? name : relative + "/" + name;
     const auto facts = ReadPe((root / path).string(), true);
     if (!facts.valid) continue;
+    // Each kind is looked for on its own: a program filling one doesn't hide another's import of the other.
+    const auto imports = [&](bool (*library)(const std::string&)) {
+      for (const auto* list : {&facts.imports, &facts.delay_imports})
+        if (std::any_of(list->begin(), list->end(), library)) return true;
+      return false;
+    };
     auto& program = facts.pe64 ? out->x64_program : out->x86_program;
-    if (!program.empty()) continue;
-    for (const auto* list : {&facts.imports, &facts.delay_imports})
-      if (std::any_of(list->begin(), list->end(), MfcLibrary)) program = path;
+    if (program.empty() && imports(MfcLibrary)) program = path;
+    if (!facts.pe64 && out->x86_mfc80_program.empty() && imports(Mfc80Library)) out->x86_mfc80_program = path;
   }
   if (depth >= kMfcScanDepth) return;
   for (const auto& [name, directory] : entries)
@@ -716,6 +726,10 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
   probe.x64 = program.pe64;
   probe.console_program = program.console_program;
   probe.watcom = program.watcom && !program.pe64;
+  for (const auto* list : {&program.imports, &program.delay_imports})
+    for (const auto& name : *list)
+      if (name.rfind("qt5webkit", 0) == 0 || name.rfind("qt5webengine", 0) == 0 || name.rfind("qt6webengine", 0) == 0)
+        probe.web_view = true;
   AddImports(program, &probe.apis);
   for (const auto& [name, directory] : here)
     if (!directory && EndsWith(Lower(name), ".dll")) AddImports(ReadPe((root / folder / name).string()), &probe.apis);

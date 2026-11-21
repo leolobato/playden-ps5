@@ -2043,22 +2043,26 @@ void RuntimeHost::MfcStep(const GameFiles& files) {
       if (static_cast<unsigned char>(value) < 0x20 || value == 0x7f) value = '?';
     return text;
   };
-  const auto redist_for = [&](const char* architecture) -> const rt::VcRedist* {
+  const auto redist_for = [&](const char* architecture, const char* mfc) -> const rt::VcRedist* {
     for (const auto& candidate : config_.vc_redists)
-      if (candidate.architecture == architecture) return &candidate;
+      if (candidate.architecture == architecture && candidate.mfc == mfc) return &candidate;
     return nullptr;
   };
   // The latest scan stands while the game's files are the ones it read, or while everything it found is
-  // installed; otherwise the folder is walked again.
+  // installed and the files can't be told apart (a folder without Playden's file list); otherwise the folder is
+  // walked again. An update the fingerprint shows is walked again even then: it may bring a program needing another
+  // MFC (a game with MFC 14 installed gaining one that imports MFC 8).
   const auto fingerprint = rt::GameFilesFingerprint(files.root.string());
   auto scan = rt::ReadMfcScan(files.prefix);
-  const auto installed = [&](const std::string& program, const char* architecture) {
-    const auto* redist = redist_for(architecture);
+  const auto installed = [&](const std::string& program, const char* architecture, const char* mfc) {
+    const auto* redist = redist_for(architecture, mfc);
     return program.empty() || (redist && rt::MfcInstalled(*redist, files.prefix));
   };
-  const bool reuse = scan && ((!fingerprint.empty() && scan->fingerprint == fingerprint) ||
-                              ((!scan->x86_program.empty() || !scan->x64_program.empty()) &&
-                               installed(scan->x86_program, "x86") && installed(scan->x64_program, "x64")));
+  const bool changed = scan && !fingerprint.empty() && !scan->fingerprint.empty() && scan->fingerprint != fingerprint;
+  const bool reuse = scan && !changed && ((!fingerprint.empty() && scan->fingerprint == fingerprint) ||
+                              ((!scan->x86_program.empty() || !scan->x64_program.empty() || !scan->x86_mfc80_program.empty()) &&
+                               installed(scan->x86_program, "x86", "140") && installed(scan->x64_program, "x64", "140") &&
+                               installed(scan->x86_mfc80_program, "x86", "80")));
   if (!reuse) {
     const auto began = std::chrono::steady_clock::now();
     const auto found = rt::FindMfcImports(files.root.string());
@@ -2066,16 +2070,22 @@ void RuntimeHost::MfcStep(const GameFiles& files) {
     Log("mfc scan app=" + app + " programs=" + std::to_string(found.programs) + " folders=" + std::to_string(found.folders) +
         " ms=" + std::to_string(ms) + (found.truncated ? " stopped early" : "") + " x86=" +
         (found.x86_program.empty() ? "-" : field(found.x86_program)) + " x64=" +
-        (found.x64_program.empty() ? "-" : field(found.x64_program)));
-    scan = rt::MfcScanRecord{fingerprint, found.x86_program, found.x64_program};
+        (found.x64_program.empty() ? "-" : field(found.x64_program)) + " x86-mfc80=" +
+        (found.x86_mfc80_program.empty() ? "-" : field(found.x86_mfc80_program)));
+    scan = rt::MfcScanRecord{fingerprint, found.x86_program, found.x64_program, found.x86_mfc80_program};
     if (!rt::WriteMfcScan(files.prefix, *scan)) Log("mfc scan app=" + app + " could not be kept in the bottle");
   }
   const auto cache = HostPath(config_.package_paths.console_data_root + "/playden/redist").string();
-  for (const auto& [architecture, program] : {std::pair<const char*, std::string>{"x86", scan->x86_program},
-                                              std::pair<const char*, std::string>{"x64", scan->x64_program}}) {
+  struct Wanted {
+    const char* architecture;
+    const char* mfc;
+    std::string program;
+  };
+  for (const auto& [architecture, mfc, program] : {Wanted{"x86", "140", scan->x86_program}, Wanted{"x64", "140", scan->x64_program},
+                                                   Wanted{"x86", "80", scan->x86_mfc80_program}}) {
     if (program.empty()) continue;
-    const auto* redist = redist_for(architecture);
-    const auto line = "mfc upgrade app=" + app + " arch=" + architecture + " program=" + field(program);
+    const auto* redist = redist_for(architecture, mfc);
+    const auto line = "mfc upgrade app=" + app + " arch=" + architecture + " mfc=" + mfc + " program=" + field(program);
     if (!redist) {
       Log(line + " skipped: no redistributable for it");
       continue;
