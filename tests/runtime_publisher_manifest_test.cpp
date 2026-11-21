@@ -123,6 +123,25 @@ int main() {
   title.vars["mode"] = "a\nb";
   CHECK(!ExpandPublisherStageIni(manifest, title, "Z:\\r", &lines, &reason));
 
+  // A title nobody has tested yet ("status": "untested"): Playden asks the player once before its first Play.
+  // A title without the key is tested, as every title of an older pack is.
+  {
+    const auto untested = Replace(kManifest, "\"args\": \"\" }", "\"args\": \"\", \"status\": \"untested\" }");
+    PublisherStageManifest marked;
+    CHECK(ParsePublisherStageManifest(untested, &marked, &reason));
+    CHECK(marked.titles.at("4001").untested && !marked.titles.at("4000").untested);
+    CHECK(!manifest.titles.at("4000").untested && !manifest.titles.at("4001").untested);
+    for (const char* bad : {"\"tested\"", "\"Untested\"", "\"\"", "1", "true", "null"}) {
+      CHECK(!Parses(Replace(kManifest, "\"args\": \"\" }", "\"args\": \"\", \"status\": " + std::string(bad) + " }"), &reason));
+      CHECK(reason.find("titles.4001.status") != std::string::npos);
+    }
+  }
+
+  // Title ids are 32-bit like Playden's runtime numbers: a larger one would stand for another game.
+  CHECK(!Parses(Replace(kManifest, "\"4001\": {", "\"4294971297\": {"), &reason));
+  CHECK(reason.find("titles keys must be Steam app ids") != std::string::npos);
+  CHECK(Parses(Replace(kManifest, "\"4001\": {", "\"4294967295\": {")));
+
   // A title's own program (install-root relative, a safe path).
   {
     PublisherStageManifest own;

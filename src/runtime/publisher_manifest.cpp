@@ -181,7 +181,8 @@ bool ParseTitles(const Value& root, std::map<std::string, PublisherTitleSpec>* t
   if (!Object(root, "titles", true, &object, "", reason)) return false;
   for (const auto& [id, value] : object->object()) {
     const bool digits = !id.empty() && id.size() <= 10 && id[0] != '0' &&
-                        std::all_of(id.begin(), id.end(), [](char c) { return c >= '0' && c <= '9'; });
+                        std::all_of(id.begin(), id.end(), [](char c) { return c >= '0' && c <= '9'; }) &&
+                        std::stoull(id) <= 0xffffffffull;  // Playden's runtime numbers are 32-bit
     if (!digits) return Fail(reason, "titles keys must be Steam app ids: " + id);
     const std::string at = "titles." + id + ".";
     if (!value.is_object() || !UniqueKeys(value)) return Fail(reason, "titles." + id + " must be an object");
@@ -191,6 +192,10 @@ bool ParseTitles(const Value& root, std::map<std::string, PublisherTitleSpec>* t
       return false;
     if (HasControl(title.args)) return Fail(reason, at + "args holds a control character");
     if (!Path(value, "program", false, &title.program, at, reason)) return false;
+    if (const auto* status = value.Find("status")) {
+      if (!status->is_string() || status->text() != "untested") return Fail(reason, at + "status must be \"untested\"");
+      title.untested = true;
+    }
     const Value* vars = nullptr;
     if (!Object(value, "vars", false, &vars, at, reason)) return false;
     if (vars) {

@@ -277,6 +277,13 @@ int main(int argc,char** argv) {
         live.UpdateRuntime(RuntimeState::Ready, {ready});
       }
       {
+        // A game the publisher pack marks as not tested yet: its first Play says so, with Play to go on.
+        live.NotifyPublisherUntested(SteamId(42));
+        assert(!live.state().navigation.modals.empty());
+        capture_live("details-play-untested.png");
+        while(!live.state().navigation.modals.empty()) assert(live.action("circle"));
+      }
+      {
         // A game's programs: same file names in long folders still read apart.
         std::map<GameId, LiveGameSetup> setups;
         setups[SteamId(42)].scanned = true;

@@ -48,6 +48,12 @@ struct SharingServiceConfig {
   std::function<std::int64_t()> now;  // Unix seconds for the report's summary; default: the clock
 };
 
+// A test report's version rows: the logs' facts (summary.md, long ones shortened), then the report's own rows (the
+// Steam client of an Online game, a publisher game's pack status). The own rows always fit within the API's limit
+// (community::kReportMaxVersionRows); the facts take what is left.
+std::vector<std::pair<std::string, std::string>> ReportVersionRows(const std::vector<std::pair<std::string, std::string>>& facts,
+                                                                   std::vector<std::pair<std::string, std::string>> own);
+
 class SharingService {
  public:
   explicit SharingService(SharingServiceConfig config);

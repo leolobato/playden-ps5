@@ -10742,7 +10742,7 @@ namespace {
 // A made-up publisher pack release for a game detected as Rockstar's: its stage manifest lists
 // the HL2 fixture's app id (or not), with a helper, a proxy that keeps the game's original, an
 // ini using the runtime and a status file.
-std::string PublisherManifest(const std::string& app) {
+std::string PublisherManifest(const std::string& app, const std::string& title_keys = "") {
   return R"({
   "version": 1,
   "account": {
@@ -10759,7 +10759,7 @@ std::string PublisherManifest(const std::string& app) {
     "version_file": "x86/runtime.dll",
     "folders": { "x86": "x86" }
   },
-  "titles": { ")" + app + R"(": { "arch": "x86", "args": "-example" } },
+  "titles": { ")" + app + R"(": { "arch": "x86", "args": "-example")" + title_keys + R"( } },
   "files": [
     { "source": "proxy32.dll", "target": "proxy.dll", "keep_original": "proxy_real.dll", "arch": "x86" },
     { "source": "helper.dll", "target": "helper.dll" }
@@ -10860,9 +10860,9 @@ struct PublisherFixture {
       return !s.preparing_app && !s.installs.empty() && s.installs[0].state == PreparationState::kReady;
     }, 60);
   }
-  RuntimeSnapshot PlayHandled(RuntimeHost& host) {
+  RuntimeSnapshot PlayHandled(RuntimeHost& host, bool untested_seen = false) {
     const auto handled = host.Snapshot().plays_handled;
-    host.Play(220);
+    host.Play(220, {}, {}, untested_seen);
     return WaitFor(host, [handled](const RuntimeSnapshot& s) { return s.plays_handled > handled; }, 30);
   }
 };
@@ -11183,6 +11183,91 @@ void PublisherGamesThePackDoesNotCoverAreUntouched() {
     CHECK(!f.Logged("publisher stage"));
     host.Shutdown();
   }
+}
+
+// A title the pack marks "untested": the first Play is refused with the untested code (the UI says so, with no
+// "Can't play"), before the sign-in is asked for or anything placed. Play past the notice is remembered for the
+// game, so later Plays and the sign-in's go straight on. A start from Home never asks.
+void UntestedPublisherTitleAsksOnceBeforePlay() {
+  PublisherFixture f;
+  Write(f.pack / "stage.json", PublisherManifest("220", R"(, "status": "untested")"), 0644);
+  RuntimeHost host(f.config);
+  f.PrepareReady(host);
+  // Staged as any listed title.
+  CHECK(Read(f.title / "proxy.dll") == "proxy-32" && Read(f.title / "helper.dll") == "helper");
+  const auto loaded = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return s.publishers.count(Publisher::kRockstar) && s.publishers.at(Publisher::kRockstar).pack_checked;
+  });
+  CHECK(loaded.publishers.at(Publisher::kRockstar).untested_titles == std::set<std::uint32_t>{220});
+  CHECK(loaded.publishers.at(Publisher::kRockstar).listed_titles == std::set<std::uint32_t>{220});
+  const auto seen_file = f.accounts / "publisher-untested-rockstar.v1";
+
+  auto refused = f.PlayHandled(host);
+  CHECK(refused.play_refusal_codes.at(220) == kPlayRefusalPublisherUntested);
+  CHECK(refused.play_refusals.at(220) == "This game hasn't been tested with Playden yet.");
+  CHECK(PlayRefusalFor(refused, 220).detail.empty() && PlayRefusalFor(refused, 220).for_player.empty());
+  CHECK(!refused.handoff_ready && !fs::exists(f.title / "credential.txt") && !fs::exists(seen_file));
+  CHECK(f.Logged("publisher untested app=220 asks the player first"));
+  // Asked again until the player goes past it.
+  refused = f.PlayHandled(host);
+  CHECK(refused.play_refusal_codes.at(220) == kPlayRefusalPublisherUntested);
+
+  // Past the notice: remembered, and Play goes on to the sign-in (signed out here).
+  refused = f.PlayHandled(host, true);
+  CHECK(refused.play_refusal_codes.at(220) == kPlayRefusalPublisherSignIn);
+  CHECK(Read(seen_file) == "220\n");
+  CHECK(f.Logged("publisher untested app=220 notice seen"));
+  // The Play after the sign-in doesn't ask again.
+  const auto good = host.SubmitPublisherSignInNow(Publisher::kRockstar, R"({"token":"c2VjcmV0dG9rZW4=","name":"Player"})",
+                                                  std::chrono::seconds(30));
+  CHECK(good.ok);
+  host.Play(220);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+  CHECK(!host.Snapshot().play_refusal_codes.count(220) && Read(f.title / "credential.txt") == "c2VjcmV0dG9rZW4=\n");
+  host.Shutdown();
+
+  // A new run reads what was seen; signing out keeps it.
+  {
+    std::string reason;
+    CHECK(SignOutPublisherAccount(f.accounts.string(), Publisher::kRockstar, &reason));
+    CHECK(PublisherUntestedNoticeSeen(f.accounts.string(), Publisher::kRockstar, 220));
+  }
+}
+
+// The seen file can't be written (a folder in its place): the notice still shows only once this run, so the
+// Play after the sign-in goes straight on.
+void UntestedNoticeSeenWithoutTheFile() {
+  PublisherFixture f;
+  Write(f.pack / "stage.json", PublisherManifest("220", R"(, "status": "untested")"), 0644);
+  fs::create_directories(f.accounts / "publisher-untested-rockstar.v1" / "blocked");
+  RuntimeHost host(f.config);
+  f.PrepareReady(host);
+  CHECK(f.PlayHandled(host).play_refusal_codes.at(220) == kPlayRefusalPublisherUntested);
+  CHECK(f.PlayHandled(host, true).play_refusal_codes.at(220) == kPlayRefusalPublisherSignIn);
+  CHECK(f.Logged("publisher untested app=220 notice seen, not remembered"));
+  CHECK(f.PlayHandled(host).play_refusal_codes.at(220) == kPlayRefusalPublisherSignIn);
+  host.Shutdown();
+}
+
+// A start from Home places the credential of an untested title without asking: it can't show the notice.
+void UntestedPublisherTitleStartsFromHome() {
+  PublisherFixture f;
+  Write(f.pack / "stage.json", PublisherManifest("220", R"(, "status": "untested")"), 0644);
+  f.fixture.registers = false;
+  RuntimeHost host(f.config);
+  f.host = &host;
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, R"({"token":"c2VjcmV0dG9rZW4=","name":"Player"})",
+                                      std::chrono::seconds(30)).ok);
+  host.Prepare(Hl2());
+  WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && s.installs[0].awaiting_registration;
+  }, 60);
+  CHECK(Read(f.title / "credential.txt") == "c2VjcmV0dG9rZW4=\n");
+  CHECK(f.Logged("publisher credential app=220 placed") && !f.Logged("publisher untested app=220"));
+  CHECK(!PublisherUntestedNoticeSeen(f.accounts.string(), Publisher::kRockstar, 220));
+  host.Shutdown();
 }
 
 // A Rockstar game without the publisher pack can't be prepared, and says why.
@@ -11786,6 +11871,9 @@ int main(int argc, char** argv) {
   RenewsPublisherSignInOnSchedule();
   ExtractsPublisherRuntimeFromTheGamesInstaller();
   PublisherGamesThePackDoesNotCoverAreUntouched();
+  UntestedPublisherTitleAsksOnceBeforePlay();
+  UntestedPublisherTitleStartsFromHome();
+  UntestedNoticeSeenWithoutTheFile();
   PublisherProgramStartsAFreshlyPreparedGame();
   PublisherProgramReachesAPreparedGame();
   PublisherGameWithoutPackSaysWhy();

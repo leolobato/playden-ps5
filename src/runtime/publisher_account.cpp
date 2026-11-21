@@ -473,6 +473,53 @@ bool MarkPublisherAccountExpired(const std::string& state_root, Publisher publis
   return Write(state_root, publisher, text, reason);
 }
 
+std::string PublisherUntestedFileName(Publisher publisher) {
+  return std::string("publisher-untested-") + PublisherSlug(publisher) + ".v1";
+}
+
+namespace {
+constexpr std::size_t kMaxUntestedBytes = 16 * 1024;
+
+std::set<std::uint32_t> UntestedSeen(const std::string& state_root, Publisher publisher) {
+  std::set<std::uint32_t> seen;
+  const Storage storage(state_root);
+  const auto bytes = storage.Read(PublisherUntestedFileName(publisher), kMaxUntestedBytes);
+  if (!bytes.ok()) return seen;
+  const std::string text(bytes.value().begin(), bytes.value().end());
+  for (std::size_t begin = 0; begin < text.size();) {
+    auto end = text.find('\n', begin);
+    if (end == std::string::npos) end = text.size();
+    const auto line = text.substr(begin, end - begin);
+    begin = end + 1;
+    const bool digits = !line.empty() && line.size() <= 10 && line[0] != '0' &&
+                        std::all_of(line.begin(), line.end(), [](char c) { return c >= '0' && c <= '9'; });
+    if (!digits) return {};  // damaged: the notice shows again
+    const auto value = std::stoull(line);
+    if (value > 0xffffffffull) return {};
+    seen.insert(static_cast<std::uint32_t>(value));
+  }
+  return seen;
+}
+}  // namespace
+
+bool PublisherUntestedNoticeSeen(const std::string& state_root, Publisher publisher, std::uint32_t app) {
+  return UntestedSeen(state_root, publisher).count(app) != 0;
+}
+
+bool NotePublisherUntestedNoticeSeen(const std::string& state_root, Publisher publisher, std::uint32_t app,
+                                     std::string* reason) {
+  auto seen = UntestedSeen(state_root, publisher);
+  if (!seen.insert(app).second) return true;
+  // Not a secret: open like Playden's other data (#868).
+  std::string text;
+  for (const auto id : seen) text += std::to_string(id) + "\n";
+  const Storage storage(state_root);
+  const Bytes bytes(text.begin(), text.end());
+  const auto root = storage.EnsureRootDirectory();
+  const auto written = root.ok() ? storage.WriteAtomicOpen(PublisherUntestedFileName(publisher), bytes) : root;
+  return written.ok() || Fail(reason, "Playden couldn't remember the notice: " + written.message());
+}
+
 bool SignOutPublisherAccount(const std::string& state_root, Publisher publisher, std::string* reason) {
   const Storage storage(state_root);
   const auto name = PublisherAccountFileName(publisher);

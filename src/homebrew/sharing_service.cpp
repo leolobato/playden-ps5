@@ -30,6 +30,22 @@ std::string ShortenedFact(const std::string& text, std::size_t max_characters) {
   return text;
 }
 
+}  // namespace
+
+std::vector<std::pair<std::string, std::string>> ReportVersionRows(const std::vector<std::pair<std::string, std::string>>& facts,
+                                                                   std::vector<std::pair<std::string, std::string>> own) {
+  constexpr auto kMax = community::kReportMaxVersionRows;
+  if (own.size() > kMax) own.resize(kMax);
+  std::vector<std::pair<std::string, std::string>> rows;
+  for (const auto& fact : facts)
+    if (rows.size() < kMax - own.size())
+      rows.emplace_back(ShortenedFact(fact.first, 40), ShortenedFact(fact.second, kReportFactMaxCharacters));
+  for (auto& row : own) rows.push_back(std::move(row));
+  return rows;
+}
+
+namespace {
+
 // The files a test report's zip takes from the logs folder: Playden's logs (name.log) and their rotated copies
 // (name.log.1), nothing else.
 bool ReportLogName(const std::string& name) {
@@ -347,16 +363,7 @@ void SharingService::Handle(SharingRequest request) {
       std::string zip;
       std::vector<std::pair<std::string, std::string>> facts;
       const bool have_logs = ReportLogs(request.logs_app, request.logs_name, request.attach_logs ? &zip : nullptr, &facts);
-      // The logs' facts (summary.md), then the report's own rows (the Steam client of an Online game).
-      {
-        auto own = std::move(report.versions);
-        report.versions.clear();
-        for (const auto& fact : facts)
-          if (report.versions.size() < community::kReportMaxVersionRows)
-            report.versions.emplace_back(ShortenedFact(fact.first, 40), ShortenedFact(fact.second, kReportFactMaxCharacters));
-        for (auto& row : own)
-          if (report.versions.size() < community::kReportMaxVersionRows) report.versions.push_back(std::move(row));
-      }
+      report.versions = ReportVersionRows(facts, std::move(report.versions));
       if (request.attach_logs) {
         if (!have_logs) {
           result.report.error = LocalError("logs", "The logs could not be collected on this console.");

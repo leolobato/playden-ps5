@@ -89,6 +89,14 @@ PublisherRefreshOutcome RefreshPublisherAccount(const std::string& state_root, P
                                                 const PublisherAccountSpec& account, const PublisherRefreshSpec& refresh,
                                                 const PublisherRefreshTransport& transport, std::uint64_t now);
 
+// The publisher titles whose "not tested yet" notice the player went past (PublisherTitleSpec::untested), by
+// Steam app id: publisher-untested-<slug>.v1, one decimal id per line. It isn't part of the account: signing
+// out keeps it. A missing or damaged file holds none, so the notice shows again.
+std::string PublisherUntestedFileName(Publisher publisher);
+bool PublisherUntestedNoticeSeen(const std::string& state_root, Publisher publisher, std::uint32_t app);
+bool NotePublisherUntestedNoticeSeen(const std::string& state_root, Publisher publisher, std::uint32_t app,
+                                     std::string* reason);
+
 // Deletes the account. Signed out already is success.
 bool SignOutPublisherAccount(const std::string& state_root, Publisher publisher, std::string* reason);
 

@@ -50,6 +50,10 @@ struct PublisherTitleSpec {
   // would start the game as another process), relative to the game's install root (not the
   // title folder). "" = Steam's.
   std::string program;
+  // "status": "untested": nobody has played it through the pack yet. Playden tells the player so once,
+  // before the first Play, and reports name it. Absent = tested (every title of an older pack). An older
+  // Playden ignores the key: title objects don't refuse keys they don't know.
+  bool untested = false;
 };
 
 // One file placed in the title folder: a file of the unpacked pack (source) or literal text.

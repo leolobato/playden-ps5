@@ -371,6 +371,8 @@ struct RuntimePublisherView {
   std::string signin_page;    // the pack's sign-in page (host path), "" when it has none
   std::string runtime_label;  // the runtime the pack makes from games' installers, "" when none
   bool launcher = false;      // the pack runs a launcher beside its games (stage manifest "helper")
+  std::set<std::uint32_t> listed_titles;    // Steam app ids the pack lists (once the pack is loaded)
+  std::set<std::uint32_t> untested_titles;  // of those, the ones it marks untested
 };
 
 // How the latest publisher sign-in submission ended.
@@ -386,6 +388,9 @@ struct RuntimePublisherSignIn {
 inline constexpr const char* kPlayRefusalPublisherSignIn = "publisher-sign-in";
 // The pack doesn't list the game (it is a publisher game Playden can't start yet).
 inline constexpr const char* kPlayRefusalPublisherUnsupported = "publisher-unsupported";
+// The pack lists the game as untested and the player hasn't been told yet: the UI says so, then plays
+// with Play(…, untested_seen = true).
+inline constexpr const char* kPlayRefusalPublisherUntested = "publisher-untested";
 
 // What Game settings needs to pick a game's program: the Windows programs in its folder and,
 // for a game Playden could not prepare, a draft recipe to start the sheet from.
@@ -702,7 +707,10 @@ class RuntimeHost {
   // next publication: the next Play, or the next start of Playden (RuntimeInstall::setup_program).
   // online: what this Play asks for once (runtime/online_session.h OnlineLaunch), written only when the
   // game is set to Online and gets the Steam session.
-  void Play(std::uint32_t runtime_number, std::string setup_program = {}, runtime::OnlineLaunch online = {});
+  // untested_seen: the player went past the notice for a publisher title nobody has tested
+  // (kPlayRefusalPublisherUntested); it is remembered for the game and Play goes on.
+  void Play(std::uint32_t runtime_number, std::string setup_program = {}, runtime::OnlineLaunch online = {},
+            bool untested_seen = false);
   // A game's files changed outside the runtime (an update finished): the installs are checked again, so
   // RuntimeInstallView::files_changed follows.
   void RecheckInstalls();
@@ -1069,7 +1077,7 @@ class RuntimeHost {
   runtime::LaunchEvidence Evidence(Composition& composition, const runtime::RuntimeInstall& record,
                                    const std::string& session_id);
   void RunPlay(Composition& composition, std::uint32_t runtime_number, const std::string& setup_program = {},
-               const runtime::OnlineLaunch& online = {});
+               const runtime::OnlineLaunch& online = {}, bool untested_seen = false);
   // Removes a game's PS5 title; empty when it has none left, otherwise why not.
   // moving: the title goes because its game was installed again elsewhere (journal "remove-move"),
   // so Prepare, not Uninstall, finishes a removal that stopped part way.
@@ -1178,9 +1186,12 @@ class RuntimeHost {
   PublisherRuntimeResult EnsurePublisherRuntime(const runtime::PublisherRuntimeSpec& spec,
                                                 const std::string& install_root, runtime::Publisher publisher);
   // *failure, when given, gets the bare reason a signed-in account's credential could not be made
-  // or written.
+  // or written. untested: Play's own check for a title the pack marks untested (Play: the player went past
+  // the notice, or not yet); nothing for a start outside Play, which can't show the notice.
+  enum class UntestedCheck { kSkip, kAsk, kSeen };
   std::string PlacePublisherCredential(Composition& composition, const runtime::RuntimeInstall& record,
-                                       std::string* code, bool* placed, std::string* failure = nullptr);
+                                       std::string* code, bool* placed, std::string* failure = nullptr,
+                                       UntestedCheck untested = UntestedCheck::kSkip);
   // Places the credential for a start outside Play (from Home); logs when it cannot.
   void PlacePublisherCredentialForHome(Composition& composition, const runtime::RuntimeInstall& record);
   // Renews the publisher's sign-in with its pack's refresh recipe when the last renewal is old enough. A renewed sign-in replaces the credential already placed in
@@ -1243,8 +1254,12 @@ class RuntimeHost {
     std::uint32_t app = 0;
     std::string setup_program;  // Play(…, setup_program)
     runtime::OnlineLaunch online;  // Play(…, online)
+    bool untested_seen = false;    // Play(…, untested_seen)
   };
   std::vector<PlayRequest> play_requests_;
+  // Untested publisher titles whose notice the player went past this run (worker only): asked no more even when
+  // the seen file can't be written.
+  std::set<std::uint32_t> untested_seen_this_run_;
   struct RemovalRequest {
     std::uint32_t app = 0;
     bool delete_saves = false;

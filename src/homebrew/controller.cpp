@@ -1080,6 +1080,7 @@ void Controller::TickPublishers() {
     item.display = view.display;
     item.obtained_at = static_cast<std::int64_t>(view.obtained_at);
     item.launcher = view.launcher;
+    item.pack_ready = view.pack_ready;
     // Listed once it matters: the pack can start the publisher's games, a prepared game is the
     // publisher's, or an account is kept (so it can be signed out of).
     item.shown = view.pack_ready || view.account != runtime::PublisherAccountState::kSignedOut;
@@ -1087,6 +1088,8 @@ void Controller::TickPublishers() {
       if (install.publisher == publisher) {
         item.shown = true;
         live.games[install.game] = item.slug;
+        if (view.untested_titles.count(install.runtime_number)) live.untested.insert(install.game);
+        if (view.listed_titles.count(install.runtime_number)) live.listed.insert(install.game);
       }
     live.publishers.push_back(std::move(item));
   }
@@ -1335,7 +1338,19 @@ void Controller::TickRuntime() {
   {
     auto programs = model_.TakeRuntimeSetupPrograms();
     auto online = model_.TakeRuntimeOnlineLaunches();
+    const auto untested = model_.TakeRuntimeUntestedSeen();
     for (const auto id : plays) {
+      // Play past the untested notice: the start the notice held back goes on as it was asked for (its program
+      // or Join), and the acknowledgement stays until the runtime gets it (a Cloud check may come first).
+      if (untested.count(id)) {
+        untested_seen_.insert(id);
+        if (const auto held = untested_held_.find(id); held != untested_held_.end()) {
+          if (!held->second.first.empty()) setup_programs_[id] = held->second.first;
+          if (held->second.second) online_launches_[id] = *held->second.second;
+          untested_held_.erase(held);
+        }
+        continue;
+      }
       if (const auto found = programs.find(id); found != programs.end()) setup_programs_[id] = found->second;
       else setup_programs_.erase(id);
       if (const auto found = online.find(id); found != online.end()) online_launches_[id] = std::move(found->second);
@@ -1634,8 +1649,13 @@ void Controller::TickRuntime() {
     ++plays_requested_;
     const auto program = setup_programs_.find(id);
     const auto online = online_launches_.find(id);
+    // Kept in case the runtime holds this start back for the untested notice.
+    untested_held_[id] = {program == setup_programs_.end() ? std::string() : program->second,
+                          online == online_launches_.end() ? std::nullopt
+                                                           : std::optional<playden::runtime::OnlineLaunch>(online->second)};
     runtime_->Play(*app, program == setup_programs_.end() ? std::string() : program->second,
-                   online == online_launches_.end() ? playden::runtime::OnlineLaunch{} : std::move(online->second));
+                   online == online_launches_.end() ? playden::runtime::OnlineLaunch{} : std::move(online->second),
+                   untested_seen_.erase(id) != 0);
     if (program != setup_programs_.end()) setup_programs_.erase(program);
     if (online != online_launches_.end()) online_launches_.erase(online);
   }
@@ -1654,11 +1674,16 @@ void Controller::TickRuntime() {
   // Queued Plays are settled once the worker has handled every request; their
   // sessions or refusals are then visible.
   if (snapshot.plays_handled >= plays_requested_) {
-    // A Play refused because the game's publisher needs the player's account asks to sign in, once.
+    // A Play refused because the game's publisher needs the player's account asks to sign in, once; one
+    // refused because nobody has tested the game yet says so and offers to play it anyway.
     for (const auto id : play_queued_)
-      if (const auto code = snapshot.play_refusal_codes.find(NumberIn(snapshot, id));
-          code != snapshot.play_refusal_codes.end() && code->second == kPlayRefusalPublisherSignIn)
-        model_.NotifyPublisherSignInNeeded(id);
+      if (const auto code = snapshot.play_refusal_codes.find(NumberIn(snapshot, id)); code != snapshot.play_refusal_codes.end()) {
+        if (code->second == kPlayRefusalPublisherSignIn) model_.NotifyPublisherSignInNeeded(id);
+        else if (code->second == kPlayRefusalPublisherUntested) model_.NotifyPublisherUntested(id);
+        if (code->second != kPlayRefusalPublisherUntested) untested_held_.erase(id);
+      } else {
+        untested_held_.erase(id);
+      }
     play_queued_.clear();
   }
   if (snapshot.launch) {

@@ -405,6 +405,12 @@ class Controller {
   // Plays that ask the online bridge to join a lobby or invite friends (Simulation::TakeRuntimeOnlineLaunches), until
   // handed to the runtime; a Play of the game without one drops its entry.
   std::map<GameId, playden::runtime::OnlineLaunch> online_launches_;
+  // Plays the player asked for past the untested notice (Simulation::TakeRuntimeUntestedSeen), until handed to the
+  // runtime; a Play of the game without it drops its entry.
+  std::set<GameId> untested_seen_;
+  // What the latest Play of each game asked for besides the game (its program, its Join or Invite), until its outcome:
+  // a Play held back for the untested notice goes on with it once the player says Play.
+  std::map<GameId, std::pair<std::string, std::optional<playden::runtime::OnlineLaunch>>> untested_held_;
   std::set<GameId> play_without_sync_;
   // Games are prepared without a button press: once their download finishes (games
   // downloading now, then games waiting to be prepared), and when Play finds one not

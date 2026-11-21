@@ -2007,6 +2007,56 @@ void report_library_overrides(const std::filesystem::path& base) {
           "Direct3D 12 back to Wine leaves the player's override");
 }
 
+// A report on a publisher game names its pack status ("Publisher pack": "Rockstar Games: untested"), so reports from
+// games nobody had tested are easy to find; the row survives a full list of the logs' facts.
+void report_publisher_pack_status(const std::filesystem::path& base) {
+    using namespace overrides_text;
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    set_up_model(model, base, false, "auto");
+    const auto rows = [&model]() {
+        while (!model.state().navigation.modals.empty()) model.action("circle");
+        (void)model.TakeSharingRequests();
+        check(model.action("details:274520"), "the game's page opens for a report");
+        activate(model, "details-more");
+        activate(model, "share-feedback");
+        activate(model, "feedback-good");
+        activate(model, "feedback-send");
+        if (model.state().navigation.modals.back().title == "Before you send") activate(model, "feedback-send-confirm");
+        const auto sent = model.TakeSharingRequests();
+        const auto report = std::find_if(sent.begin(), sent.end(), [](const SharingRequest& r) { return r.kind == SharingRequestKind::Report; });
+        check(report != sent.end(), "the report is sent");
+        while (!model.state().navigation.modals.empty()) model.action("circle");
+        return report == sent.end() ? std::vector<std::pair<std::string, std::string>>{} : report->report.versions;
+    };
+    using Rows = std::vector<std::pair<std::string, std::string>>;
+    check(rows().empty(), "a game of no publisher names no pack");
+    playden::homebrew::LivePublishers publishers;
+    publishers.publishers.push_back({"rockstar", "Rockstar Games", "Rockstar", playden::homebrew::PublisherAccountState::SignedIn,
+                                     "Player", 0, true, false, false});
+    publishers.games[kGame] = "rockstar";
+    model.SetPublishers(publishers);
+    check(rows() == Rows{{"Publisher pack", "Rockstar Games: not loaded"}}, "before the pack is loaded, the report says so");
+    publishers.publishers[0].pack_ready = true;
+    model.SetPublishers(publishers);
+    check(rows() == Rows{{"Publisher pack", "Rockstar Games: not listed"}}, "a game the pack doesn't list isn't called tested");
+    publishers.listed.insert(kGame);
+    model.SetPublishers(publishers);
+    check(rows() == Rows{{"Publisher pack", "Rockstar Games: tested"}}, "a game the pack lists as tested");
+    publishers.untested.insert(kGame);
+    model.SetPublishers(publishers);
+    check(rows() == Rows{{"Publisher pack", "Rockstar Games: untested"}}, "a game the pack marks untested says so");
+
+    // The worker puts the logs' facts first; the report's own rows always fit in the API's 24.
+    Rows facts;
+    for (int i = 0; i < 30; ++i) facts.emplace_back("Fact " + std::to_string(i), "value");
+    const Rows own{{"Steam client", "1792618285"}, {"Publisher pack", "Rockstar Games: untested"}};
+    const auto merged = playden::homebrew::ReportVersionRows(facts, own);
+    check(merged.size() == cm::kReportMaxVersionRows && merged.front().first == "Fact 0" &&
+              merged[21].first == "Fact 21" && merged[22] == own[0] && merged[23] == own[1],
+          "a full list of facts leaves room for the report's own rows");
+    check(playden::homebrew::ReportVersionRows({{"Fact", "value"}}, own).size() == 3, "a short list keeps every row");
+}
+
 // A community recipe that names DXVK's overrides itself keeps them whatever Graphics is: the same list as before is
 // no change, so a player who only changes Graphics doesn't get a Library overrides item.
 void report_recipe_dxvk_overrides(const std::filesystem::path& base) {
@@ -2078,6 +2128,7 @@ int main() {
     community_keep(base / "keep");
     report_with_logs(base / "report");
     report_library_overrides(base / "report-overrides");
+    report_publisher_pack_status(base / "report-publisher-pack");
     report_recipe_dxvk_overrides(base / "report-recipe-overrides");
     account_link(base / "account");
     feedback_prompt_waits_for_library(base / "prompt");

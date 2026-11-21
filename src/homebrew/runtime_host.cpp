@@ -249,8 +249,10 @@ std::size_t RebaseCloudIndexes(const std::filesystem::path& saves, const std::st
 PlayRefusalView PlayRefusalFor(const RuntimeSnapshot& snapshot, std::uint32_t app) {
   const auto refused = snapshot.play_refusals.find(app);
   if (refused == snapshot.play_refusals.end()) return {};
+  // The sign-in or the untested notice it asks for is its message.
   if (const auto code = snapshot.play_refusal_codes.find(app);
-      code != snapshot.play_refusal_codes.end() && code->second == kPlayRefusalPublisherSignIn)
+      code != snapshot.play_refusal_codes.end() &&
+      (code->second == kPlayRefusalPublisherSignIn || code->second == kPlayRefusalPublisherUntested))
     return {};
   return {"Could not start: " + refused->second, snapshot.play_refusals_for_player.count(app) ? refused->second : std::string()};
 }
@@ -813,11 +815,11 @@ void RuntimeHost::PausePreparations(bool pause) {
   wake_.notify_all();
 }
 
-void RuntimeHost::Play(std::uint32_t app_id, std::string setup_program, rt::OnlineLaunch online) {
+void RuntimeHost::Play(std::uint32_t app_id, std::string setup_program, rt::OnlineLaunch online, bool untested_seen) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopping_) return;
-    play_requests_.push_back({app_id, std::move(setup_program), std::move(online)});
+    play_requests_.push_back({app_id, std::move(setup_program), std::move(online), untested_seen});
   }
   wake_.notify_all();
 }
@@ -4127,7 +4129,7 @@ void RuntimeHost::PublishLaunch(Composition& c, const rt::LaunchSnapshot& launch
 }
 
 void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::string& setup_program,
-                          const rt::OnlineLaunch& online) {
+                          const rt::OnlineLaunch& online, bool untested_seen) {
   // The player waits on this Play: Microsoft's MFC may be downloaded for it, with a progress line.
   RedistWorkScope redist(redist_work_, true, app_id);
   std::optional<rt::RuntimeInstall> record;
@@ -4216,7 +4218,9 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
         }
       }
       bool placed = false;
-      if (idle && settings.empty()) settings = PlacePublisherCredential(c, *record, &refusal_code, &placed);
+      if (idle && settings.empty())
+        settings = PlacePublisherCredential(c, *record, &refusal_code, &placed, nullptr,
+                                            untested_seen ? UntestedCheck::kSeen : UntestedCheck::kAsk);
       // Saves the game wrote and FTP edits made since, once nothing of the bottle is held and
       // only when Play goes ahead: a refused Play changes no modes.
       std::optional<rt::RuntimeInstall> current;
@@ -7318,7 +7322,7 @@ std::string RuntimeHost::AdoptPublisherProgram(Composition& c, const rt::Runtime
 }
 
 std::string RuntimeHost::PlacePublisherCredential(Composition& c, const rt::RuntimeInstall& record, std::string* code,
-                                                  bool* placed, std::string* failure) {
+                                                  bool* placed, std::string* failure, UntestedCheck untested) {
   *placed = false;
   const auto* game = PublisherOf(c, record);
   if (!game) return {};
@@ -7328,12 +7332,29 @@ std::string RuntimeHost::PlacePublisherCredential(Composition& c, const rt::Runt
   }
   const auto& loaded = c.publishers.at(game->publisher);
   const auto app = std::to_string(record.runtime_number);
-  if (!loaded.manifest.titles.count(app)) {
+  const auto title = loaded.manifest.titles.find(app);
+  if (title == loaded.manifest.titles.end()) {
     *code = kPlayRefusalPublisherUnsupported;
     return "This game isn't supported yet.";
   }
   const auto name = PublisherDisplayName(game->publisher);
   const auto root = PublisherAccountRoot().string();
+  // Nobody has played this one through the pack yet: Play tells the player once, before anything is placed.
+  if (title->second.untested && untested != UntestedCheck::kSkip) {
+    if (untested == UntestedCheck::kSeen) {
+      untested_seen_this_run_.insert(record.runtime_number);
+      std::string reason;
+      if (rt::NotePublisherUntestedNoticeSeen(root, game->publisher, record.runtime_number, &reason))
+        Log("publisher untested app=" + app + " notice seen");
+      else
+        Log("publisher untested app=" + app + " notice seen, not remembered: " + reason);
+    } else if (!untested_seen_this_run_.count(record.runtime_number) &&
+               !rt::PublisherUntestedNoticeSeen(root, game->publisher, record.runtime_number)) {
+      *code = kPlayRefusalPublisherUntested;
+      Log("publisher untested app=" + app + " asks the player first");
+      return "This game hasn't been tested with Playden yet.";
+    }
+  }
   // The game gets a credential only minutes old when the pack can renew it (an expired one is refused below).
   RenewPublisher(c, game->publisher, true);
   const auto account = rt::LoadPublisherAccount(root, game->publisher);
@@ -7552,6 +7573,11 @@ void RuntimeHost::PublishPublishers(Composition& c) {
       if (!manifest.signin_page.empty()) view.signin_page = loaded->second.directory + "/" + manifest.signin_page;
       if (manifest.runtime) view.runtime_label = manifest.runtime->label;
       view.launcher = manifest.helper.has_value();
+      for (const auto& [app, title] : manifest.titles) {
+        const auto number = static_cast<std::uint32_t>(std::stoul(app));  // the parser keeps ids within 32 bits
+        view.listed_titles.insert(number);
+        if (title.untested) view.untested_titles.insert(number);
+      }
     } else if (const auto failed = c.publisher_failures.find(publisher); failed != c.publisher_failures.end()) {
       view.pack_checked = true;
       view.pack_message = failed->second;
@@ -8214,7 +8240,7 @@ bool RuntimeHost::RunServices() {
     for (const auto& play : plays) {
       const auto app = play.app;
       if (composition) {
-        RunPlay(*composition, app, play.setup_program, play.online);
+        RunPlay(*composition, app, play.setup_program, play.online, play.untested_seen);
         poll = true;
       } else {
         Publish([&](RuntimeSnapshot& s) {

@@ -272,6 +272,7 @@ struct LivePublisher {
     bool shown = false;
     // Its games start beside the publisher's launcher, which Steam features = Online leaves out.
     bool launcher = false;
+    bool pack_ready = false;  // its pack is loaded: LivePublishers::untested is known
     bool operator==(const LivePublisher&) const = default;
 };
 // The phone sign-in screen, from its one-time page (runtime/phone_relay.h).
@@ -288,6 +289,8 @@ struct LivePublisherSignIn {
 struct LivePublishers {
     std::vector<LivePublisher> publishers;
     std::map<GameId, std::string> games;  // prepared games that start through their publisher: its slug
+    std::set<GameId> listed;              // of those, the ones the publisher pack lists (Play may start them)
+    std::set<GameId> untested;            // of those, the ones the publisher pack marks as not tested yet
     LivePublisherSignIn sign_in;
     bool operator==(const LivePublishers&) const = default;
 };
@@ -1454,6 +1457,9 @@ public:
     // The Play requests above that ask the online bridge to join a friend's lobby or invite friends, once (Join,
     // Invite friends). A Play request without an entry asks nothing.
     [[nodiscard]] std::map<GameId, playden::runtime::OnlineLaunch> TakeRuntimeOnlineLaunches();
+    // The Play requests above the player made past the untested notice (NotifyPublisherUntested): the runtime
+    // remembers it for the game and doesn't ask again.
+    [[nodiscard]] std::set<GameId> TakeRuntimeUntestedSeen();
     [[nodiscard]] bool TakeRuntimeCleanupRequest();
     // Live mode: kept game data, deletions the player confirmed, and why an uninstall stopped.
     void UpdateKeptBottles(std::vector<LiveKeptBottle> kept);
@@ -1516,6 +1522,9 @@ public:
     [[nodiscard]] std::pair<std::string, GameId> DetailsPublisherCheck() const;
     // Play was refused because the game's publisher needs the player to sign in: ask to.
     void NotifyPublisherSignInNeeded(GameId id);
+    // Play was refused because the publisher pack marks the game as not tested yet and the player wasn't told:
+    // say so once, with Play to go on.
+    void NotifyPublisherUntested(GameId id);
     void UpdateRuntime(RuntimeState runtime, const std::vector<LiveRuntimeGame>& games);
     // Live mode: the preparation queue for Queue, and what the player asked of it there: games to
     // prepare next, waiting games canceled, finished preparations dismissed, and Clear completed.
@@ -2214,6 +2223,7 @@ private:
     std::vector<GameId> pending_runtime_play_requests_;
     std::map<GameId, std::string> pending_runtime_setup_programs_;
     std::map<GameId, playden::runtime::OnlineLaunch> pending_runtime_online_launches_;
+    std::set<GameId> pending_runtime_untested_seen_;
     std::string setup_program_choice_;  // Run launcher or setup: the program the confirmation names
     bool pending_runtime_cleanup_ = false;
     bool library_catalog_received_ = false;

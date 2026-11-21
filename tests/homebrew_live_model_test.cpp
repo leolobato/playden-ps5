@@ -3261,6 +3261,42 @@ void live_publisher_accounts(const std::filesystem::path& base) {
               model.TakeRuntimePlayRequests().empty(),
           "publisher: Cancel at the prompt starts nothing");
 
+    // A game the pack marks as not tested yet: Play's refusal says so once, Play goes on and tells the runtime the
+    // player was told; Cancel starts nothing.
+    model.NotifyPublisherUntested(SteamId(12210));
+    check(!model.state().navigation.modals.empty() &&
+              model.state().navigation.modals.back().title == "Example Heist hasn't been tested yet" &&
+              model.state().navigation.modals.back().body ==
+                  "This game hasn't been tested with Playden yet. If it doesn't start, report it with Share feedback… "
+                  "in the game's actions." &&
+              find_row(model, "publisher-untested-play:" + ToKey(SteamId(12210)))->title == "Play",
+          "publisher: an untested game's first Play says so");
+    activate(model, "cancel");
+    check(model.state().navigation.modals.empty() && model.TakeRuntimePlayRequests().empty() &&
+              model.TakeRuntimeUntestedSeen().empty(),
+          "publisher: Cancel at the untested notice starts nothing");
+    model.NotifyPublisherUntested(SteamId(12210));
+    activate(model, "publisher-untested-play:" + ToKey(SteamId(12210)));
+    check(model.state().navigation.modals.empty() &&
+              model.TakeRuntimePlayRequests() == std::vector<GameId>{SteamId(12210)} &&
+              model.TakeRuntimeUntestedSeen() == std::set<GameId>{SteamId(12210)},
+          "publisher: Play at the untested notice goes on, past the notice");
+    // A plain Play afterwards carries nothing more.
+    model.action("focus:details-play");
+    model.action("cross");
+    check(model.TakeRuntimeUntestedSeen().empty(), "publisher: a later Play isn't marked");
+    (void)model.TakeRuntimePlayRequests();
+    // Two notices at once (two refused Plays in one tick): each Play starts its own game.
+    model.NotifyPublisherUntested(SteamId(12210));
+    model.NotifyPublisherUntested(SteamId(99));
+    activate(model, "cancel");  // the second notice, for a game not in the library: nothing starts
+    check(model.TakeRuntimePlayRequests().empty(), "publisher: Cancel on the top notice starts nothing");
+    activate(model, "publisher-untested-play:" + ToKey(SteamId(12210)));
+    check(model.state().navigation.modals.empty() &&
+              model.TakeRuntimePlayRequests() == std::vector<GameId>{SteamId(12210)} &&
+              model.TakeRuntimeUntestedSeen() == std::set<GameId>{SteamId(12210)},
+          "publisher: the notice below still starts its own game");
+
     // Maintenance: Repair Rockstar files, confirmed, goes to the runtime.
     activate(model, "details-more");
     activate(model, "game-maintenance");

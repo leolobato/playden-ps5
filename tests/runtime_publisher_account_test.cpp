@@ -322,6 +322,30 @@ int main() {
   CHECK(AcceptPublisherCredential(state, Publisher::kRockstar, blob, spec, 1760010000, &display, &reason));
   CHECK(refresh(1760011000).result == PublisherRefreshResult::kNotRefreshable && calls == 0);
 
+  // The untested notice the player went past, per game: kept apart from the account, so signing out keeps it.
+  {
+    const auto seen = root / "state" / "publisher-untested-rockstar.v1";
+    CHECK(PublisherUntestedFileName(Publisher::kRockstar) == "publisher-untested-rockstar.v1");
+    CHECK(!PublisherUntestedNoticeSeen(state, Publisher::kRockstar, 110800));
+    CHECK(NotePublisherUntestedNoticeSeen(state, Publisher::kRockstar, 110800, &reason));
+    CHECK(NotePublisherUntestedNoticeSeen(state, Publisher::kRockstar, 12200, &reason));
+    CHECK(NotePublisherUntestedNoticeSeen(state, Publisher::kRockstar, 110800, &reason));  // once is enough
+    CHECK(Read(seen) == "12200\n110800\n");
+    CHECK(PublisherUntestedNoticeSeen(state, Publisher::kRockstar, 110800) &&
+          PublisherUntestedNoticeSeen(state, Publisher::kRockstar, 12200));
+    CHECK(!PublisherUntestedNoticeSeen(state, Publisher::kRockstar, 204100));
+    CHECK(!PublisherUntestedNoticeSeen(state, Publisher::kEa, 110800));  // per publisher
+    CHECK(SignOutPublisherAccount(state, Publisher::kRockstar, &reason));
+    CHECK(PublisherUntestedNoticeSeen(state, Publisher::kRockstar, 110800));
+    // A damaged file holds nothing: the notice shows again, and the next note starts it over.
+    for (const char* damaged : {"110800\nabc\n", "0110800\n", "99999999999\n", "110800\n\n", "110800 \n"}) {
+      Write(seen, damaged);
+      CHECK(!PublisherUntestedNoticeSeen(state, Publisher::kRockstar, 110800));
+    }
+    CHECK(NotePublisherUntestedNoticeSeen(state, Publisher::kRockstar, 204100, &reason));
+    CHECK(Read(seen) == "204100\n");
+  }
+
   fs::remove_all(root);
   return 0;
 }

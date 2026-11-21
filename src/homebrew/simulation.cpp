@@ -1018,7 +1018,7 @@ std::string action_label(const std::string& key) {
              {"prep-open-", "Game details"}, {"prep-retry-", "Try again"}, {"prep-recreate-", "Recreate bottle…"},
              {"prep-dismiss-", "Dismiss"}, {"prep-cancel-", "Cancel"},
              {"uninstall-dismiss-", "Dismiss"},
-             {"publisher-sign-in:", "Sign in again"}, {"publisher-sign-out:", "Sign out…"}, {"publisher-sign-in-play:", "Sign in"}})
+             {"publisher-sign-in:", "Sign in again"}, {"publisher-sign-out:", "Sign out…"}, {"publisher-sign-in-play:", "Sign in"}, {"publisher-untested-play:", "Play"}})
         if (key.rfind(prefix, 0) == 0) return label;
     std::string title = key;
     std::replace(title.begin(), title.end(), '-', ' ');
@@ -3363,6 +3363,12 @@ std::map<GameId, std::string> Simulation::TakeRuntimeSetupPrograms() {
     return programs;
 }
 
+std::set<GameId> Simulation::TakeRuntimeUntestedSeen() {
+    auto seen = std::move(pending_runtime_untested_seen_);
+    pending_runtime_untested_seen_.clear();
+    return seen;
+}
+
 std::map<GameId, rt::OnlineLaunch> Simulation::TakeRuntimeOnlineLaunches() {
     auto launches = std::move(pending_runtime_online_launches_);
     pending_runtime_online_launches_.clear();
@@ -3448,6 +3454,18 @@ void Simulation::NotifyPublisherSignInNeeded(GameId id) {
     ModalEntry ask{"confirmation", title + " needs a " + publisher->name + " account", state_.navigation.focus_key,
                    {"publisher-sign-in-play:" + publisher->slug, "cancel"}, 0, false};
     ask.body = "Sign in to " + publisher->name + " with your phone. The game starts once you are signed in.";
+    open_modal(std::move(ask));
+    rebuild_view();
+}
+
+void Simulation::NotifyPublisherUntested(GameId id) {
+    const auto* game = find_game(state_, id);
+    // The action names its game: two notices may be open at once.
+    ModalEntry ask{"confirmation", (game ? game->title : std::string("This game")) + " hasn't been tested yet",
+                   state_.navigation.focus_key, {"publisher-untested-play:" + ToKey(id), "cancel"}, 0, false};
+    // The dialog font has no "›": the menu is named the way Settings names it.
+    ask.body = "This game hasn't been tested with Playden yet. If it doesn't start, report it with Share feedback\u2026 "
+               "in the game's actions.";
     open_modal(std::move(ask));
     rebuild_view();
 }
@@ -15386,6 +15404,21 @@ void Simulation::activate() {
     else if (action_name.rfind("publisher-sign-in:", 0) == 0) begin_publisher_sign_in(action_name.substr(18), {});
     else if (action_name.rfind("publisher-sign-in-play:", 0) == 0) begin_publisher_sign_in(action_name.substr(23), publisher_play_game_);
     else if (action_name == "publisher-retry") begin_publisher_sign_in(state_.publishers.sign_in.slug, publisher_play_game_);
+    else if (action_name.rfind("publisher-untested-play:", 0) == 0) {
+        // Play goes on; the runtime remembers that the player was told, for this game.
+        const auto game = ParseKey(action_name.substr(24)).value_or(GameId{});
+        close_modal();
+        if (game.valid() && find_game(state_, game) && !update_locked(game)) {
+            if (live()) {
+                if (auto previous = state_.runtime_games.find(game); previous != state_.runtime_games.end())
+                    previous->second.play_detail.clear();
+                pending_runtime_play_requests_.push_back(game);
+                pending_runtime_untested_seen_.insert(game);
+            } else if (const auto* known = find_game(state_, game)) {
+                push_notice({"publisher-play", known->title + " starts", "", false, kLiveNoticeSeconds, false, "Simulated"});
+            }
+        }
+    }
     else if (action_name == "publisher-cancel") leave_publisher_sign_in(false);
     else if (action_name == "publisher-done") leave_publisher_sign_in(true);
     else if (action_name.rfind("publisher-sign-out:", 0) == 0) {
@@ -20310,6 +20343,13 @@ void Simulation::send_feedback() {
     if (game_online(id))
         request.versions.emplace_back("Steam client", state_.kit.steam_client.empty() ? std::string("not installed")
                                                                                      : state_.kit.steam_client);
+    // A publisher game: whether its pack marks it as not tested yet, so reports about those are easy to find.
+    if (const auto* publisher = publisher_of(id))
+        request.versions.emplace_back("Publisher pack", publisher->name + ": " +
+                                                            (!publisher->pack_ready                 ? "not loaded"
+                                                             : !state_.publishers.listed.count(id)  ? "not listed"
+                                                             : state_.publishers.untested.count(id) ? "untested"
+                                                                                                    : "tested"));
     request.firmware = console_firmware_.empty() ? std::string("unknown") : console_firmware_;
     request.playden_version = !sharing_playden_version_.empty() ? sharing_playden_version_
                             : !state_.self_update.current.empty() ? state_.self_update.current : std::string("unknown");
