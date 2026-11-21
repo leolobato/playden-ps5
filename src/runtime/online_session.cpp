@@ -34,18 +34,12 @@ void Wipe(std::string* text) {
   text->clear();
 }
 
-// The folder, back at 0700 if something opened it up: it holds the token.
+// The folder, at the mode it has: the token in it is a 0600 file, and an open bottle keeps the folder 0777 so the
+// console owner can delete it over FTP (#868). One made here is 0700 until the bottle is settled.
 std::optional<ManagedDirectory> OpenFolder(const std::filesystem::path& prefix, bool create) {
   const auto drive = ManagedDirectory::Open(prefix / "drive_c", DirectoryPolicy::kApprovedTree);
   if (!drive) return std::nullopt;
-  auto folder = drive->OpenChild("playden", DirectoryPolicy::kApprovedTree, create, 0700);
-  struct stat status {};
-  if (!folder || ::fstat(folder->fd(), &status) != 0) return std::nullopt;
-  if ((status.st_mode & 07777) == 0700) return folder;
-  // Opened again after the change: the open folder took the old mode as its identity.
-  if (::fchmod(folder->fd(), 0700) != 0) return std::nullopt;
-  folder.reset();
-  return drive->OpenChild("playden", DirectoryPolicy::kApprovedTree);
+  return drive->OpenChild("playden", DirectoryPolicy::kApprovedTree, create, 0700);
 }
 
 // Writes text as name in the bottle's C:\playden (0600), through a temporary file. Wipes the text.

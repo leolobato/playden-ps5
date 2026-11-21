@@ -803,8 +803,9 @@ int main() {
     CHECK(captured.ok()); t.operation = captured.value(); t.deps = resumed.Dependencies(t.root);
     CHECK(t.Run().state == PackageActionState::kComplete && native.registrations == 1 && package.mutations == 0);
   }
-  // An existing private control folder (an interrupted first setup) is adopted; a
-  // symbolic link, a non-private data root or an invalid id still refuse, changing no OWNER.
+  // An existing private control folder (an interrupted first setup) is adopted, and so is a data root opened to
+  // FTP (#868: the control folder is made 0700, the installer opens it for a title that admits it); a symbolic link
+  // or an invalid id still refuse, changing no OWNER.
   for (unsigned collision = 0; collision < 4; ++collision) {
     Test t; fs::remove_all(t.control);
     const auto owner_root = t.root / "owner"; fs::create_directory(owner_root); CHECK(chmod(owner_root.c_str(), 0700) == 0);
@@ -818,14 +819,16 @@ int main() {
     if (collision == 2) CHECK(chmod(t.control.parent_path().c_str(), 0755) == 0);
     const auto before = Read(owner_root / "installs.json");
     const auto txn = collision == 3 ? "../invalid" : t.operation.transaction_id;
-    if (collision == 0) {
+    if (collision == 0 || collision == 2) {
       CHECK(owner.InitializeControl(t.operation.install, txn, t.root).state == PackageActionState::kComplete);
       CHECK(fs::exists(t.control / "publication.lock"));
+      struct stat made{};
+      CHECK(lstat(t.control.c_str(), &made) == 0 && (made.st_mode & 07777) == 0700);
       continue;
     }
     CHECK(owner.InitializeControl(t.operation.install, txn, t.root).state == PackageActionState::kFailed);
     CHECK(Read(owner_root / "installs.json") == before && native.registrations == 0 && package.mutations == 0);
-    if (collision > 1) CHECK(!fs::exists(t.control));
+    if (collision > 2) CHECK(!fs::exists(t.control));
   }
   // No filesystem setup precedes durable OWNER admission; failed completion
   // persistence leaves its original arm and the same lock for explicit retry.

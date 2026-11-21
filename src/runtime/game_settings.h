@@ -76,7 +76,6 @@ struct KitCapabilities {
   bool windows_locale = false;
   bool windows_locale_needs_update = false;
   bool game_root_unowned = false;  // games start from drives that record no file owners (exFAT)
-  bool bottle_profile_shared = false;  // the bottle's 4 folders to its user profile may be 0711
   // The title's start check admits Playden's folders and files at any mode of its user's (#868). Counts only for a
   // title made from this kit: an older title shell still wants them owner-only.
   bool publication_open_modes = false;
@@ -953,12 +952,10 @@ inline constexpr const char* kKitTitleAnyId = "title-any-id";
 // Runtime ability: launch admission accepts a game folder on a drive that records no file
 // owners or permissions, such as an exFAT USB disk (publication metadata schema 3).
 inline constexpr const char* kKitGameRootUnowned = "game-root-unowned";
-// Runtime ability: launch admission accepts 0711 as well as 0700 for the bottle's way to its user
-// profile (games/<id>, library, library/prefixes, library/prefixes/game), so FTP can reach the saves.
-inline constexpr const char* kKitBottleProfileShared = "bottle-profile-shared";
 // Runtime ability: launch admission accepts the bottle folders, the control folder, the lock, the receipt, the
 // profiles, the input presets, user.reg and game-launch.json at any mode, as long as they are the app user's, have
-// one link and are not links; the title makes its session folders 0777 (#868).
+// one link and are not links; the title makes its session folders 0777 (#868). Playden then keeps that title's
+// bottle open (folders 0777) so the console owner can delete it over FTP.
 inline constexpr const char* kKitPublicationOpenModes = "publication-open-modes";
 // Runtime ability: OpenGL games draw through Mesa's WGL/Zink on Vulkan (prospero-win upstream #463-#465)
 // instead of the PS5 OpenGL SDK, which had the 120 Hz output and the OpenGL worker thread.

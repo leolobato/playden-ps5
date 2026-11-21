@@ -102,18 +102,22 @@ public:
   }
   // Makes the missing ones of `folders` in the bottle's Windows user folder (drive_c/users/prospero): each a path
   // relative to it that IsProfileSaveFolder admits (others fail). A folder already there under another case is the
-  // one used, as Wine finds it. Existing folders keep their mode; new ones get the profile's (0777 with
-  // bottle-profile-shared, else 0700). A bottle with no user folder yet is left alone. Folders made go in `added`,
+  // one used, as Wine finds it. Existing folders keep their mode; new ones get the bottle's (0777 when it is open,
+  // OpensBottle, else 0700). A bottle with no user folder yet is left alone. Folders made go in `added`,
   // ones that could not be made in `failed`; nothing else changes. The title must be stopped.
   virtual void AddProfileFolders(const RuntimeInstall &, const std::vector<std::string> &,
                                  std::vector<std::string> *, std::vector<std::string> *) {}
-  // Sets the bottle's way to its user profile (data root, library, library/prefixes, the bottle,
-  // drive_c, drive_c/users) to the kit's mode: 0711 when the kit has bottle-profile-shared, which
-  // then also opens the profile (drive_c/users/prospero) to FTP, else 0700. The title must be
-  // stopped, and no directory of the bottle held open across it (a mode change reads as ESTALE).
+  // Sets the bottle's modes to what its title's shell wants. An open bottle (OpensBottle): every folder
+  // 0777, so the console owner can delete it over FTP, and the files Windows programs keep in drive_c/users
+  // and drive_c/ProgramData 0666, launcher sign-ins (PrivateProfilePaths) 0600; Playden's publication files
+  // are left as they are. Otherwise the way to the bottle (data root, library, library/prefixes, the bottle,
+  // drive_c, drive_c/users) goes back from 0711 to 0700. The title must be stopped, and no directory of the
+  // bottle held open across it (a mode change reads as ESTALE).
   virtual PackageActionResult SettleBottleModes(const RuntimeInstall &) {
     return {PackageActionState::kComplete, {}, {}};
   }
+  // The record's title was made from a kit with publication-open-modes: its bottle is kept open (#868).
+  virtual bool OpensBottle(const RuntimeInstall &) { return false; }
   // Whether a staged title was made from the admitted kit (cheap marker check).
   virtual bool TitleCurrent(const RuntimeInstall &) { return true; }
   // Whether this install's title, or its bottle, is there and was made from another kit (or

@@ -1,6 +1,7 @@
 #include "runtime/private_directories.h"
 #include "platform/managed_directory.h"
 #include "platform/directory_walk.h"
+#include <cctype>
 #include <cerrno>
 #include <cstring>
 #include <dirent.h>
@@ -48,6 +49,19 @@ bool IsPrivateDirectoryTree(const fs::path& private_root, const fs::path& direct
   }
   return current->Validate();
 }
+bool IsOwnedDirectoryTree(const fs::path& open_root, const fs::path& directory) {
+  const auto relative = directory.lexically_relative(open_root);
+  if (directory != open_root && !SafeRelative(relative)) return false;
+  auto current = ManagedDirectory::Open(open_root, DirectoryPolicy::kOpenTree);
+  if (!current) return false;
+  if (directory != open_root)
+    for (const auto& part : relative) {
+      auto next = current->OpenChild(part.string(), DirectoryPolicy::kOpenTree);
+      if (!next) return false;
+      current = std::move(next);
+    }
+  return current->Validate();
+}
 bool EnsurePrivateDirectories(const fs::path& boundary, const fs::path& private_root,
                               const fs::path& directory, std::string* error,
                               const PrivateTraversal& traversal) {
@@ -89,7 +103,7 @@ bool EnsurePrivateDirectories(const fs::path& boundary, const fs::path& private_
   return current->Validate();
 }
 bool EnsureOpenDirectories(const fs::path& boundary, const fs::path& open_root, const fs::path& directory,
-                           std::string* error) {
+                           std::string* error, mode_t created_mode) {
   if (error) error->clear();
   const auto fail = [&](const std::string& message) {
     if (error) *error = message;
@@ -107,7 +121,7 @@ bool EnsureOpenDirectories(const fs::path& boundary, const fs::path& open_root, 
   for (const auto& part : relative) {
     path /= part;
     if (path == open_root) in_open = true;
-    auto next = in_open ? current->OpenChild(part.string(), DirectoryPolicy::kOpenTree, true, 0777)
+    auto next = in_open ? current->OpenChild(part.string(), DirectoryPolicy::kOpenTree, true, created_mode)
                         : current->OpenChild(part.string(), DirectoryPolicy::kApprovedTree, true, 0777);
     if (!next)
       return fail("cannot open/create data directory (wrong owner): " + path.string() + ": " + strerror(errno));
@@ -212,6 +226,8 @@ bool ShareFolder(int fd, const fs::path& path, int depth, Walk& walk) {
     if (S_ISREG(opened.st_mode) && opened.st_nlink != 1) {
       ++result->linked;
     } else if (S_ISREG(opened.st_mode) && opened.st_uid == ::geteuid() &&
+               // A listing that doesn't give the type (DT_UNKNOWN) is checked against visit_file here.
+               !(walk.options.visit_file && !walk.options.visit_file((path / name).lexically_relative(walk.root))) &&
                !(walk.options.keep_file && walk.options.keep_file((path / name).lexically_relative(walk.root)))) {
       const mode_t wanted = IsPrivateProfilePath((path / name).lexically_relative(walk.root), walk.options.private_paths)
                                 ? 0600 : 0666 | (opened.st_mode & 0111);
@@ -227,6 +243,34 @@ bool ShareFolder(int fd, const fs::path& path, int depth, Walk& walk) {
   return ok;
 }
 }  // namespace
+namespace {
+constexpr char kOpenedMark[] = "logs/.playden-opened";
+}
+
+bool BottleSessionsSinceOpened(const fs::path& data_root) {
+  struct stat sessions{}, mark{};
+  // No session folder: no game ever ran there, and Prepare opened it.
+  if (::lstat((data_root / "logs/sessions").c_str(), &sessions) != 0) return false;
+  if (::lstat((data_root / kOpenedMark).c_str(), &mark) != 0 || !S_ISREG(mark.st_mode)) return true;
+  // Whole seconds, so a session in the same second as the mark counts as later.
+  return sessions.st_mtime >= mark.st_mtime;
+}
+
+void MarkBottleOpened(const fs::path& data_root) {
+  const auto path = data_root / kOpenedMark;
+  struct stat seen{};
+  if (::lstat(path.c_str(), &seen) == 0 && !S_ISREG(seen.st_mode)) return;
+  // Written again each time, so its modification time is now.
+  const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0666);
+  if (fd < 0) return;
+  struct stat opened{};
+  if (::fstat(fd, &opened) == 0 && S_ISREG(opened.st_mode) && opened.st_uid == ::geteuid()) {
+    (void)::fchmod(fd, 0666);
+    (void)!::write(fd, "1\n", 2);
+  }
+  ::close(fd);
+}
+
 bool DescriptorRelativeOpens() { return kDescriptorRelative; }
 int OpenFolderNoFollow(const fs::path& path) {
   struct stat before{}, opened{};
@@ -280,8 +324,15 @@ const std::vector<fs::path>& PrivateProfilePaths() {
   return paths;
 }
 bool IsPrivateProfilePath(const fs::path& relative, const std::vector<fs::path>& private_paths) {
+  // Wine finds a folder whatever its case (AppData/Local/steam is Steam's folder too): compared without ASCII case.
+  const auto lower = [](const fs::path& path) {
+    auto text = path.generic_string();
+    for (auto& value : text) value = static_cast<char>(std::tolower(static_cast<unsigned char>(value)));
+    return fs::path(text);
+  };
+  const auto folded = lower(relative);
   for (const auto& path : private_paths) {
-    const auto within = relative.lexically_relative(path);
+    const auto within = folded.lexically_relative(lower(path));
     if (within == "." || SafeRelative(within)) return true;
   }
   return false;

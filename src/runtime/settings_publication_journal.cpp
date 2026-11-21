@@ -475,7 +475,7 @@ PublicationOperationLoad CheckBackup(const std::filesystem::path& control, Setti
 }
 }
 static PublicationOperationLoad LoadOperationFile(const std::filesystem::path& control, const std::string& filename) {
-  auto directory = platform::ManagedDirectory::Open(control, platform::DirectoryPolicy::kPrivate);
+  auto directory = platform::ManagedDirectory::Open(control, platform::DirectoryPolicy::kOpenTree);
   if (!directory) return LoadFailure(PublicationRecoveryState::kUnavailable, "Private operation control directory is unavailable.");
   struct stat before{}, after{};
   if (!directory->InspectChild(filename, &before)) {
@@ -488,7 +488,7 @@ static PublicationOperationLoad LoadOperationFile(const std::filesystem::path& c
       (before.st_mode & 07777) != 0600 || before.st_size <= 0 ||
       static_cast<std::uint64_t>(before.st_size) > kMaxSettingsPublicationOperationBytes)
     return LoadFailure(PublicationRecoveryState::kCorrupt, "Operation journal is not an exact private bounded file.");
-  Storage storage(control.string()); auto bytes = storage.ReadDurable(filename, kMaxSettingsPublicationOperationBytes);
+  auto storage = Storage(control.string()).AllowOwnedRoot(); auto bytes = storage.ReadDurable(filename, kMaxSettingsPublicationOperationBytes);
   if (!bytes.ok()) return LoadFailure(PublicationRecoveryState::kUnavailable, bytes.message());
   if (!directory->InspectChild(filename, &after) || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
       before.st_mode != after.st_mode || before.st_uid != after.st_uid || before.st_nlink != after.st_nlink || before.st_size != after.st_size)
@@ -503,7 +503,7 @@ PublicationOperationLoad LoadSettingsPublicationOperation(const std::filesystem:
 Result<std::string> SetAsideSettingsPublicationOperation(const std::filesystem::path& control, std::int64_t unix_time) {
   auto fail = [](StorageError error, std::string message) { return Result<std::string>::Failure(error, std::move(message)); };
   if (unix_time < 0) return fail(StorageError::kInvalidData, "Invalid set-aside time.");
-  auto directory = platform::ManagedDirectory::Open(control, platform::DirectoryPolicy::kPrivate);
+  auto directory = platform::ManagedDirectory::Open(control, platform::DirectoryPolicy::kOpenTree);
   if (!directory) return fail(StorageError::kOpenFailed, "Private control directory is unavailable.");
   const auto active = LoadSettingsPublicationOperation(control);
   if (active.state != PublicationRecoveryState::kCorrupt)
@@ -529,7 +529,7 @@ Result<void> ArchiveSettingsPublicationOperation(const std::filesystem::path& co
   std::string reason; auto expected = EncodeSettingsPublicationOperation(operation, &reason);
   if (!expected) return Result<void>::Failure(StorageError::kInvalidData, reason);
   const auto name = "settings-operation-" + operation.transaction_id + ".v1";
-  auto directory = platform::ManagedDirectory::Open(control, platform::DirectoryPolicy::kPrivate);
+  auto directory = platform::ManagedDirectory::Open(control, platform::DirectoryPolicy::kOpenTree);
   if (!directory) return Result<void>::Failure(StorageError::kOpenFailed, "Private archive directory is unavailable.");
   auto exact = [&](const PublicationOperationLoad& load) {
     auto bytes = load.operation ? EncodeSettingsPublicationOperation(*load.operation, &reason) : std::nullopt;
@@ -558,7 +558,7 @@ static Result<void> CreateOperationFile(const std::filesystem::path& control, co
   if (!encoded) return Result<void>::Failure(StorageError::kInvalidData, std::move(reason));
   auto backup = CheckBackup(control, operation);
   if (backup.state != PublicationRecoveryState::kValid) return Result<void>::Failure(StorageError::kInvalidData, backup.message);
-  Storage storage(control.string()); auto written = storage.WriteDurableExclusive(name, *encoded);
+  auto storage = Storage(control.string()).AllowOwnedRoot(); auto written = storage.WriteDurableExclusive(name, *encoded);
   if (!written.ok()) return written;
   auto loaded = LoadOperationFile(control, name);
   if (loaded.state != PublicationRecoveryState::kValid || !loaded.operation)

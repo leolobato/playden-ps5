@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "runtime/self_heal.h"
+#include "runtime/private_directories.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <string>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include <vector>
 
@@ -179,11 +181,73 @@ int main() {
   CHECK(Mode(bottle / "library/prefixes/game/drive_c") == 0777);
   CHECK(Mode(bottle / "library/prefixes/game/drive_c/users/prospero/save.dat") == 0777);
   CHECK(result.failed == 0 && !BottleTooOpen(bottle));
+  // Any one of the folders the start check wants owner-only, opened alone, is seen.
+  for (const auto* folder : {"library/profiles", "library/input", "library/prefixes", "library/prefixes/game"}) {
+    CHECK(chmod((bottle / folder).c_str(), 0777) == 0);
+    CHECK(BottleTooOpen(bottle));
+    CHECK(chmod((bottle / folder).c_str(), 0700) == 0);
+  }
   // A bottle a kit keeps traversable (0711) is left as it is.
   CHECK(chmod(bottle.c_str(), 0711) == 0 && chmod((bottle / "library").c_str(), 0711) == 0);
   CHECK(!BottleTooOpen(bottle));
   result = TightenBottleModes(bottle, log);
   CHECK(result.tightened == 0 && Mode(bottle) == 0711 && Mode(bottle / "library") == 0711);
+
+  // An open bottle (its title shell has publication-open-modes, #868): one lstat each says whether it needs opening
+  // (its root, library or control folder not 0777, or a publication lock a recursive chmod widened). Only Playden's
+  // files go back to 0600 there; the folders and the saves keep their modes.
+  const auto open = data / "games/steam-570";
+  CHECK(!BottleNeedsOpening(open));  // missing
+  for (const auto* folder : {"library/prefixes/game/drive_c/users/prospero", "library/profiles", "library/input",
+                             ".playden-control", "logs/sessions", "title-metadata/sce_sys"})
+    Folder(open / folder, 0777);
+  for (const auto* folder : {"", "library", "library/prefixes", "library/prefixes/game", "library/prefixes/game/drive_c",
+                             "library/prefixes/game/drive_c/users", "logs", "title-metadata"})
+    CHECK(chmod((open / folder).c_str(), 0777) == 0);
+  File(open / ".playden-control/publication.lock", 0600);
+  CHECK(!BottleNeedsOpening(open));
+  for (const auto* folder : {"", "library", ".playden-control"}) {
+    CHECK(chmod((open / folder).c_str(), 0700) == 0);
+    CHECK(BottleNeedsOpening(open));
+    CHECK(chmod((open / folder).c_str(), 0777) == 0);
+  }
+  const std::vector<const char*> playden_files{
+      ".playden-control/publication.lock", ".playden-control/publication-state.v1", "library/profiles/profiles.lst",
+      "library/input/pad.ini", "library/prefixes/game/user.reg", "logs/sessions/one.json", "title-metadata/param.json",
+      "title-metadata/sce_sys/icon0.png"};
+  for (const auto* file : playden_files) File(open / file, 0666);
+  File(open / "library/prefixes/game/drive_c/users/prospero/save.dat", 0666);
+  CHECK(BottleNeedsOpening(open));
+  // While a settings publication is pending its hive keeps the mode the publication froze.
+  result = TightenBottleFiles(open, log, false);
+  CHECK(result.failed == 0 && result.tightened == playden_files.size() - 1);
+  CHECK(Mode(open / "library/prefixes/game/user.reg") == 0666);
+  for (const auto* file : playden_files) CHECK(chmod((open / file).c_str(), 0666) == 0);
+  result = TightenBottleFiles(open, log);
+  CHECK(result.failed == 0 && result.tightened == playden_files.size());
+  for (const auto* file : playden_files) CHECK(Mode(open / file) == 0600);
+  for (const auto* folder : {"", "library", "library/prefixes/game", ".playden-control", "logs/sessions", "library/profiles"})
+    CHECK(Mode(open / folder) == 0777);
+  CHECK(Mode(open / "library/prefixes/game/drive_c/users/prospero/save.dat") == 0666);
+  CHECK(!BottleNeedsOpening(open));
+  // The startup pass walks it again only once a session ran since it was opened.
+  const auto later = data / "games/steam-571";
+  Folder(later / "logs", 0777);
+  CHECK(!BottleSessionsSinceOpened(later));  // never ran a game
+  Folder(later / "logs/sessions", 0777);
+  CHECK(BottleSessionsSinceOpened(later));  // never marked
+  MarkBottleOpened(later);
+  CHECK(Mode(later / "logs/.playden-opened") == 0666);
+  struct stat mark{};
+  CHECK(lstat((later / "logs/.playden-opened").c_str(), &mark) == 0);
+  const auto set_sessions_time = [&](std::time_t when) {
+    struct timeval times[2] = {{when, 0}, {when, 0}};
+    CHECK(utimes((later / "logs/sessions").c_str(), times) == 0);
+  };
+  set_sessions_time(mark.st_mtime - 10);
+  CHECK(!BottleSessionsSinceOpened(later));
+  set_sessions_time(mark.st_mtime + 10);  // a session from Home since
+  CHECK(BottleSessionsSinceOpened(later));
 
   // The kit: extra bits go, missing bits are not added, links are not followed.
   CHECK(chmod((root / "outside").c_str(), 0777) == 0);

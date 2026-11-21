@@ -1,3 +1,4 @@
+#include "open_modes_walk.h"
 #include "homebrew/runtime_host.hpp"
 #include "gog/dependencies.h"
 #include "installs/install_record.h"
@@ -3982,7 +3983,7 @@ void MaintainsReadyTitle() {
   CHECK(result.maintenance.at(220).ok);
   struct stat info{};
   CHECK(stat((data / "library/prefixes/game/user.reg").c_str(), &info) == 0 && (info.st_mode & 0777) == 0600);
-  // A kit without bottle-profile-shared keeps the bottle private: its way and its saves.
+  // A kit without publication-open-modes keeps the bottle private: its way and its saves.
   for (const auto* folder : {"", "library", "library/prefixes", "library/prefixes/game", "library/prefixes/game/drive_c/users"})
     CHECK(lstat((data / folder).c_str(), &info) == 0 && (info.st_mode & 07777) == 0700);
   CHECK(lstat((data / "library/prefixes/game/drive_c/users/prospero/Documents/save.dat").c_str(), &info) == 0 &&
@@ -7661,10 +7662,10 @@ void MovedGameMissingAtNewRootLetsTheMoveFinish() {
   host.Shutdown();
 }
 
-// bottle-profile-shared: the bottle's way to its user profile is 0711 and the profile is open to FTP.
-RuntimeKit SharedProfileKit(const fs::path& kit) {
+// publication-open-modes: the title admits its bottle at any mode, and Playden keeps the bottle open to FTP (#868).
+RuntimeKit OpenModesKit(const fs::path& kit) {
   auto admitted = SyntheticKit(kit);
-  admitted.capabilities.push_back(kKitBottleProfileShared);
+  admitted.capabilities.push_back(kKitPublicationOpenModes);
   std::sort(admitted.capabilities.begin(), admitted.capabilities.end());
   return admitted;
 }
@@ -7688,8 +7689,10 @@ struct ProfileRun {
   RuntimeHostConfig config;
   const fs::path data = fixture.root / "data/playden/games/steam-220";
   const fs::path profile = data / "library/prefixes/game/drive_c/users/prospero";
-  explicit ProfileRun(bool shared) {
-    kit = shared ? SharedProfileKit(fixture.root / "kit") : SyntheticKit(fixture.root / "kit");
+  GameSettingsRecord saved;  // the game's saved settings; a test bumps its revision to publish new ones
+  bool use_saved = false;
+  explicit ProfileRun(bool open) {
+    kit = open ? OpenModesKit(fixture.root / "kit") : SyntheticKit(fixture.root / "kit");
     config = fixture.Config();
     config.host_namespace_prefix = fixture.root;
     config.session_data_root = fixture.root / "data";
@@ -7709,6 +7712,10 @@ struct ProfileRun {
       return std::string(id);
     };
     config.unix_time = [] { return std::int64_t{1760000000}; };
+    config.settings_record = [this](const playden::GameId&) -> std::optional<GameSettingsRecord> {
+      if (!use_saved) return std::nullopt;
+      return saved;
+    };
     config.launch_title = [this](const std::string&, const std::vector<std::string>& arguments) {
       launches.push_back(arguments);
       return TitleResult{true, 0, "launch"};
@@ -7761,69 +7768,63 @@ struct ProfileRun {
   }
 };
 
-// Whether the linked publication verifier (the pinned kit's) admits a 0711 data root. One from
-// before bottle-profile-shared refuses it, and with it every start check of a shared bottle:
-// those checks wait for the pin that brings the capability.
-bool VerifierAdmitsSharedBottle() {
-  static const bool admits = [] {
-    ProfileRun run(false);
-    {
-      RuntimeHost host(run.config);
-      CHECK(host.Start());
-      run.Prepare(host);
-      host.Shutdown();
-    }
-    CHECK(chmod(run.data.c_str(), 0711) == 0);
-    FilesystemPackageInstaller installer(run.kit.view, run.config.package_paths, run.config.package_operations);
-    auto record = Record();
-    record.title_id = "FAKE78001";
-    record.data_root = "/data/playden/games/steam-220";
-    const bool ok = installer.AdmissionDiagnostic(record) == "ok";
-    if (!ok)
-      std::fprintf(stderr, "note: the linked publication verifier refuses 0711 bottles; "
-                           "bottle-profile-shared start checks are skipped until the kit pin admits them\n");
-    return ok;
-  }();
-  return admits;
+// Whether a bottle is open to FTP: every folder 0777 (deleting needs write permission on the folder), and the
+// files where Windows programs keep saves and settings (the profile, ProgramData) readable, launcher sign-ins
+// excepted. Other files (Playden's publication files, the registry hives, the kit's copy) may stay 0600.
+std::vector<std::string> ClosedInBottle(const fs::path& root) {
+  return playden::test::OpenModesProblems(root, {{}, [](const fs::path& relative) {
+    const auto text = relative.generic_string();
+    const bool saves = text.rfind("library/prefixes/game/drive_c/users/", 0) == 0 ||
+                       text.rfind("library/prefixes/game/drive_c/ProgramData/", 0) == 0;
+    return !saves || text.find("/AppData/Local/Steam/") != std::string::npos;
+  }});
+}
+void CheckBottleOpen(const fs::path& root) {
+  const auto closed = ClosedInBottle(root);
+  for (const auto& entry : closed) std::fprintf(stderr, "closed: %s\n", entry.c_str());
+  CHECK(closed.empty());
 }
 
-// A kit with bottle-profile-shared makes the bottle's way 0711 and its profile 0777/0666. Saves
-// Wine makes (0600, umask 077) are opened again at Play and when the session ends; Repair keeps
-// the modes, backups stay private, and saves kept across an uninstall come back open.
-void SharedProfileKitOpensSaves() {
-  if (!VerifierAdmitsSharedBottle()) return;
+// A kit with publication-open-modes keeps the bottle open (#868): every folder 0777 so the console owner can delete
+// it over FTP, saves 0666. Saves and folders Wine makes (0600/0700, umask 077) are opened again at Play and when the
+// session ends; Repair keeps the modes and the start check passes, backups are open, and saves kept across an
+// uninstall come back open.
+void OpenModesKitOpensBottle() {
   ProfileRun run(true);
   RuntimeHost host(run.config);
   CHECK(host.Start());
   CHECK(WaitFor(host, Started).kit_available);
   auto ready = run.Prepare(host);
   CHECK(ready.installs[0].admission == "ok");
-  for (const auto& folder : ProfileWay(run.data)) CHECK(ModeOf(folder) == 0711);
-  for (const auto* folder : {".playden-control", "library/profiles", "library/input"}) CHECK(ModeOf(run.data / folder) == 0700);
+  CheckBottleOpen(run.data);
+  for (const auto& folder : ProfileWay(run.data)) CHECK(ModeOf(folder) == 0777);
+  for (const auto* folder : {".playden-control", "library/profiles", "library/input"}) CHECK(ModeOf(run.data / folder) == 0777);
   CHECK(ModeOf(run.data / "library/prefixes/game/user.reg") == 0600);
-  for (const auto* folder : {"", "AppData", "AppData/Roaming", "Documents", "Saved Games"})
-    CHECK(ModeOf(run.profile / folder) == 0777);
 
   // Between sessions (from Home, or over FTP) Wine left a private save: Play opens it first.
   const auto game = run.profile / "AppData/Roaming/Game";
   Write(game / "save.dat", "first", 0600);
   CHECK(chmod(game.c_str(), 0700) == 0);
+  CHECK(chmod(run.data.c_str(), 0700) == 0);
   const auto session = run.Play(host);
-  CHECK(ModeOf(game) == 0777 && ModeOf(game / "save.dat") == 0666);
-  // The game saves while it runs; once its session ends the new save is opened too.
+  CHECK(ModeOf(game) == 0777 && ModeOf(game / "save.dat") == 0666 && ModeOf(run.data) == 0777);
+  // The game saves while it runs; once its session ends the new save and folder are opened too.
   run.Session(session, "running");
   WaitFor(host, [](const RuntimeSnapshot& s) { return s.launch && s.launch->state == LaunchState::kRunning; }, 30);
   Write(game / "later.dat", "second", 0600);
+  Write(game / "New/deeper.dat", "third", 0600);
+  CHECK(chmod((game / "New").c_str(), 0700) == 0);
   run.Session(session, "exited");
   WaitFor(host, [](const RuntimeSnapshot& s) { return s.launch && s.launch->state == LaunchState::kExited; }, 30);
-  CHECK(ModeOf(game / "later.dat") == 0666);
-  CHECK(ModeOf(run.data / "logs/sessions") == 0700 && ModeOf(run.data / "library/prefixes/game/user.reg") == 0600);
+  CHECK(ModeOf(game / "later.dat") == 0666 && ModeOf(game / "New") == 0777 && ModeOf(game / "New/deeper.dat") == 0666);
+  CHECK(ModeOf(run.data / "logs/sessions") == 0777 && ModeOf(run.data / "library/prefixes/game/user.reg") == 0600);
+  CheckBottleOpen(run.data);
 
   // Repair keeps the modes and the start check passes.
   auto result = run.Maintain(host, RuntimeMaintenance::kRepair);
-  CHECK(result.maintenance.at(220).ok);
-  for (const auto& folder : ProfileWay(run.data)) CHECK(ModeOf(folder) == 0711);
-  // Backups live in Playden's backup folder, open to FTP (#868).
+  CHECK(result.maintenance.at(220).ok && result.installs[0].admission == "ok");
+  CheckBottleOpen(run.data);
+  // Backups live in Playden's backup folder, open to FTP.
   result = run.Maintain(host, RuntimeMaintenance::kBackupSaves);
   CHECK(result.maintenance.at(220).ok);
   const auto backups = run.fixture.root / "data/playden/games/steam-220.saves";
@@ -7839,14 +7840,85 @@ void SharedProfileKitOpensSaves() {
   ready = run.Prepare(host);
   CHECK(ready.kept_bottles.empty() && Read(game / "save.dat") == "first");
   CHECK(ModeOf(game) == 0777 && ModeOf(game / "save.dat") == 0666 && ModeOf(game / "later.dat") == 0666);
-  for (const auto& folder : ProfileWay(run.data)) CHECK(ModeOf(folder) == 0711);
+  CheckBottleOpen(run.data);
   host.Shutdown();
 }
 
-// A bottle made before the kit had bottle-profile-shared (all 0700) is opened when Playden starts
-// with the new kit, and again by Repair and by the first Play if it was tightened since.
-void ExistingBottleOpensWithSharedKit() {
-  if (!VerifierAdmitsSharedBottle()) return;
+// A game whose registration waits for Playden to quit (ShadowMountPlus) ends Prepare with nothing else run after its
+// publication: its bottle is open already (#868).
+void OpenBottleWhileAwaitingRegistration() {
+  Fixture fixture;
+  fixture.registers = false;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = OpenModesKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  Write(fixture.root / "data/homebrew/FAKE77031/games/220/hl2.exe", "existing-game", 0644);
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(Hl2());
+  const auto waiting = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && (s.refusals.count(220) || s.installs[0].awaiting_registration);
+  }, 60);
+  CHECK(!waiting.refusals.count(220) && waiting.installs[0].awaiting_registration);
+  CheckBottleOpen(fixture.root / "data/playden/games/steam-220");
+  host.Shutdown();
+}
+
+// The next runtime kit release: an open bottle whose title is now an older version's. Until Update the title's shell
+// is checked with its own (strict) modes, so the library shows it as needing an update, not a repair; Update puts the
+// bottle back for that check, refreshes the title and opens it again, and the game starts.
+void OpenBottleWithStaleTitle() {
+  ProfileRun run(true);
+  {
+    RuntimeHost host(run.config);
+    CHECK(host.Start());
+    run.Prepare(host);
+    host.Shutdown();
+  }
+  CheckBottleOpen(run.data);
+  run.kit = AnyTitleKit(run.fixture.root / "kit", "72");
+  run.kit.capabilities.push_back(kKitPublicationOpenModes);
+  std::sort(run.kit.capabilities.begin(), run.kit.capabilities.end());
+  run.config.write_title_allow_list = [](const std::string&, std::string*) { return true; };
+  RuntimeHost host(run.config);
+  CHECK(host.Start());
+  const auto started = WaitFor(host, Started);
+  CHECK(started.kit_available && started.installs.size() == 1);
+  CHECK(!started.installs[0].title_current && started.installs[0].state == PreparationState::kReady);
+  CHECK(started.installs[0].failure.empty() && started.installs[0].admission == "ok");
+  // Update: refreshed from this kit, open again, and the start check passes.
+  host.Prepare(Hl2());
+  const auto updated = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && (s.installs[0].title_current || s.refusals.count(220));
+  }, 60);
+  if (updated.refusals.count(220)) std::fprintf(stderr, "Update refused: %s\n", updated.refusals.at(220).c_str());
+  CHECK(!updated.refusals.count(220) && updated.installs[0].title_current && updated.installs[0].admission == "ok");
+  CheckBottleOpen(run.data);
+  run.Play(host);
+  CheckBottleOpen(run.data);
+  host.Shutdown();
+}
+
+// A bottle made before the kit had publication-open-modes (all 0700) is opened when Playden starts with the new kit
+// (here a respin: the title's files are the same, so the title is current), and again by Repair and by the first
+// Play if it was tightened since. Settings still apply to it, and a recursive chmod over FTP (Playden's files 0666
+// too) is put right before the next Play.
+void ExistingBottleOpensWithOpenModesKit() {
   ProfileRun run(false);
   {
     RuntimeHost host(run.config);
@@ -7856,7 +7928,7 @@ void ExistingBottleOpensWithSharedKit() {
   }
   for (const auto& folder : ProfileWay(run.data)) CHECK(ModeOf(folder) == 0700);
   Write(run.profile / "Documents/My Games/settings.ini", "[video]\n", 0600);
-  run.kit = SharedProfileKit(run.fixture.root / "kit");
+  run.kit = OpenModesKit(run.fixture.root / "kit");
   const auto tighten = [&run] {
     for (const auto& folder : ProfileWay(run.data)) CHECK(chmod(folder.c_str(), 0700) == 0);
     CHECK(chmod((run.profile / "Documents/My Games/settings.ini").c_str(), 0600) == 0);
@@ -7864,23 +7936,46 @@ void ExistingBottleOpensWithSharedKit() {
   RuntimeHost host(run.config);
   CHECK(host.Start());
   CHECK(WaitFor(host, Started).kit_available);
-  for (const auto& folder : ProfileWay(run.data)) CHECK(ModeOf(folder) == 0711);
+  // The startup walk runs after the first frame.
+  for (int tries = 0; tries < 200 && !ClosedInBottle(run.data).empty(); ++tries)
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  CheckBottleOpen(run.data);
   CHECK(ModeOf(run.profile / "Documents/My Games") == 0777 && ModeOf(run.profile / "Documents/My Games/settings.ini") == 0666);
   tighten();
   CHECK(run.Maintain(host, RuntimeMaintenance::kRepair).maintenance.at(220).ok);
-  for (const auto& folder : ProfileWay(run.data)) CHECK(ModeOf(folder) == 0711);
-  CHECK(ModeOf(run.profile / "Documents/My Games/settings.ini") == 0666);
+  CheckBottleOpen(run.data);
   tighten();
+  const auto session = run.Play(host);
+  CheckBottleOpen(run.data);
+  run.Session(session, "exited");
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.launch && s.launch->state == LaunchState::kExited; }, 30);
+  // New settings are published into the open bottle (its control folder holds earlier operations and registry
+  // backups), and again after everything was opened over FTP, Playden's files too.
+  const auto apply = [&run, &host](std::uint64_t revision, const std::string& resolution) {
+    run.use_saved = true;
+    run.saved.revision = revision;
+    run.saved.overrides = {{"resolution", resolution}};
+    const auto result = run.Maintain(host, RuntimeMaintenance::kApplySettings);
+    const auto& outcome = result.maintenance.at(220);
+    if (!outcome.ok || outcome.message != "Settings applied.") std::fprintf(stderr, "Apply: %s\n", outcome.message.c_str());
+    CHECK(outcome.ok && outcome.message == "Settings applied." && result.installs[0].settings_revision == revision);
+    CHECK(result.installs[0].admission == "ok");
+  };
+  apply(1, "1280x720");
+  CheckBottleOpen(run.data);
+  for (auto it = fs::recursive_directory_iterator(run.data); it != fs::recursive_directory_iterator(); ++it)
+    if (!it->is_symlink()) CHECK(chmod(it->path().c_str(), it->is_directory() ? 0777 : 0666) == 0);
+  apply(2, "1920x1080");
+  CHECK(ModeOf(run.data / ".playden-control/publication.lock") == 0600);
   run.Play(host);
-  for (const auto& folder : ProfileWay(run.data)) CHECK(ModeOf(folder) == 0711);
-  CHECK(ModeOf(run.profile / "Documents/My Games/settings.ini") == 0666);
+  CheckBottleOpen(run.data);
   host.Shutdown();
 }
 
-// Without the capability nothing opens: Wine's saves stay as they are after Play and after a
+// Without publication-open-modes nothing opens: Wine's saves stay as they are after Play and after a
 // session. A bottle a capable kit opened (then a kit downgrade) fails the strict start check
 // until Repair, or the next Play, puts its way back to 0700; the profile keeps its modes.
-void KitWithoutSharedProfileKeepsBottlePrivate() {
+void KitWithoutOpenModesKeepsBottlePrivate() {
   ProfileRun run(false);
   RuntimeHost host(run.config);
   CHECK(host.Start());
@@ -11844,9 +11939,11 @@ int main(int argc, char** argv) {
   RemovesTitleKeepingSaves();
   RestoresReadableKeptSaves();
   PreparesGameInstalledAgainElsewhere();
-  SharedProfileKitOpensSaves();
-  ExistingBottleOpensWithSharedKit();
-  KitWithoutSharedProfileKeepsBottlePrivate();
+  OpenModesKitOpensBottle();
+  OpenBottleWhileAwaitingRegistration();
+  OpenBottleWithStaleTitle();
+  ExistingBottleOpensWithOpenModesKit();
+  KitWithoutOpenModesKeepsBottlePrivate();
   ShippedRecipePreparesWithAnotherKitsRecipe();
   ShippedRecipeWritesGameIni(false);
   ShippedRecipeWritesGameIni(true);

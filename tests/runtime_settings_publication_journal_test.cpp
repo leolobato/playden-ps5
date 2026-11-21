@@ -261,14 +261,18 @@ int main() {
   changed.registry_backup = backup.value(); auto backed = FreezeSettingsPublicationOperation(changed, &reason); CHECK(backed);
   CHECK(CreateSettingsPublicationOperation(root, *backed).ok());
   CHECK(LoadSettingsPublicationOperation(root).state == PublicationRecoveryState::kValid);
+  // In a control folder opened to FTP (#868) the operation and its backup still load.
+  CHECK(chmod(root.c_str(), 0777) == 0);
+  CHECK(LoadSettingsPublicationOperation(root).state == PublicationRecoveryState::kValid);
+  CHECK(chmod(root.c_str(), 0700) == 0);
   fs::remove(root / backed->registry_backup->filename);
   CHECK(LoadSettingsPublicationOperation(root).state == PublicationRecoveryState::kCorrupt);
   fs::remove(root / "settings-operation.v1");
   CHECK(!CreateSettingsPublicationOperation(root, *backed).ok());
   CHECK(!fs::exists(root / "settings-operation.v1"));
-  CHECK(chmod(root.c_str(), 0755) == 0);
-  CHECK(LoadSettingsPublicationOperation(root).state == PublicationRecoveryState::kUnavailable);
-  CHECK(!CreateSettingsPublicationOperation(root, *frozen).ok());
+  // A control folder opened to FTP (an open bottle, #868) is still the app user's: its journal is read.
+  CHECK(chmod(root.c_str(), 0777) == 0);
+  CHECK(LoadSettingsPublicationOperation(root).state == PublicationRecoveryState::kAbsent);
   CHECK(chmod(root.c_str(), 0700) == 0);
   CHECK(!CreateSettingsPublicationOperation(root / "not-created", *frozen).ok());
   CHECK(!fs::exists(root / "not-created"));

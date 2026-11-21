@@ -505,15 +505,16 @@ std::optional<ManagedDirectory> FilesystemReconcileSessionSource::OpenSessions(
     return std::nullopt;
   }
   const auto mapped = host_data_root_ / "playden/games" / record.install_id;
-  // The data root, library, prefixes and the bottle may be 0711 (bottle-profile-shared).
-  auto game = ManagedDirectory::Open(mapped, DirectoryPolicy::kPrivateTraversable);
+  // The data root, library, prefixes and the bottle are open in a bottle whose title has publication-open-modes
+  // (#868), and FTP may have opened any: the app user's at any mode, links never.
+  auto game = ManagedDirectory::Open(mapped, DirectoryPolicy::kOpenTree);
   if (!game)
     {
     *failure = SourceFailure("session-root-unavailable",
                          "managed game root is unavailable or unsafe");
     return std::nullopt;
   }
-  auto marker_root = ManagedDirectory::Open(mapped, DirectoryPolicy::kPrivateTraversable);
+  auto marker_root = ManagedDirectory::Open(mapped, DirectoryPolicy::kOpenTree);
   if (!marker_root)
     {
     *failure = SourceFailure("session-root-unavailable",
@@ -521,7 +522,7 @@ std::optional<ManagedDirectory> FilesystemReconcileSessionSource::OpenSessions(
     return std::nullopt;
   }
   auto bottle = Child(std::move(*marker_root),
-                      {"library", "prefixes", "game"}, DirectoryPolicy::kPrivateTraversable);
+                      {"library", "prefixes", "game"}, DirectoryPolicy::kOpenTree);
   if (!bottle || !MarkerMatches(*bottle, record))
     {
     *failure = SourceFailure("session-owner-invalid",

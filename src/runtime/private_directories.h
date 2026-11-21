@@ -30,10 +30,14 @@ bool EnsurePrivateDirectories(const std::filesystem::path& boundary,
 // the effective user's, at any mode, and the ones it creates are 0777, so the console owner can
 // delete them over FTP (root has no permission bypass on /data). Missing folders between boundary
 // and open_root are created 0777 too. An existing folder is never chmodded here (self-heal opens them).
+// created_mode: the mode of the folders it makes from open_root down (0700 for a bottle whose title
+// shell still wants owner-only folders).
 bool EnsureOpenDirectories(const std::filesystem::path& boundary,
                            const std::filesystem::path& open_root,
                            const std::filesystem::path& directory,
-                           std::string* error);
+                           std::string* error, mode_t created_mode = 0777);
+// From open_root down to directory every folder is the effective user's, at any mode, with no link.
+bool IsOwnedDirectoryTree(const std::filesystem::path& open_root, const std::filesystem::path& directory);
 bool IsPrivateDirectoryTree(const std::filesystem::path& private_root,
                             const std::filesystem::path& directory,
                             const PrivateTraversal& traversal = {});
@@ -79,6 +83,13 @@ struct SharedTreeOptions {
   std::function<void(const std::filesystem::path&)> before_open;
 };
 SharedTreeResult OpenTreeToEveryone(const std::filesystem::path& root, const SharedTreeOptions& options = {});
+// Whether a title session started (from Home, or from Playden) in the bottle at data_root since MarkBottleOpened
+// last ran there: its logs/sessions folder is as new as the mark or newer, or there is no mark. A bottle with no
+// session folder never ran a game: false. Two lstats.
+bool BottleSessionsSinceOpened(const std::filesystem::path& data_root);
+// Records that the bottle at data_root was just opened (logs/.playden-opened, an empty 0666 file).
+void MarkBottleOpened(const std::filesystem::path& data_root);
+
 // Whether folders are opened relative to a descriptor (*at calls): not on the console.
 bool DescriptorRelativeOpens();
 // A folder opened O_DIRECTORY|O_NOFOLLOW and checked to be the entry lstat saw. -1: errno ELOOP

@@ -133,7 +133,7 @@ ReceiptRead ReadReceipt(const std::filesystem::path& control, const ManagedDirec
     return {absent, absent, {}};
   }
   if (!S_ISREG(before.st_mode) || before.st_size <= 0 || before.st_size > 8192) return {};
-  Storage storage(control.string()); auto read = storage.ReadDurable(name, 8192);
+  auto storage = Storage(control.string()).AllowOwnedRoot(); auto read = storage.ReadDurable(name, 8192);
   if (!read.ok() || !directory.InspectChild(name, &after) || before.st_dev != after.st_dev ||
       before.st_ino != after.st_ino || before.st_size != after.st_size) return {};
   std::string bytes(read.value().begin(), read.value().end()); PwTitlePublication parsed{};
@@ -171,7 +171,7 @@ PackageActionResult VerifyCommittedPublicationReceipt(const RuntimeInstall& r, c
   const auto refuse = [](const char* message) { return Failure("publication-receipt", message); };
   if (!prefix.empty() && (!prefix.is_absolute() || prefix != prefix.lexically_normal())) return refuse("Invalid canonical namespace.");
   const auto control = Map(prefix, r.data_root + "/.playden-control");
-  auto directory = ManagedDirectory::Open(control, DirectoryPolicy::kPrivate);
+  auto directory = ManagedDirectory::Open(control, DirectoryPolicy::kOpenTree);
   if (!directory) return refuse("Private publication control directory is unavailable.");
   auto receipt = ReadReceipt(control, *directory);
   if (!receipt.ok || receipt.absent) return refuse("The publication receipt is missing, corrupt or unavailable.");
@@ -180,7 +180,7 @@ PackageActionResult VerifyCommittedPublicationReceipt(const RuntimeInstall& r, c
       parsed.phase != PW_TITLE_PUBLICATION_COMMITTED || parsed.install_id != r.install_id || parsed.title_id != r.title_id ||
       parsed.settings_revision != r.settings_revision)
     return refuse("The publication receipt is not committed for this install at its revision.");
-  auto profiles = ManagedDirectory::Open(Map(prefix, r.data_root + "/library/profiles"), DirectoryPolicy::kPrivate);
+  auto profiles = ManagedDirectory::Open(Map(prefix, r.data_root + "/library/profiles"), DirectoryPolicy::kOpenTree);
   auto metadata = profiles ? ReadPublicationFile(*profiles, ".playden-publication", 32768) : std::nullopt;
   PwTitlePublicationMetadata m{};
   if (!metadata || !metadata->present || HashArtifactBytes(metadata->bytes) != std::optional<std::string>(parsed.publication_sha256) ||
@@ -191,7 +191,7 @@ PackageActionResult VerifyCommittedPublicationReceipt(const RuntimeInstall& r, c
 }
 std::optional<bool> PublishedGameRootUnowned(const RuntimeInstall& r, const std::filesystem::path& prefix) {
   if (!prefix.empty() && (!prefix.is_absolute() || prefix != prefix.lexically_normal())) return std::nullopt;
-  auto profiles = ManagedDirectory::Open(Map(prefix, r.data_root + "/library/profiles"), DirectoryPolicy::kPrivate);
+  auto profiles = ManagedDirectory::Open(Map(prefix, r.data_root + "/library/profiles"), DirectoryPolicy::kOpenTree);
   auto bytes = profiles ? ReadPublicationFile(*profiles, ".playden-publication", 32768) : std::nullopt;
   PwTitlePublicationMetadata m{};
   if (!bytes || !bytes->present || pw_title_publication_metadata_parse(
@@ -204,7 +204,7 @@ std::optional<std::string> PublishedGameRoot(const RuntimeInstall& r, const std:
 }
 std::optional<std::string> PublishedProfileDigest(const RuntimeInstall& r, const std::filesystem::path& prefix) {
   if (!prefix.empty() && (!prefix.is_absolute() || prefix != prefix.lexically_normal())) return std::nullopt;
-  auto profiles = ManagedDirectory::Open(Map(prefix, r.data_root + "/library/profiles"), DirectoryPolicy::kPrivate);
+  auto profiles = ManagedDirectory::Open(Map(prefix, r.data_root + "/library/profiles"), DirectoryPolicy::kOpenTree);
   auto bytes = profiles ? ReadPublicationFile(*profiles, ".playden-publication", 32768) : std::nullopt;
   PwTitlePublicationMetadata m{};
   if (!bytes || !bytes->present || pw_title_publication_metadata_parse(
@@ -250,7 +250,7 @@ PackageActionResult VerifyMovedPublication(const RuntimeInstall& r, const GameRo
       descriptor_digest() != std::optional<std::string>(m.descriptor_sha256))
     return refuse("The moved game's descriptor does not match its publication.");
   // Profile and catalog live in the private data root, which did not move.
-  auto profiles = ManagedDirectory::Open(Map(prefix, r.data_root + "/library/profiles"), DirectoryPolicy::kPrivate);
+  auto profiles = ManagedDirectory::Open(Map(prefix, r.data_root + "/library/profiles"), DirectoryPolicy::kOpenTree);
   auto profile_bytes = profiles ? ReadPublicationFile(*profiles, std::string(m.profile_id) + ".profile", 256 * 1024) : std::nullopt;
   auto catalog = profiles ? ReadPublicationFile(*profiles, "profiles.lst", 4096) : std::nullopt;
   PwGameProfile profile{};
@@ -283,7 +283,7 @@ PackageActionResult PublishSettingsOperation(const SettingsPublicationOperation&
       !deps.verify_files || !deps.reconcile_committed)
     return Failure("publication-unavailable", "Required publication adapters are unavailable.");
   const auto control = Map(deps.host_namespace_prefix, o.install.data_root + "/.playden-control");
-  auto directory = ManagedDirectory::Open(control, DirectoryPolicy::kPrivate);
+  auto directory = ManagedDirectory::Open(control, DirectoryPolicy::kOpenTree);
   if (!directory) return Failure("publication-control", "Private publication control directory is unavailable.");
   auto lease = platform::ManagedFileLock::Acquire(*directory, "publication.lock", platform::LockMode::kPublisher);
   if (!lease) return Failure(errno == EWOULDBLOCK || errno == EAGAIN ? "publication-busy" : "publication-lock",
@@ -367,7 +367,7 @@ PackageActionResult PublishSettingsOperation(const SettingsPublicationOperation&
     return Failure("publication-interrupted", "Operation persistence requires fresh recovery.");
   auto write_receipt = [&](const std::string& bytes) {
     if (!held()) return false;
-    Storage storage(control.string()); Bytes data(bytes.begin(), bytes.end());
+    auto storage = Storage(control.string()).AllowOwnedRoot(); Bytes data(bytes.begin(), bytes.end());
     if (!storage.WriteDurable("publication-state.v1", data).ok() || !held()) return false;
     auto observed = ReadReceipt(control, *directory);
     return observed.ok && !observed.absent && observed.bytes == bytes;
@@ -431,7 +431,7 @@ PackageActionResult ApplyPendingPublicationRegistry(const SettingsPublicationOpe
   if (!encoded || (!prefix.empty() && (!prefix.is_absolute() || prefix != prefix.lexically_normal())))
     return Failure("publication-invalid", "Frozen registry operation or namespace is invalid.");
   const auto control = Map(prefix, o.install.data_root + "/.playden-control");
-  auto directory = ManagedDirectory::Open(control, DirectoryPolicy::kPrivate);
+  auto directory = ManagedDirectory::Open(control, DirectoryPolicy::kOpenTree);
   auto held = [&] { return directory && LeaseHeld(borrowed, control); };
   if (!held()) return Failure("publication-lock", "Registry publisher descriptor is unavailable or changed.");
   auto journal = LoadSettingsPublicationOperation(control);
@@ -450,10 +450,10 @@ PackageActionResult ApplyPendingPublicationRegistry(const SettingsPublicationOpe
       intended.size() > kMaxPublicationRegistryBackupBytes)
     return Failure("publication-registry-render", "Frozen registry edits cannot be safely rendered.");
   const auto prefix_path = Map(prefix, o.install.data_root + "/library/prefixes/game");
-  auto bottle = ManagedDirectory::Open(prefix_path, DirectoryPolicy::kPrivateTraversable);
+  auto bottle = ManagedDirectory::Open(prefix_path, DirectoryPolicy::kOpenTree);
   if (!bottle) return Failure("publication-registry-directory", "Private bottle directory is unavailable.");
   Storage storage(prefix_path.string());
-  storage.AllowTraversableRoot();
+  storage.AllowOwnedRoot();
   auto read = [&](std::string* bytes, unsigned* mode) {
     struct stat before{}, after{};
     if (!bottle->InspectChild("user.reg", &before) || !S_ISREG(before.st_mode) || before.st_size < 0 ||
@@ -488,7 +488,7 @@ PackageActionResult ApplyPendingPublicationDxvk(const SettingsPublicationOperati
   if (!encoded || (!prefix.empty() && (!prefix.is_absolute() || prefix != prefix.lexically_normal())))
     return Failure("publication-invalid", "Frozen DXVK operation or namespace is invalid.");
   const auto control = Map(prefix, o.install.data_root + "/.playden-control");
-  auto directory = ManagedDirectory::Open(control, DirectoryPolicy::kPrivate);
+  auto directory = ManagedDirectory::Open(control, DirectoryPolicy::kOpenTree);
   auto held = [&] { return directory && LeaseHeld(borrowed, control); };
   if (!held()) return Failure("publication-lock", "Registry publisher descriptor is unavailable or changed.");
   auto journal = LoadSettingsPublicationOperation(control);
@@ -563,7 +563,7 @@ PackageActionResult ApplyPendingPublicationFiles(const SettingsPublicationOperat
   auto result = ApplyPendingPublicationRegistry(o, borrowed, prefix);
   if (!Complete(result)) return result;
   const auto control = Map(prefix, o.install.data_root + "/.playden-control");
-  auto directory = ManagedDirectory::Open(control, DirectoryPolicy::kPrivate);
+  auto directory = ManagedDirectory::Open(control, DirectoryPolicy::kOpenTree);
   auto held = [&] { return directory && LeaseHeld(borrowed, control); };
   auto checkpoint = [&](const std::filesystem::path& path) { return (!after_effect || after_effect(path)) && held(); };
   if (!checkpoint(Map(prefix, o.install.data_root + "/library/prefixes/game/user.reg")))
@@ -577,12 +577,12 @@ PackageActionResult ApplyPendingPublicationFiles(const SettingsPublicationOperat
       o.previous_metadata_bytes.size(), &previous) != PW_OK))
     return Failure("publication-invalid", "Frozen publication metadata is invalid.");
   if (!checkpoint(Map(prefix, platform::OnGameMount(current.dxvk_path, o.install.install_path)))) return Failure("publication-interrupted", "DXVK effect requires fresh recovery.");
-  auto library = ManagedDirectory::Open(Map(prefix, o.install.data_root + "/library"), DirectoryPolicy::kPrivateTraversable);
+  auto library = ManagedDirectory::Open(Map(prefix, o.install.data_root + "/library"), DirectoryPolicy::kOpenTree);
   if (!library) return Failure("publication-directory", "Owned private library is unavailable.");
-  auto profiles = library->OpenChild("profiles", DirectoryPolicy::kPrivate, true);
+  auto profiles = library->OpenChild("profiles", DirectoryPolicy::kOpenTree, true, 0700);
   if (!profiles || !profiles->Sync() || !library->Sync() || !checkpoint(paths.profile.parent_path()))
     return Failure("publication-directory", "Private profile directory requires recovery.");
-  auto inputs = library->OpenChild("input", DirectoryPolicy::kPrivate, true);
+  auto inputs = library->OpenChild("input", DirectoryPolicy::kOpenTree, true, 0700);
   if (!inputs || !inputs->Sync() || !library->Sync() || !checkpoint(paths.input_directory))
     return Failure("publication-directory", "Private input directory requires recovery.");
   auto title = ManagedDirectory::Open(paths.descriptor.parent_path(), DirectoryPolicy::kApprovedTree);
@@ -639,15 +639,15 @@ PackageActionResult PreflightSettingsPublication(const SettingsPublicationOperat
   std::string reason;
   if (!EncodeSettingsPublicationOperation(o, &reason) || !PathsMatch(o, paths, prefix))
     return Failure("publication-invalid", "Frozen preflight operation or canonical paths are invalid.");
-  auto data = ManagedDirectory::Open(Map(prefix, o.install.data_root), DirectoryPolicy::kPrivateTraversable);
-  auto control = data ? data->OpenChild(".playden-control", DirectoryPolicy::kPrivate) : std::nullopt;
+  auto data = ManagedDirectory::Open(Map(prefix, o.install.data_root), DirectoryPolicy::kOpenTree);
+  auto control = data ? data->OpenChild(".playden-control", DirectoryPolicy::kOpenTree) : std::nullopt;
   auto held = [&] { return control && LeaseHeld(borrowed, control->path()); };
   if (!held()) return Failure("publication-lock", "Preflight publisher descriptor is unavailable or changed.");
   auto receipt = ReadReceipt(control->path(), *control);
   const bool initial = o.previous_receipt_bytes.empty();
   if (!receipt.ok || (initial ? !receipt.absent : receipt.absent || receipt.bytes != o.previous_receipt_bytes))
     return Failure("publication-preflight-receipt", "Preflight requires the exact previous receipt or initial absence.");
-  auto library = data->OpenChild("library", DirectoryPolicy::kPrivateTraversable);
+  auto library = data->OpenChild("library", DirectoryPolicy::kOpenTree);
   auto title = ManagedDirectory::Open(paths.descriptor.parent_path(), DirectoryPolicy::kApprovedTree);
   struct stat title_info{};
   if (!library || !title || lstat(title->path().c_str(), &title_info) || title_info.st_uid != geteuid() ||
@@ -698,8 +698,8 @@ PackageActionResult PreflightSettingsPublication(const SettingsPublicationOperat
     return Failure("publication-preflight-snapshot", "Live DXVK disagrees with the frozen before snapshot.");
   // A dxvk.conf Playden did not write (one the game ships) is kept in the frozen
   // before-snapshot, then written over or removed as the title's contract requires.
-  auto prefixes = library->OpenChild("prefixes", DirectoryPolicy::kPrivateTraversable);
-  auto bottle = prefixes ? prefixes->OpenChild("game", DirectoryPolicy::kPrivateTraversable) : std::nullopt;
+  auto prefixes = library->OpenChild("prefixes", DirectoryPolicy::kOpenTree);
+  auto bottle = prefixes ? prefixes->OpenChild("game", DirectoryPolicy::kOpenTree) : std::nullopt;
   auto registry = bottle ? ReadPublicationFile(*bottle, "user.reg", kMaxPublicationRegistryBackupBytes) : std::nullopt;
   if (!registry || !registry->present)
     return Failure("publication-preflight-registry", "Owned bottle registry is unavailable.");
@@ -822,19 +822,19 @@ Result<SettingsPublicationOperation> CaptureSettingsPublicationOperation(const R
   }
   auto metadata = SerializePublicationMetadata(m);
   if (!metadata) return fail("Completion metadata is invalid."); o.metadata_bytes = *metadata;
-  auto data = ManagedDirectory::Open(Map(prefix, r.data_root), DirectoryPolicy::kPrivateTraversable);
-  auto control = data ? data->OpenChild(".playden-control", DirectoryPolicy::kPrivate) : std::nullopt;
+  auto data = ManagedDirectory::Open(Map(prefix, r.data_root), DirectoryPolicy::kOpenTree);
+  auto control = data ? data->OpenChild(".playden-control", DirectoryPolicy::kOpenTree) : std::nullopt;
   auto held = [&] { return control && LeaseHeld(borrowed, control->path()); };
   if (!held()) return fail("Qualified publisher descriptor/private tree is unavailable.");
   auto receipt = ReadReceipt(control->path(), *control);
   if (!receipt.ok) return fail("Before receipt is corrupt or unavailable.");
-  auto library = data->OpenChild("library", DirectoryPolicy::kPrivateTraversable);
+  auto library = data->OpenChild("library", DirectoryPolicy::kOpenTree);
   if (!library) return fail("Private library is unavailable.");
   if (!receipt.absent) {
     PwTitlePublication parsed{}; PwTitlePublicationDescriptor descriptor{}; PwTitlePublicationContents contents{};
     const auto host = prefix.string(); PwTitlePublicationPlatform platform{};
     platform.host_root = host.empty() ? nullptr : host.c_str(); platform.owner_uid = geteuid(); char error[256]{};
-    auto profiles = library->OpenChild("profiles", DirectoryPolicy::kPrivate);
+    auto profiles = library->OpenChild("profiles", DirectoryPolicy::kOpenTree);
     auto prior = profiles ? ReadPublicationFile(*profiles, ".playden-publication", 32768) : std::nullopt;
     if (prior && prior->present && NamesMovedRoot(moved, r.title_id, prefix)) {
       auto checked = VerifyMovedPublication(r, *moved, receipt.bytes, prior->bytes, prefix, unowned);
@@ -865,8 +865,8 @@ Result<SettingsPublicationOperation> CaptureSettingsPublicationOperation(const R
   if (dxvk->present) {
     auto digest = HashArtifactBytes(dxvk->bytes); if (!digest) return fail("Before DXVK hashing failed."); o.dxvk_before.sha256 = *digest;
   }
-  auto prefixes = library->OpenChild("prefixes", DirectoryPolicy::kPrivateTraversable);
-  auto bottle = prefixes ? prefixes->OpenChild("game", DirectoryPolicy::kPrivateTraversable) : std::nullopt;
+  auto prefixes = library->OpenChild("prefixes", DirectoryPolicy::kOpenTree);
+  auto bottle = prefixes ? prefixes->OpenChild("game", DirectoryPolicy::kOpenTree) : std::nullopt;
   auto registry = bottle ? ReadPublicationFile(*bottle, "user.reg", kMaxPublicationRegistryBackupBytes) : std::nullopt;
   if (!registry || !registry->present) return fail("Before registry cannot be verified.");
   auto intended_registry = registry->bytes; std::string reason;

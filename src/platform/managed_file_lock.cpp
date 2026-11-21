@@ -31,7 +31,8 @@ int AcquireNative(int descriptor, LockMode mode) {
 
 std::optional<ManagedFileLock> ManagedFileLock::Acquire(
     const ManagedDirectory& directory, const std::string& filename, LockMode mode) {
-  if (directory.policy() != DirectoryPolicy::kPrivate ||
+  // The lock file itself is 0600; its folder may be open (a game's bottle, #868).
+  if ((directory.policy() != DirectoryPolicy::kPrivate && directory.policy() != DirectoryPolicy::kOpenTree) ||
       (mode != LockMode::kReader && mode != LockMode::kPublisher)) {
     errno = EINVAL;
     return std::nullopt;

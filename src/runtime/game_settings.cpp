@@ -4149,8 +4149,8 @@ static bool ApplyRegistryFileValues(const std::vector<RegistryValue>& values, co
     return false;
   };
   if (values.empty()) return true;
-  // The bottle may be 0711 (bottle-profile-shared).
-  auto directory = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kPrivateTraversable);
+  // The bottle is open when its title has publication-open-modes (#868), and FTP may have opened it: any mode.
+  auto directory = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kOpenTree);
   if (!directory) return fail("cannot read the bottle's " + hive);
   std::string original;
   constexpr std::size_t kMaxRegistryBytes = 32u * 1024u * 1024u;
@@ -4348,7 +4348,7 @@ bool PointBottleAtKitMono(const std::string& template_dir, const std::string& pr
   constexpr const char* kKey = "Software\\Wine\\Mono";
   constexpr const char* kName = "RuntimePath";
   constexpr std::size_t kMaxRegistryBytes = 32u * 1024u * 1024u;
-  auto bottle = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kPrivateTraversable);
+  auto bottle = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kOpenTree);
   if (!bottle) return errno == ENOENT ? true : fail("cannot open the bottle");
   std::string bottle_reg;
   const auto state = ReadRegularAt(*bottle, "user.reg", kMaxRegistryBytes, &bottle_reg, nullptr, true);
@@ -4378,7 +4378,7 @@ bool RaiseVcRuntimeVersion(const std::string& prefix_dir, std::int64_t unix_time
   };
   *changed = false;
   constexpr std::size_t kMaxRegistryBytes = 32u * 1024u * 1024u;
-  auto bottle = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kPrivateTraversable);
+  auto bottle = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kOpenTree);
   if (!bottle) return errno == ENOENT ? true : fail("cannot open the bottle");
   std::string system_reg;
   const auto state = ReadRegularAt(*bottle, "system.reg", kMaxRegistryBytes, &system_reg, nullptr, true);
@@ -4487,7 +4487,7 @@ Ue3EulaResult AcceptUe3Eula(const std::string& game_root, const std::vector<std:
                                           {"Software\\Wow6432Node\\" + key, "EULAAccepted", "dword:00000001"}};
   std::string before, reason;
   {
-    auto directory = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kPrivateTraversable);
+    auto directory = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kOpenTree);
     if (directory) ReadRegularAt(*directory, "system.reg", 32u * 1024u * 1024u, &before, nullptr, true);
   }
   auto intended = before;
@@ -4529,7 +4529,6 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.shared_sections = has(kKitSharedSections);
   kit.title_any_id = has(kKitTitleAnyId);
   kit.game_root_unowned = has(kKitGameRootUnowned);
-  kit.bottle_profile_shared = has(kKitBottleProfileShared);
   kit.publication_open_modes = has(kKitPublicationOpenModes);
   kit.opengl_zink = has(kKitOpenGLZink);
   kit.wine_mono = has(kKitWineMono);

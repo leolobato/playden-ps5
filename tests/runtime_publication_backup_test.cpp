@@ -63,8 +63,9 @@ int main() {
   fs::create_directory(root / binding.filename);
   CHECK(LoadPublicationRegistryBackup(root, transaction, binding).state == PublicationRecoveryState::kCorrupt);
   fs::remove(root / binding.filename);
-  CHECK(chmod(root.c_str(), 0755) == 0);
-  CHECK(LoadPublicationRegistryBackup(root, transaction, binding).state == PublicationRecoveryState::kUnavailable);
+  // A control folder opened to FTP (an open bottle, #868) is still the app user's: the backup's absence is read.
+  CHECK(chmod(root.c_str(), 0777) == 0);
+  CHECK(LoadPublicationRegistryBackup(root, transaction, binding).state == PublicationRecoveryState::kAbsent);
   CHECK(chmod(root.c_str(), 0700) == 0);
   CHECK(LoadPublicationRegistryBackup(root / "missing", transaction, binding).state == PublicationRecoveryState::kUnavailable);
   fs::create_directory_symlink(root, root / "root-alias");

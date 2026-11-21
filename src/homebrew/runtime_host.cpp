@@ -3237,6 +3237,21 @@ void RuntimeHost::OpenGameFolders(const Composition& c, const rt::RuntimeInstall
 }
 
 void RuntimeHost::SettleBottle(Composition& c, const rt::RuntimeInstall& record, const char* when) {
+  // The publication lock, held through the mode changes: a title that runs holds it shared, and one that starts
+  // meanwhile waits for it, so its start check never sees its folders change. A bottle not published yet has none.
+  std::optional<platform::ManagedFileLock> lease;
+  {
+    const auto control_path = HostPath(record.data_root) / ".playden-control";
+    auto control = platform::ManagedDirectory::Open(control_path, platform::DirectoryPolicy::kOpenTree);
+    struct stat lock{};
+    if (control && control->InspectChild("publication.lock", &lock)) {
+      lease = platform::ManagedFileLock::Acquire(*control, "publication.lock", platform::LockMode::kPublisher);
+      if (!lease) {
+        Log(std::string("bottle modes ") + when + " install=" + record.install_id + " skipped: publication lock held");
+        return;
+      }
+    }
+  }
   const auto settled = c.installer->SettleBottleModes(record);
   if (settled.state != rt::PackageActionState::kComplete)
     Log(std::string("bottle modes ") + when + " install=" + record.install_id + " code=" + settled.code + " " +
@@ -3342,6 +3357,10 @@ std::string RuntimeHost::RepublishSettings(Composition& c, const rt::RuntimeInst
   }
   auto refused = PublishSavedSettings(c, record, published, steam_account_known, prepare_again, code, force, false,
                                       setup_program);
+  // The publication makes its folders (control, profiles, input) 0700: an open bottle's are opened once.
+  if (refused.empty() && c.installer->OpensBottle(record) && rt::BottleNeedsOpening(HostPath(record.data_root)) &&
+      c.coordinator->Activity(record.title_id) == rt::NativeActivity::kStopped)
+    SettleBottle(c, record, "publish");
   if (refused.empty() || !upgrade_only) return refused;
   Log("settings update app=" + std::to_string(record.runtime_number) + " unowned upgrade deferred, owned publication kept: " +
       refused);
@@ -3704,7 +3723,7 @@ bool RuntimeHost::MoveGames(Composition& c, std::string* error) {
     }
     if (!present) continue;
     const auto control_path = HostPath(record.data_root) / ".playden-control";
-    auto control = platform::ManagedDirectory::Open(control_path, platform::DirectoryPolicy::kPrivate);
+    auto control = platform::ManagedDirectory::Open(control_path, platform::DirectoryPolicy::kOpenTree);
     auto lease = control ? platform::ManagedFileLock::Acquire(*control, "publication.lock", platform::LockMode::kPublisher)
                          : std::nullopt;
     if (!lease) return postpone("the publication lock for " + record.title_id + " is unavailable or held");
@@ -3921,7 +3940,7 @@ RuntimeRelocationResult RuntimeHost::RunRelocate(Composition& c, const RuntimeRe
     // As the 0.6 games move: the lease first, then the title's activity, both held through the
     // move and the record write.
     const auto control_path = HostPath(record.data_root) / ".playden-control";
-    auto control = platform::ManagedDirectory::Open(control_path, platform::DirectoryPolicy::kPrivate);
+    auto control = platform::ManagedDirectory::Open(control_path, platform::DirectoryPolicy::kOpenTree);
     auto lease = control ? platform::ManagedFileLock::Acquire(*control, "publication.lock", platform::LockMode::kPublisher)
                          : std::nullopt;
     if (!lease) {
@@ -4007,12 +4026,16 @@ RuntimeRelocationResult RuntimeHost::RunRelocate(Composition& c, const RuntimeRe
 // Fresh facts for one launch, from the package layer, the bottle's start check
 // and the console's inventory and activity. Runs on the worker; the application
 // thread reuses the worker's latest result while it is fresh.
-// A bottle opened up over FTP (a recursive chmod) fails the title's start check and Playden's own:
-// its modes go back first. The title can't have started from it like that, but one that is running
+// A bottle opened up over FTP (a recursive chmod) fails an older title shell's start check: its modes go
+// back first. A title whose shell has publication-open-modes keeps its bottle open (#868): one that isn't
+// (made before, or put back for an older title) is opened, and Playden's publication files a recursive
+// chmod widened go back to 0600. The title can't have started from a refused bottle, but one that is running
 // or suspended (a chmod while it played) keeps its bottle as it is: a mode change reads as ESTALE there.
-void RuntimeHost::HealBottle(Composition& c, const std::string& data_root, const std::string& title_id) {
+void RuntimeHost::HealBottle(Composition& c, const std::string& data_root, const std::string& title_id,
+                             const rt::RuntimeInstall* record) {
   const auto bottle = HostPath(data_root);
-  if (!rt::BottleTooOpen(bottle)) return;
+  const bool open = record && c.installer->OpensBottle(*record);
+  if (open ? !rt::BottleNeedsOpening(bottle) : !rt::BottleTooOpen(bottle)) return;
   if (!title_id.empty()) {
     const auto activity = c.coordinator->Activity(title_id);
     if (activity != rt::NativeActivity::kStopped) {
@@ -4021,6 +4044,14 @@ void RuntimeHost::HealBottle(Composition& c, const std::string& data_root, const
       return;
     }
   }
+  if (open) {
+    // The hives not while a settings publication is pending: its recovery compares their mode with the one it froze.
+    const auto files = rt::TightenBottleFiles(bottle, [this](const std::string& line) { Log(line); }, !record->journal);
+    Log("bottle heal open path=" + data_root + " files=" + std::to_string(files.tightened) +
+        " left=" + std::to_string(files.foreign) + " failed=" + std::to_string(files.failed));
+    SettleBottle(c, *record, "heal");
+    return;
+  }
   const auto healed = rt::TightenBottleModes(bottle, [this](const std::string& line) { Log(line); });
   Log("bottle heal path=" + data_root + " tightened=" + std::to_string(healed.tightened) +
       " left=" + std::to_string(healed.foreign) + " failed=" + std::to_string(healed.failed));
@@ -4028,7 +4059,7 @@ void RuntimeHost::HealBottle(Composition& c, const std::string& data_root, const
 
 rt::LaunchPreflight RuntimeHost::Preflight(Composition& c, const rt::RuntimeInstall& record) {
   if (!pthread_equal(pthread_self(), application_thread_)) {
-    HealBottle(c, record.data_root, record.title_id);
+    HealBottle(c, record.data_root, record.title_id, &record);
     rt::LaunchPreflight p;
     p.capability_available = c.kit.has_value() && static_cast<bool>(config_.launch_title);
     const auto root = config_.host_namespace_prefix.empty()
@@ -4171,7 +4202,7 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
       }
       // A bottle opened over FTP is given its modes back before the settings below read it (#568): the
       // launch preflight heals it too, but only after them.
-      if (idle) HealBottle(c, record->data_root, record->title_id);
+      if (idle) HealBottle(c, record->data_root, record->title_id, &*record);
       // A publisher game: the status its last session left first (an expired sign-in asks for a
       // new one), then its files, then the credential, the last of them.
       if (idle) ApplyPublisherStatus(c, *record);
@@ -4300,10 +4331,11 @@ bool RuntimeHost::PollLaunch(Composition& c) {
     if (handoff_ms > 0)
       if (const auto now = config_.now_ms(); now >= handoff_ms) played_seconds = (now - handoff_ms) / 1000;
     const auto finished = c.launch->Finish();
-    // The saves the game just wrote are Wine's (0600): opened to FTP again.
-    if (finished.accepted && c.kit && rt::KitCapabilitiesFromManifest(c.kit->capabilities, true).bottle_profile_shared)
+    // The folders and saves the game just made are Wine's (0700/0600): an open bottle is opened to FTP again.
+    if (finished.accepted)
       if (const auto record = c.records.Find(snapshot.install_id);
-          record && c.coordinator->Activity(record->title_id) == rt::NativeActivity::kStopped)
+          record && c.installer->OpensBottle(*record) &&
+          c.coordinator->Activity(record->title_id) == rt::NativeActivity::kStopped)
         SettleBottle(c, *record, "session");
     // A title that failed before the game loaded the bridge leaves its Steam session behind. A kept one stays, but not
     // what the Play asked of the bridge once.
@@ -5163,7 +5195,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
     if (record.runtime_number == request.runtime_number) existing = record;
   HealBottle(c, config_.package_paths.console_data_root + "/playden/games/" +
                     (existing ? existing->install_id : ToInstallId(GameOf(request.game, request.runtime_number))),
-             existing ? existing->title_id : std::string());
+             existing ? existing->title_id : std::string(), existing ? &*existing : nullptr);
   // A title being removed because its game moved drives is finished here; any other removal by Uninstall.
   const bool moving = existing && existing->state == rt::PreparationState::kRemoving && existing->journal &&
                       existing->journal->operation == "remove-move";
@@ -6001,7 +6033,7 @@ std::string RuntimeHost::RunMaintenance(Composition& c, std::uint32_t app, Runti
     return refused;
   }
   // The game is stopped: a bottle opened over FTP gets its modes back before anything reads it (#568).
-  HealBottle(c, record->data_root, record->title_id);
+  HealBottle(c, record->data_root, record->title_id, &*record);
   switch (action) {
     case RuntimeMaintenance::kApplySettings: {
       bool published = false;
@@ -6951,9 +6983,8 @@ std::string RuntimeHost::RestoreKeptSaves(Composition& c, std::uint32_t app) {
       Log("restore kept saves failed app=" + std::to_string(app) + " " + reason);
       return "The saves kept from the previous install could not be brought back: " + reason;
     }
-    // The restored profile is opened to FTP like the rest (bottle-profile-shared); the copy is private.
-    if (c.kit && rt::KitCapabilitiesFromManifest(c.kit->capabilities, true).bottle_profile_shared)
-      SettleBottle(c, *record, "restore");
+    // The restored saves are opened to FTP like the rest of an open bottle.
+    if (c.installer->OpensBottle(*record)) SettleBottle(c, *record, "restore");
   }
   {
     const auto marker = bottle / (unreadable.empty() ? kRestoredMarker : kPartlyRestoredMarker);
@@ -7766,7 +7797,6 @@ bool RuntimeHost::RunServices() {
       // required only where a plan is built from it (RecipeOf).
       installer->AcceptRecipes(CommunityRecipeNamesGame);
       const auto capabilities = rt::KitCapabilitiesFromManifest(c.kit->capabilities, true);
-      installer->ShareBottleProfiles(capabilities.bottle_profile_shared);
       installer->AdmitOpenModes(capabilities.publication_open_modes);
       c.filesystem_installer = installer.get();
       c.installer = std::move(installer);
@@ -7927,16 +7957,6 @@ bool RuntimeHost::RunServices() {
         if (changed) PublishInstalls(c);
       }
       step("rebind");
-      // Games started from Home (and Playden's, which close Playden) left Wine's 0600 saves: with
-      // bottle-profile-shared they are opened to FTP again once their title is stopped.
-      if (c.kit && rt::KitCapabilitiesFromManifest(c.kit->capabilities, true).bottle_profile_shared) {
-        const auto began = std::chrono::steady_clock::now();
-        std::size_t settled = 0;
-        for (const auto& record : c.repository.Snapshot())
-          if (MaintenanceRefusal(c, record).empty()) { SettleBottle(c, record, "startup"); ++settled; }
-        Log("startup bottle profiles settled=" + std::to_string(settled) + " ms=" +
-            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count()));
-      }
       // Bottles from a kit with another folder name point Wine Mono at it: games started from Home find Mono only
       // once they name this kit's. Busy titles wait for Play.
       if (c.kit)
@@ -8040,6 +8060,25 @@ bool RuntimeHost::RunServices() {
   if (composition && composition->repository.Loaded()) {
     const auto scan_hold = hold();
     if (ScanPlays(*composition)) CommitPlayHistory();
+  }
+  // Games started from Home (and Playden's, which close Playden) left Wine's 0700 folders and 0600 saves: an open
+  // bottle (#868) is opened to FTP again once its title is stopped. A walk of the bottle's folders, so only for one
+  // that isn't open yet or where a session ran since the last one, and after the first frame, like the logs.
+  if (composition && composition->repository.Loaded() && composition->installer) {
+    const auto open_hold = hold();
+    auto& c = *composition;
+    const auto began = std::chrono::steady_clock::now();
+    std::size_t settled = 0;
+    for (const auto& record : c.repository.Snapshot())
+      if (c.installer->OpensBottle(record) &&
+          (rt::BottleNeedsOpening(HostPath(record.data_root)) || rt::BottleSessionsSinceOpened(HostPath(record.data_root))) &&
+          MaintenanceRefusal(c, record).empty()) {
+        SettleBottle(c, record, "startup");
+        ++settled;
+      }
+    if (settled)
+      Log("startup bottles opened=" + std::to_string(settled) + " ms=" +
+          std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count()));
   }
   bool reload = false;
   for (;;) {

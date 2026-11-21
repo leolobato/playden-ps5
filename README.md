@@ -294,21 +294,26 @@ Playden's web page uses plain HTTP, so use it only on a network you trust.
 
 For Half-Life 2 that is `steam-220`. Look in `AppData/Roaming`, `AppData/Local`, `Documents` and `Saved Games`.
 
-The runtime kit keeps the folder of a game that has a PS5 title private, so FTP answers with a permission error there.
-Use the web page above, or Maintenance › Back up saves: backups are in
-`/data/playden/games/steam-<Steam app ID>.saves/` and FTP can read and delete them.
+FTP can read the saves there and delete the whole folder. A Steam sign-in in `AppData/Local/Steam` stays a file only
+Playden can read, but you can still delete it.
 
-- **Don't change the modes of a game's folder** in `/data/playden/games` (a recursive `chmod`). If you did and Play
-  fails, use Maintenance › Repair: Playden puts the modes back
+A game that uses an older version of the runtime kit keeps its folder private, so FTP answers with a permission error
+there. Update it on the Runtimes tab of Manage installed games, or use the web page above, or Maintenance › Back up
+saves: backups are in `/data/playden/games/steam-<Steam app ID>.saves/` and FTP can read and delete them.
+
+- **A recursive `chmod` of a game's folder** in `/data/playden/games` is fine. If Play fails after one, use
+  Maintenance › Repair: Playden puts back the modes the game needs
   ([#568](https://github.com/leolobato/playden-ps5/issues/568)).
 - **Files you upload belong to root**, so the game may not be able to use them. Upload saves through the web page
   instead ([#569](https://github.com/leolobato/playden-ps5/issues/569)).
 
 ## Where Playden keeps data
 
-Everything Playden makes outside a game's private folder can be read and deleted over FTP or a file manager: its
-folders are `777` and its files `666`. Your Steam, GOG and web access sign-ins are files only Playden can read, but you
-can still delete them.
+Everything Playden makes can be deleted over FTP or a file manager, and read except the files below: its folders are
+`777` and its files `666`. Your Steam, GOG and web access sign-ins are files only Playden can read, but you can still
+delete them. In a game's folder, the saves can be read; the files Playden and the runtime kit put there to start the
+game can't, but can be deleted. A game that uses an older version of the runtime kit keeps its folder private until
+you update it.
 
 | Folder | What is in it |
 |---|---|

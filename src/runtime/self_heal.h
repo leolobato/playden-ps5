@@ -2,8 +2,9 @@
 #pragma once
 // Startup repairs of modes on what Playden owns. Playden's own data is open (#868): folders 0777 and
 // files 0666, so the console owner can delete it over FTP (root has no permission bypass on /data).
-// OpenPlaydenModes only adds bits. The bottles of live games and the runtime kit still need exact
-// modes (their title shell and kit admission check them), and are given those back. Entries of other
+// OpenPlaydenModes only adds bits. The runtime kit, and the bottles of games whose title shell predates
+// publication-open-modes, still need exact modes (kit admission and that shell check them), and are given
+// those back; an open bottle is opened by the package installer (SettleBottleModes). Entries of other
 // owners and files with other links are left alone, links are never followed, and every change goes
 // through a descriptor opened without following a link.
 #include "runtime/writable_folders.h"
@@ -39,8 +40,9 @@ struct OpenModesResult {
 OpenModesResult OpenPlaydenModes(const std::filesystem::path& data_root, const std::filesystem::path& homebrew_root,
                                  const std::function<void(const std::string&)>& log);
 
-// Whether a bottle (/data/playden/games/<install id>) looks opened up: its root, library or
-// control folder is neither 0700 nor 0711. One lstat each; a missing bottle is not.
+// Whether a bottle (/data/playden/games/<install id>) looks opened up: one of the folders its title's start
+// check wants owner-only (root, library, profiles, input, prefixes, the prefix, control) is neither 0700 nor
+// 0711. One lstat each; a missing bottle is not.
 bool BottleTooOpen(const std::filesystem::path& data_root);
 
 // The bottle at data_root: the folders the title's start check wants owner-only back to 0700 (0711
@@ -48,6 +50,17 @@ bool BottleTooOpen(const std::filesystem::path& data_root);
 // and title metadata back to 0600. drive_c is not entered. Only while the game's title is stopped.
 SelfHealResult TightenBottleModes(const std::filesystem::path& data_root,
                                   const std::function<void(const std::string&)>& log);
+
+// An open bottle (its title shell has publication-open-modes, #868) that is not open: its root, library or
+// control folder is not 0777 (a bottle made before, or put back to 0700 for an older title), or its publication
+// lock is not 0600 (a recursive chmod over FTP, which Playden's publication files don't admit). One lstat each.
+bool BottleNeedsOpening(const std::filesystem::path& data_root);
+
+// TightenBottleModes for an open bottle: only the files (Playden's publication files, the registry hives, the
+// session records) go back to 0600, the folders keep their modes. hives false: the registry hives are left (a
+// pending settings publication compares their mode with the one it froze). Only while the game's title is stopped.
+SelfHealResult TightenBottleFiles(const std::filesystem::path& data_root,
+                                  const std::function<void(const std::string&)>& log, bool hives = true);
 
 // Files of the kit at kit_root whose mode has more bits than its manifest.json gives them get
 // the manifest's mode, as root (the kit is often root's). The manifest's hash is checked when the

@@ -909,8 +909,7 @@ void FilesystemPackageInstaller::RecordInstalledTitleArt(const RuntimeInstall& r
   const auto param = operations_.hash_file(paths.title / kTitleMetadataFiles[0]);
   std::string detail;
   bool ok = icon && param && !path.empty() &&
-            EnsurePrivateDirectories(paths_.host_data_root, paths.game, path.parent_path(), &detail,
-                                     BottleTraversal(paths, ProfileShared(record, paths)));
+            EnsureBottleDirectories(record, paths, path.parent_path(), &detail);
   if (ok) {
     const auto temporary = path.parent_path() / (std::string(kInstalledTitleArt) + ".new");
     ::unlink(temporary.c_str());
@@ -939,8 +938,7 @@ PackageActionResult FilesystemPackageInstaller::AdoptCustomTitleArt(const Runtim
   };
   const auto ensure = [&](const fs::path& folder) {
     std::string detail;
-    return EnsurePrivateDirectories(paths_.host_data_root, paths->game, folder, &detail,
-                                    BottleTraversal(*paths, ProfileShared(record, *paths)));
+    return EnsureBottleDirectories(record, *paths, folder, &detail);
   };
   std::vector<std::string> adopted;
   std::set<std::string> shell_files;
@@ -1041,8 +1039,7 @@ PackageActionResult FilesystemPackageInstaller::ImportCustomTitleArt(const Runti
   if (!IsDirectoryNoSymlink(from / "custom") || IsDirectoryNoSymlink(root / "custom")) return Complete();
   std::string detail;
   const auto ensure = [&](const fs::path& folder) {
-    return EnsurePrivateDirectories(paths_.host_data_root, paths->game, folder, &detail,
-                                    BottleTraversal(*paths, ProfileShared(record, *paths)));
+    return EnsureBottleDirectories(record, *paths, folder, &detail);
   };
   const auto failed = [&](const std::string& what) {
     if (operations_.log) operations_.log("title art import failed install=" + record.install_id + " " + what + " " + detail);
@@ -1094,8 +1091,7 @@ PackageActionResult FilesystemPackageInstaller::SeedCustomTitleArt(
   // Into custom.seed first, renamed into place at the end: a stop part way leaves no custom/ to stand for the whole.
   const auto staging = root / "custom.seed";
   if (!RemoveTreeNoFollow(staging.string())) return failed("folder");
-  if (!EnsurePrivateDirectories(paths_.host_data_root, paths->game, staging / "sce_sys", &detail,
-                                BottleTraversal(*paths, ProfileShared(record, *paths))))
+  if (!EnsureBottleDirectories(record, *paths, staging / "sce_sys", &detail))
     return failed("folder");
   std::string names;
   for (const auto& [name, bytes] : files) {
@@ -1163,8 +1159,7 @@ PackageActionResult FilesystemPackageInstaller::WriteTitleMetadata(const Runtime
     return Failed("title-metadata", "the title parameters do not name this title");
   const auto root = TitleMetadataPath(record, {});
   std::string detail;
-  if (!EnsurePrivateDirectories(paths_.host_data_root, paths->game, root / "sce_sys", &detail,
-                                BottleTraversal(*paths, ProfileShared(record, *paths))))
+  if (!EnsureBottleDirectories(record, *paths, root / "sce_sys", &detail))
     return Failed("private-directory", detail);
   // Each file is written beside its final name, synced, then moved over it.
   const auto replace = [&](const fs::path& path, const std::string& bytes) {
@@ -1277,13 +1272,8 @@ bool FilesystemPackageInstaller::TitleFilesMatch(
   return true;
 }
 
-bool FilesystemPackageInstaller::ProfileShared(const RuntimeInstall& record, const ResolvedPaths& paths) const {
-  // A title keeps the shell it was made with after a kit swap; an older shell admits only 0700.
-  return profile_shared_ && MarkerEquals(paths.title / kTitleOwner, OwnerMarker(record, kit_, "title"));
-}
-
 bool FilesystemPackageInstaller::OpenModes(const RuntimeInstall& record, const ResolvedPaths& paths) const {
-  // As ProfileShared: a title keeps the shell it was made with after a kit swap, and an older shell wants 0700/0600.
+  // A title keeps the shell it was made with after a kit swap, and an older shell wants 0700/0600.
   return open_modes_ && MarkerEquals(paths.title / kTitleOwner, OwnerMarker(record, kit_, "title"));
 }
 
@@ -1292,13 +1282,28 @@ bool FilesystemPackageInstaller::OpenModes(const RuntimeInstall& record) const {
   return paths && OpenModes(record, *paths);
 }
 
-PrivateTraversal FilesystemPackageInstaller::BottleTraversal(const ResolvedPaths& paths, bool shared) const {
-  return {{paths.game, paths.library, paths.library / "prefixes", paths.bottle}, static_cast<mode_t>(shared ? 0711 : 0700)};
+PrivateTraversal FilesystemPackageInstaller::BottleTraversal(const ResolvedPaths& paths) const {
+  return {{paths.game, paths.library, paths.library / "prefixes", paths.bottle}, 0700};
+}
+
+bool FilesystemPackageInstaller::BottleTreeAdmitted(const ResolvedPaths& paths, const fs::path& directory) const {
+  // With the capability a bottle may be open whatever its title (one made from an older kit is put back to 0700 by
+  // HealBottle before it starts); that title's start check, which Playden runs too, still has the last word.
+  return open_modes_ ? IsOwnedDirectoryTree(paths.game, directory)
+                     : IsPrivateDirectoryTree(paths.game, directory, BottleTraversal(paths));
+}
+
+bool FilesystemPackageInstaller::EnsureBottleDirectories(const RuntimeInstall& record, const ResolvedPaths& paths,
+                                                         const fs::path& directory, std::string* detail) const {
+  if (!open_modes_)
+    return EnsurePrivateDirectories(paths_.host_data_root, paths.game, directory, detail, BottleTraversal(paths));
+  return EnsureOpenDirectories(paths_.host_data_root, paths.game, directory, detail,
+                               OpenModes(record, paths) ? 0777 : 0700);
 }
 
 bool FilesystemPackageInstaller::BottleOwned(
     const RuntimeInstall& record, const ResolvedPaths& paths) const {
-  return IsPrivateDirectoryTree(paths.game, paths.bottle, BottleTraversal(paths)) &&
+  return BottleTreeAdmitted(paths, paths.bottle) &&
          MarkerIdentifies(paths.bottle / kTemplateOwner, record, "template") &&
          operations_.validate_bottle(paths.bottle);
 }
@@ -1378,18 +1383,27 @@ std::string FilesystemPackageInstaller::QuickAdmission(const RuntimeInstall& rec
 PackageActionResult FilesystemPackageInstaller::RepairBottle(const RuntimeInstall& record) {
   const auto paths = Resolve(record);
   if (!paths) return Failed("kit-invalid", "record or verified kit view is invalid");
-  if (!IsPrivateDirectoryTree(paths->game, paths->bottle, BottleTraversal(*paths)))
+  if (!BottleTreeAdmitted(*paths, paths->bottle))
     return Failed("repair-ownership", "the bottle is not this install's private directory");
   // Wine saves registry hives with the process umask; earlier per-game titles
   // ran with umask 0 and left them 0666. Only app-owned regular files change.
+  // The change goes through a descriptor opened without following a link and checked to be the hive: an open
+  // bottle's folder can be written over FTP between a look and a chmod by path.
   for (const char* name : {"user.reg", "system.reg", "userdef.reg"}) {
     const auto path = paths->bottle / name;
     struct stat info{};
     if (::lstat(path.c_str(), &info) != 0) continue;
     if (!S_ISREG(info.st_mode) || info.st_uid != ::geteuid() || info.st_nlink != 1)
       return Failed("repair-ownership", std::string(name) + " is not an app-owned regular file");
-    const auto mode = info.st_mode & 07777;
-    if (mode != 0600 && (::chmod(path.c_str(), 0600) != 0 || !SyncPath(path, false)))
+    if ((info.st_mode & 07777) == 0600) continue;
+    const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    struct stat opened{};
+    const bool same = fd >= 0 && ::fstat(fd, &opened) == 0 && S_ISREG(opened.st_mode) && opened.st_dev == info.st_dev &&
+                      opened.st_ino == info.st_ino && opened.st_uid == ::geteuid() && opened.st_nlink == 1;
+    const bool changed = same && ::fchmod(fd, 0600) == 0;
+    if (fd >= 0) ::close(fd);
+    if (!same) return Failed("repair-ownership", std::string(name) + " changed while it was repaired");
+    if (!changed || !SyncPath(path, false))
       return Failed("repair-mode", std::string(name) + " permissions could not be restored");
   }
   AddMissingBottleFolders(record, *paths);
@@ -1398,10 +1412,10 @@ PackageActionResult FilesystemPackageInstaller::RepairBottle(const RuntimeInstal
 
 void FilesystemPackageInstaller::AddMissingBottleFolders(const RuntimeInstall& record, const ResolvedPaths& paths) {
   // A bottle made before a folder joined the lists gets it here. Folders already there are left as they are, whatever
-  // their mode (FTP or a kit downgrade may have opened them), and the missing ones below are made: the profile's
-  // 0777 with bottle-profile-shared (SettleBottleModes then opens what is in them, as Prepare does), the rest 0700.
-  // One that can't be made is logged, never a failure of the repair.
-  const bool shared = ProfileShared(record, paths);
+  // their mode (FTP or a kit downgrade may have opened them), and the missing ones below are made: 0777 in an open
+  // bottle (SettleBottleModes then opens what is in them), else 0700. One that can't be made is logged, never a
+  // failure of the repair.
+  const mode_t mode = OpenModes(record, paths) ? 0777 : 0700;
   const auto drive = paths.bottle / "drive_c";
   std::vector<std::string> added, failed;
   const auto ensure = [&](const fs::path& relative, mode_t mode) {
@@ -1419,8 +1433,8 @@ void FilesystemPackageInstaller::AddMissingBottleFolders(const RuntimeInstall& r
     }
     added.push_back(relative.string());
   };
-  for (const char* folder : kDriveFolders) ensure(folder, 0700);
-  for (const char* folder : kProfileFolders) ensure(fs::path("users/prospero") / folder, shared ? 0777 : 0700);
+  for (const char* folder : kDriveFolders) ensure(folder, mode);
+  for (const char* folder : kProfileFolders) ensure(fs::path("users/prospero") / folder, mode);
   if (operations_.log && (!added.empty() || !failed.empty())) {
     std::string line = "bottle folders install=" + record.install_id;
     for (const auto& folder : added) line += " added=" + folder;
@@ -1466,7 +1480,7 @@ void FilesystemPackageInstaller::AddProfileFolders(const RuntimeInstall& record,
   const auto user = paths->bottle / "drive_c/users/prospero";
   struct stat info{};
   if (::lstat(user.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return;  // the bottle is not made yet
-  const mode_t mode = ProfileShared(record, *paths) ? 0777 : 0700;
+  const mode_t mode = OpenModes(record, *paths) ? 0777 : 0700;
   for (const auto& folder : folders) {
     bool made = false, ok = IsProfileSaveFolder(folder);
     auto current = ok ? platform::ManagedDirectory::Open(user, platform::DirectoryPolicy::kApprovedTree) : std::nullopt;
@@ -1508,30 +1522,54 @@ void FilesystemPackageInstaller::AddProfileFolders(const RuntimeInstall& record,
 PackageActionResult FilesystemPackageInstaller::SettleBottleModes(const RuntimeInstall& record) {
   const auto paths = Resolve(record);
   if (!paths) return Failed("kit-invalid", "record or verified kit view is invalid");
-  const bool shared = ProfileShared(record, *paths);
-  const auto traversal = BottleTraversal(*paths, shared);
-  if (shared && !SetTraversableMode(paths->game.parent_path(), 0711))
-    return Failed("repair-mode", "the games profile parent could not be opened");
+  if (OpenModes(record, *paths)) return OpenBottle(record, *paths);
+  const auto traversal = BottleTraversal(*paths);
   if (!IsPrivateDirectoryTree(paths->game, paths->bottle, traversal))
     return Failed("repair-ownership", "the bottle is not this install's private directory");
-  // A kit without bottle-profile-shared admits only 0700 there (after a kit downgrade too), and
-  // so does a title made by an older kit until Update refreshes it. The profile itself is left
-  // as it is: no kit checks below the bottle.
+  // A title made by an older kit admits only 0700 there until Update refreshes it; 0711 (a bottle-profile-shared
+  // development kit's) goes back. The profile itself is left as it is: no kit checks below the bottle.
   auto folders = traversal.folders;
   folders.push_back(paths->bottle / "drive_c");
   folders.push_back(paths->bottle / "drive_c/users");
   for (const auto& folder : folders)
-    if (!SetTraversableMode(folder, traversal.created_mode))
+    if (!SetTraversableMode(folder, 0700))
       return Failed("repair-mode", "the permissions of " + folder.string() + " could not be set: " + strerror(errno));
-  // The profile only matters to FTP: what can't be opened is logged, never a failure of the game.
-  SharedTreeResult opened;
-  if (shared) opened = OpenTreeToEveryone(paths->bottle / "drive_c/users/prospero", {operations_.private_profile_paths, {}});
   if (operations_.log)
-    operations_.log("bottle modes install=" + record.install_id + " way=" + (shared ? "0711" : "0700") +
-                    (shared ? " profile_opened=" + std::to_string(opened.changed) + " skipped=" +
-                                  std::to_string(opened.skipped) + " linked=" + std::to_string(opened.linked) +
-                                  " walked=" + std::to_string(opened.ok) + " truncated=" + std::to_string(opened.truncated)
-                            : std::string(profile_shared_ ? " title-not-current" : "") + " profile=unchanged"));
+    operations_.log("bottle modes install=" + record.install_id + " way=0700" +
+                    (open_modes_ ? " title-not-current" : "") + " profile=unchanged");
+  return Complete();
+}
+
+PackageActionResult FilesystemPackageInstaller::OpenBottle(const RuntimeInstall& record, const ResolvedPaths& paths) {
+  if (!IsOwnedDirectoryTree(paths.game, paths.bottle))
+    return Failed("repair-ownership", "the bottle is not this install's directory");
+  // Every folder of the bottle 0777: FTP runs as root, which has no permission bypass on /data, and deleting needs
+  // write permission on the folder. Wine (umask 077) makes 0700 folders and 0600 files wherever a game writes.
+  // Files are opened only where Windows programs keep their saves and settings (the user profile and
+  // ProgramData), so a walk doesn't visit the thousands of files of C:\windows. Playden's publication files keep
+  // their 0600 (their folders decide what FTP deletes), and launcher sign-ins stay 0600 in 0777 folders.
+  const auto drive = paths.bottle.lexically_relative(paths.game) / "drive_c";
+  const auto profile = drive / "users/prospero";
+  const auto within = [](const fs::path& relative, const fs::path& folder) {
+    return std::mismatch(folder.begin(), folder.end(), relative.begin(), relative.end()).first == folder.end();
+  };
+  SharedTreeOptions options;
+  options.private_paths.clear();
+  for (const auto& path : operations_.private_profile_paths) options.private_paths.push_back(profile / path);
+  options.open_private_folders = true;
+  options.visit_file = [&](const fs::path& relative) {
+    return within(relative, drive / "users") || within(relative, drive / "ProgramData");
+  };
+  const auto started = PartTimes::Clock::now();
+  const auto opened = OpenTreeToEveryone(paths.game, options);
+  // The startup pass looks again only once a session has run since, or after a walk that didn't finish.
+  if (opened.ok && !opened.truncated) MarkBottleOpened(paths.game);
+  // Only FTP is held back by what can't be opened: logged, never a failure of the game.
+  if (operations_.log)
+    operations_.log("bottle modes install=" + record.install_id + " open opened=" + std::to_string(opened.changed) +
+                    " skipped=" + std::to_string(opened.skipped) + " linked=" + std::to_string(opened.linked) +
+                    " walked=" + std::to_string(opened.ok) + " truncated=" + std::to_string(opened.truncated) + " " +
+                    PartTimes{}.Summary(started));
   return Complete();
 }
 
@@ -1570,9 +1608,13 @@ bool FilesystemPackageInstaller::PublicationMatches(
     PwTitlePublicationLease* lease;
     ~LeaseScope() { pw_title_publication_close(lease); }
   } held{&lease};
-  auto control = platform::ManagedDirectory::Open(paths.game / ".playden-control", platform::DirectoryPolicy::kPrivate);
+  // An open bottle's control folder may have any mode, and FTP may have opened the receipt too: its owner,
+  // single link and content decide (the title's own start check ran above, with its shell's modes).
+  auto control = platform::ManagedDirectory::Open(
+      paths.game / ".playden-control", open_modes_ ? platform::DirectoryPolicy::kOpenTree : platform::DirectoryPolicy::kPrivate);
   if (!control) return false;
-  const int fd = control->OpenRegularFile("publication-state.v1", true, 0600);
+  const int fd = open_modes_ ? control->OpenRegularFile("publication-state.v1", true)
+                             : control->OpenRegularFile("publication-state.v1", true, 0600);
   if (fd < 0) return false;
   struct stat before{}, after{}, named{};
   bool valid = ::fstat(fd, &before) == 0 && before.st_nlink == 1 && before.st_size > 0 &&
@@ -1812,16 +1854,12 @@ PackageActionResult FilesystemPackageInstaller::CopyMappings(
     if (!RemoveTreeNoFollow(staging.string()))
       return Failed("staging-cleanup", "owned incomplete staging could not be cleaned");
   }
-  // A bottle's staging tree is private to the app user (its title shell wants it so); its way to
-  // its user profile is 0711 with bottle-profile-shared. A title's staging tree is open (0777) so
-  // FTP can delete it (#868); title files keep their kit modes.
+  // A bottle's staging tree is private to the app user (an older title shell wants it so); an open
+  // bottle is opened once it is in place (SettleBottleModes, #868). A title's staging tree is open (0777)
+  // so FTP can delete it; title files keep their kit modes.
   const bool template_stage = stage_kind == "template";
-  const auto resolved = template_stage ? Resolve(record) : std::nullopt;
-  const bool shared_profile = resolved && ProfileShared(record, *resolved);
   PrivateTraversal staging_traversal;
-  if (template_stage)
-    staging_traversal = {{staging, staging / "drive_c", staging / "drive_c/users"},
-                         static_cast<mode_t>(shared_profile ? 0711 : 0700)};
+  if (template_stage) staging_traversal = {{staging, staging / "drive_c", staging / "drive_c/users"}, 0700};
   const fs::path profile_relative = "drive_c/users/prospero";
   {
     std::string detail;
@@ -1863,15 +1901,7 @@ PackageActionResult FilesystemPackageInstaller::CopyMappings(
     times.Add("dirs", since);
     since = PartTimes::Clock::now();
     const int input = ::open(source.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    // The user profile is open to FTP with bottle-profile-shared (the walk below opens its folders).
-    const fs::path relative(mapping.destination_relative);
-    const bool profile_file = shared_profile &&
-        std::mismatch(profile_relative.begin(), profile_relative.end(), relative.begin(), relative.end()).first ==
-            profile_relative.end();
-    const bool private_profile_file = profile_file &&
-        IsPrivateProfilePath(relative.lexically_relative(profile_relative), operations_.private_profile_paths);
-    const unsigned mode = private_profile_file ? 0600 : profile_file ? (0666 | (mapping.file->mode & 0111))
-                          : template_stage ? (0600 | (mapping.file->mode & 0100)) : mapping.file->mode;
+    const unsigned mode = template_stage ? (0600 | (mapping.file->mode & 0100)) : mapping.file->mode;
     const int output = ::open(destination.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode);
     if (input < 0 || output < 0) {
       if (input >= 0) ::close(input);
@@ -1929,36 +1959,12 @@ PackageActionResult FilesystemPackageInstaller::CopyMappings(
   // console. Without AppData/LocalLow, SHGetKnownFolderPath fails and Unity has no persistent
   // data path: Caves of Qud stops at startup and other Unity games save beside their program,
   // where Cloud saves cannot see them.
-  // With bottle-profile-shared the profile's folders are 0777 (FTP runs as root, which has no
-  // permission bypass) and anything the kit put there is opened up too.
   if (template_stage) {
     const fs::path user = staging / profile_relative;
-    if (shared_profile) {
-      std::string detail;
-      if (!EnsurePrivateDirectories(paths_.host_data_root, staging, user.parent_path(), &detail, staging_traversal))
-        return Failed("private-directory", detail);
-      CreateDirectoriesWithMode(user, 0777, error);
-      if (error) return Failed("private-directory", "cannot create the bottle's user profile: " + user.string());
-      for (const char* folder : kProfileFolders) {
-        auto current = platform::ManagedDirectory::Open(user, platform::DirectoryPolicy::kApprovedTree);
-        for (const auto& part : fs::path(folder)) {
-          auto next = current ? current->OpenChild(part.string(), platform::DirectoryPolicy::kApprovedTree, true, 0777)
-                              : std::nullopt;
-          if (!next || !next->Sync() || !current->Sync())
-            return Failed("private-directory", "cannot create profile folder " + (user / folder).string() + ": " +
-                                                   strerror(errno));
-          current = std::move(next);
-        }
-      }
-      if (!OpenTreeToEveryone(user, {operations_.private_profile_paths, {}}).ok)
-        return Failed("private-directory", "cannot open the bottle's user profile: " + user.string());
-    }
     for (const char* folder : kProfileFolders) {
-      if (!shared_profile) {
-        std::string detail;
-        if (!EnsurePrivateDirectories(paths_.host_data_root, staging, user / folder, &detail))
-          return Failed("private-directory", detail);
-      }
+      std::string detail;
+      if (!EnsurePrivateDirectories(paths_.host_data_root, staging, user / folder, &detail))
+        return Failed("private-directory", detail);
       for (auto directory = user / folder; directory != staging; directory = directory.parent_path())
         copied_directories.insert(directory);
     }
@@ -1995,11 +2001,11 @@ PackageActionResult FilesystemPackageInstaller::CopyMappings(
   if (stage_kind == "template") {
     std::string detail;
     const auto game = paths_.host_data_root / "playden/games" / record.install_id;
-    const PrivateTraversal parents{{game, game / "library", game / "library/prefixes"},
-                                   static_cast<mode_t>(shared_profile ? 0711 : 0700)};
-    if (shared_profile && !SetTraversableMode(game.parent_path(), 0711))
-      return Failed("repair-mode", "the games profile parent could not be opened");
-    if (!EnsurePrivateDirectories(paths_.host_data_root, game, final.parent_path(), &detail, parents))
+    const PrivateTraversal parents{{game, game / "library", game / "library/prefixes"}, 0700};
+    // The data root may be open already (the title metadata made it first).
+    const auto resolved = open_modes_ ? Resolve(record) : std::nullopt;
+    if (open_modes_ ? !resolved || !EnsureBottleDirectories(record, *resolved, final.parent_path(), &detail)
+                    : !EnsurePrivateDirectories(paths_.host_data_root, game, final.parent_path(), &detail, parents))
       return Failed("private-directory", detail);
   } else {
     CreateDirectoriesWithMode(final.parent_path(), 0777, error);
@@ -2288,7 +2294,7 @@ PackageActionResult FilesystemPackageInstaller::RefreshTitle(const RuntimeInstal
     return marker->substr(start, marker->find('\n', start) - start);
   };
   const auto title_digest = old_digest(title_marker);
-  if (!IsDirectoryNoSymlink(paths->title) || !IsPrivateDirectoryTree(paths->game, paths->bottle, BottleTraversal(*paths)) ||
+  if (!IsDirectoryNoSymlink(paths->title) || !BottleTreeAdmitted(*paths, paths->bottle) ||
       !title_marker || !bottle_marker || !IsHexDigest(title_digest) || old_digest(bottle_marker) != title_digest ||
       !WithFilesDigest(new_title, title_digest) || !WithFilesDigest(new_bottle, title_digest) ||
       RespinIdentity(new_title, kit_.kit_id) != RespinIdentity(*title_marker, kit_.kit_id) ||
@@ -2392,7 +2398,7 @@ PackageActionResult FilesystemPackageInstaller::CopyTemplate(
     if (!BottleOwned(record, *paths)) return Failed("bottle-collision", "mutable bottle exists without matching ownership");
     if (!SyncTree(paths->bottle) || !SyncAncestors(paths->bottle.parent_path()))
       return Failed("sync-failed", "owned mutable bottle durability could not be established");
-    return profile_shared_ ? SettleBottleModes(record) : Complete();
+    return open_modes_ ? SettleBottleModes(record) : Complete();
   }
   auto result = CopyMappings(record, TemplateMappings(), paths->bottle_staging,
                              paths->bottle, "template", kTemplateOwner);
@@ -2401,8 +2407,9 @@ PackageActionResult FilesystemPackageInstaller::CopyTemplate(
   const bool owned = BottleOwned(record, *paths);
   if (operations_.log) operations_.log("template check " + PartTimes{}.Summary(started));
   if (!owned) return Failed("template-validation", "published bottle failed semantic validation");
-  // Folders made before this bottle (its data root for the title metadata) get the kit's mode too.
-  return profile_shared_ ? SettleBottleModes(record) : result;
+  // An open bottle is opened now it is in place, with the folders made before it (its data root for the title
+  // metadata); one made private for an older title keeps 0700.
+  return open_modes_ ? SettleBottleModes(record) : result;
 }
 
 PackageActionResult FilesystemPackageInstaller::ValidateArtifacts(
@@ -2456,6 +2463,15 @@ PackageActionResult FilesystemPackageInstaller::PublishProfile(const RuntimeInst
   if (operations_.log) operations_.log("package publish " + times.Summary(started));
   if (!verified)
     return Failed("publication-verification", "complete committed settings publication failed independent admission");
+  // The publication makes its folders 0700; an open bottle's are opened now (their files keep 0600).
+  if (OpenModes(record, *observed)) {
+    SharedTreeOptions folders_only;
+    folders_only.private_paths.clear();
+    folders_only.visit_file = [](const fs::path&) { return false; };
+    for (const char* folder : {".playden-control", "library/profiles", "library/input"})
+      if (!OpenTreeToEveryone(observed->game / folder, folders_only).ok && operations_.log)
+        operations_.log("package publish install=" + record.install_id + " could not open " + folder);
+  }
   return Complete();
 }
 

@@ -11,7 +11,7 @@ KitAdmissionConfig DevelopmentKitAdmission() {
   config.expected_manifest_sha256 = kExpectedKitManifestSha256;
   // The publication guard capability stays unused until native qualification.
   config.known_capabilities = {"dxvk", "offline_bottle", "per_game_title", "wow64_i386", kKitSharedSections,
-                                kKitTitleAnyId, kKitGameRootUnowned, kKitBottleProfileShared, kKitPublicationOpenModes,
+                                kKitTitleAnyId, kKitGameRootUnowned, kKitPublicationOpenModes,
                                 kKitOpenGLZink,
                                 kKitAudioVolume, kKitAudioMicrophone, kKitAudioCapture, kKitDxvkConfig, kKitDxvkPresent, kKitInputTuning,
                                 kKitEnvironment, kKitWineMono, kKitVkd3dProton,

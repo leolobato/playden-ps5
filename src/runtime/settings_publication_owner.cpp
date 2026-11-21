@@ -163,7 +163,7 @@ PackageActionResult SettingsPublicationOwner::DiscardRequested(const RuntimeInst
   const auto transaction = current->journal->operation_id;
   const auto canonical = std::filesystem::path(current->data_root + "/.playden-control");
   const auto control_path = prefix.empty() ? canonical : prefix / canonical.relative_path();
-  auto control = platform::ManagedDirectory::Open(control_path, platform::DirectoryPolicy::kPrivate);
+  auto control = platform::ManagedDirectory::Open(control_path, platform::DirectoryPolicy::kOpenTree);
   auto lease = control ? platform::ManagedFileLock::Acquire(*control, "publication.lock", platform::LockMode::kPublisher) : std::nullopt;
   if (!lease) return Failure("publication-busy", "The publication lock is unavailable or held (the game may be running).");
   // The committed publication the record plays under: another transaction, at the record's
@@ -172,7 +172,7 @@ PackageActionResult SettingsPublicationOwner::DiscardRequested(const RuntimeInst
   struct stat info{};
   if (!control->InspectChild("publication-state.v1", &info) || !S_ISREG(info.st_mode) || info.st_size <= 0 || info.st_size > 8192)
     return Failure("publication-discard-receipt", "The committed publication's receipt is missing or unreadable.");
-  auto read = Storage(control_path.string()).ReadDurable("publication-state.v1", 8192);
+  auto read = Storage(control_path.string()).AllowOwnedRoot().ReadDurable("publication-state.v1", 8192);
   PwTitlePublication receipt{};
   if (!read.ok() || pw_title_publication_parse(read.value().data(), read.value().size(), &receipt) != PW_OK ||
       receipt.phase != PW_TITLE_PUBLICATION_COMMITTED || receipt.transaction_id == transaction ||
@@ -235,7 +235,7 @@ PackageActionResult SettingsPublicationOwner::InitializeControl(const RuntimeIns
     return Failure("publication-control-conflict", "An existing OWNER operation cannot be replaced by control initialization.");
   const auto canonical = std::filesystem::path(record.data_root);
   const auto data_path = prefix.empty() ? canonical : prefix / canonical.relative_path();
-  auto data = platform::ManagedDirectory::Open(data_path, platform::DirectoryPolicy::kPrivateTraversable);
+  auto data = platform::ManagedDirectory::Open(data_path, platform::DirectoryPolicy::kOpenTree);
   if (!data) return Failure("publication-control-data", "Existing owned private bottle data root is unavailable.");
   struct stat info{};
   const bool exists = data->InspectChild(".playden-control", &info);
@@ -266,7 +266,7 @@ PackageActionResult SettingsPublicationOwner::InitializeControl(const RuntimeIns
   const bool now_exists = data->InspectChild(".playden-control", &info);
   if ((!now_exists && errno != ENOENT) || (!now_exists && prepared))
     return Failure("publication-control-collision", "Control path changed after admission; retain the OWNER intent.");
-  auto control = data->OpenChild(".playden-control", platform::DirectoryPolicy::kPrivate, !prepared);
+  auto control = data->OpenChild(".playden-control", platform::DirectoryPolicy::kOpenTree, !prepared, 0700);
   if (!control || !control->Sync() || !data->Sync())
     return Failure("publication-control-directory", "Private control creation/sync failed; recover from durable OWNER intent.");
   if (!checkpoint(PublicationControlStep::kDirectorySynced))
@@ -324,7 +324,7 @@ Result<SettingsPublicationOperation> SettingsPublicationOwner::Prepare(const Run
     current = records_.Find(record.install_id);
     if (!current || !SameRuntimeInstallIdentity(*current, record)) return fail("OWNER changed after control initialization.");
   }
-  auto control = platform::ManagedDirectory::Open(control_path, platform::DirectoryPolicy::kPrivate);
+  auto control = platform::ManagedDirectory::Open(control_path, platform::DirectoryPolicy::kOpenTree);
   auto lease = control ? platform::ManagedFileLock::Acquire(*control, "publication.lock", platform::LockMode::kPublisher) : std::nullopt;
   if (!lease)
     return fail("The publication lock is unavailable or held (the game may be running).");
@@ -427,7 +427,7 @@ PackageActionResult SettingsPublicationOwner::Resume(const RuntimeInstall& recor
   std::optional<SettingsPublicationOperation> operation;
   {
     const auto control_path = map(current->data_root + "/.playden-control");
-    auto control = platform::ManagedDirectory::Open(control_path, platform::DirectoryPolicy::kPrivate);
+    auto control = platform::ManagedDirectory::Open(control_path, platform::DirectoryPolicy::kOpenTree);
     auto lease = control ? platform::ManagedFileLock::Acquire(*control, "publication.lock", platform::LockMode::kPublisher) : std::nullopt;
     if (!lease)
       return Failure("publication-recovery-lock", "The publication lock is unavailable or held (the game may be running).");

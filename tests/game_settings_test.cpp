@@ -3582,9 +3582,9 @@ int main(int argc, char** argv) {
     }
     CHECK(KitCapabilitiesFromManifest({kKitVkd3dProton}, false).vkd3d_proton &&
           !KitCapabilitiesFromManifest({kKitDxvk}, false).vkd3d_proton);
-    CHECK(KitCapabilitiesFromManifest({kKitBottleProfileShared}, false).bottle_profile_shared &&
-          !KitCapabilitiesFromManifest({kKitGameRootUnowned}, false).bottle_profile_shared &&
-          !KitCapabilitiesFromManifest({kKitBottleProfileShared}, false).game_root_unowned);
+    CHECK(KitCapabilitiesFromManifest({kKitPublicationOpenModes}, false).publication_open_modes &&
+          !KitCapabilitiesFromManifest({kKitGameRootUnowned}, false).publication_open_modes &&
+          !KitCapabilitiesFromManifest({kKitPublicationOpenModes}, false).game_root_unowned);
     // A locked row keeps the recipe's value until the player changes it anyway.
     CHECK(BuildEffectiveSettings(hl2, nullptr, {{"graphics", "opengl"}}, KitCapabilities{}, &settings, &error));
     CHECK(settings.graphics == "dxvk" && settings.values.at("graphics").locked && !settings.values.at("graphics").unlocked);

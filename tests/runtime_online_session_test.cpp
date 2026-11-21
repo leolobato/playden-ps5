@@ -151,11 +151,15 @@ int main() {
   other.app_id = 440;
   CHECK(WriteOnlineSession(prefix, other) && Read(file).rfind("app_id=440\n", 0) == 0);
   bool removed = false;
-  // A recursive chmod over FTP opened them up: tightened again.
+  // A recursive chmod over FTP opened them up: the token is private again; its folder stays open (an open bottle's
+  // is 0777 so FTP can delete it, #868), and a write leaves it so.
   CHECK(::chmod(file.c_str(), 0777) == 0 && ::chmod((prefix / kOnlineSessionFolder).c_str(), 0777) == 0);
   CHECK(TightenOnlineSession(prefix));
   CHECK(::stat(file.c_str(), &status) == 0 && (status.st_mode & 0777) == 0600);
-  CHECK(::stat((prefix / kOnlineSessionFolder).c_str(), &status) == 0 && (status.st_mode & 0777) == 0700);
+  CHECK(::stat((prefix / kOnlineSessionFolder).c_str(), &status) == 0 && (status.st_mode & 0777) == 0777);
+  CHECK(WriteOnlineSession(prefix, other));
+  CHECK(::stat(file.c_str(), &status) == 0 && (status.st_mode & 0777) == 0600);
+  CHECK(::stat((prefix / kOnlineSessionFolder).c_str(), &status) == 0 && (status.st_mode & 0777) == 0777);
   CHECK(OnlineSessionExists(prefix));
   CHECK(RemoveOnlineSession(prefix, &removed) && removed && !fs::exists(file));
   CHECK(!OnlineSessionExists(prefix) && !OnlineSessionExists(root / "missing"));

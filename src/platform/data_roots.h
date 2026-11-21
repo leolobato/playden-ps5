@@ -6,8 +6,9 @@
 //
 // Modes: everything Playden makes is open so the console owner can delete it over FTP (LAN tools
 // run as root, which has no permission bypass on /data): folders 0777, files 0666. Only the files
-// named by IsSecretFile stay 0600 (still deletable: their folders are 0777). The bottles of live
-// games stay owner-only until their title's runtime kit has publication-open-modes.
+// named by IsSecretFile stay 0600 (still deletable: their folders are 0777). A live game's bottle is open
+// once its title comes from a runtime kit with publication-open-modes (folders 0777; Playden's publication
+// files and launcher sign-ins 0600); an older title's stays owner-only until Update.
 #include <algorithm>
 #include <filesystem>
 #include <string>

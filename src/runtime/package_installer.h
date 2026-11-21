@@ -184,13 +184,12 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   // title was made or last updated), when the marker is there and names this install. A title keeps
   // that runtime after a kit swap until Update, so this says which kit version it runs.
   std::optional<std::string> TitleRuntimeRevision(const RuntimeInstall& record) const;
-  // The kit has bottle-profile-shared: bottles of titles made from it are made and repaired with
-  // their way to the user profile 0711 and the profile open to FTP (0777/0666); titles of older
-  // kits keep 0700 until Update. Reads always admit 0711.
-  void ShareBottleProfiles(bool shared) { profile_shared_ = shared; }
-  // The kit has publication-open-modes: a title made from it admits Playden's data at any mode. The start check
-  // Playden runs (compiled from the pinned title shell) checks the older shell's modes for every other title.
+  // The kit has publication-open-modes: a title made from it admits Playden's data at any mode, and its bottle is
+  // open (#868): folders 0777 so the console owner can delete it over FTP, saves 0666, launcher sign-ins 0600. The
+  // start check Playden runs (compiled from the pinned title shell) checks the older shell's modes for every other
+  // title, whose bottle keeps 0700 until Update. Playden's own reads then admit a bottle at any mode.
   void AdmitOpenModes(bool open) { open_modes_ = open; }
+  bool OpensBottle(const RuntimeInstall& record) override { return OpenModes(record); }
 
   PackageStatus Inspect(const RuntimeInstall& record) override;
   // The title's owner marker instead of its files and folder modes; the bottle,
@@ -255,15 +254,21 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   // Exact file contents and modes only, whatever the marker and folder modes say.
   bool TitleFilesMatch(const RuntimeInstall& record, const ResolvedPaths& paths) const;
   bool BottleOwned(const RuntimeInstall& record, const ResolvedPaths& paths) const;
-  // The bottle chain's traversal folders (data root, library, library/prefixes, the bottle), with
-  // the mode new ones get (0711 when shared). Checks admit 0700 and 0711 either way.
-  PrivateTraversal BottleTraversal(const ResolvedPaths& paths, bool shared = false) const;
+  // The bottle chain's traversal folders (data root, library, library/prefixes, the bottle), made 0700.
+  // Checks admit 0700 and 0711 (a bottle-profile-shared development kit's) either way.
+  PrivateTraversal BottleTraversal(const ResolvedPaths& paths) const;
+  // The bottle's folders from its data root down to `directory` are this install's: at any mode when the kit has
+  // publication-open-modes (an open bottle, or one FTP opened), else 0700 (0711 on its way).
+  bool BottleTreeAdmitted(const ResolvedPaths& paths, const std::filesystem::path& directory) const;
+  // Makes the missing folders from the bottle's data root down to `directory`: 0777 for a title whose shell has
+  // publication-open-modes, else 0700. Existing ones are checked as BottleTreeAdmitted does.
+  bool EnsureBottleDirectories(const RuntimeInstall& record, const ResolvedPaths& paths,
+                               const std::filesystem::path& directory, std::string* detail) const;
+  // SettleBottleModes for a title whose shell has publication-open-modes.
+  PackageActionResult OpenBottle(const RuntimeInstall& record, const ResolvedPaths& paths);
   // Repair: the profile and drive_c folders a bottle made before they were created (kProfileFolders,
   // kDriveFolders) lacks; logged, never a failure.
   void AddMissingBottleFolders(const RuntimeInstall& record, const ResolvedPaths& paths);
-  // The bottle's way to its profile is 0711 and the profile open: the kit has
-  // bottle-profile-shared and the record's title was made from it (an older shell demands 0700).
-  bool ProfileShared(const RuntimeInstall& record, const ResolvedPaths& paths) const;
   // The title's shell admits Playden's data at any mode (publication-open-modes, and the title made from this kit).
   bool OpenModes(const RuntimeInstall& record, const ResolvedPaths& paths) const;
   bool OpenModes(const RuntimeInstall& record) const;
@@ -301,7 +306,6 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   PackageInstallerOperations operations_;
   std::vector<std::string> shipped_recipe_ids_;
   std::function<bool(const RuntimeInstall&)> accept_recipe_;
-  bool profile_shared_ = false;
   bool open_modes_ = false;
   // Full passes over the kit's file list (KitListPasses).
   mutable std::size_t kit_list_passes_ = 0;

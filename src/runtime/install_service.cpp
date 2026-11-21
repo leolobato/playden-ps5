@@ -249,6 +249,12 @@ InstallServiceResult RuntimeInstallService::StepPublication(const RuntimeInstall
     return InstallServiceResult::Failure(InstallServiceError::kPackageUnavailable,
         "complete publication recovery driver is unavailable; retain the OWNER journal");
   const auto result = publication_(record);
+  // The publication makes its folders 0700: an open bottle's are opened now (#868), also when the title's
+  // registration waits for Playden to quit and nothing else runs before it. The title isn't registered or is
+  // stopped (checked above). A failure only holds FTP back (logged).
+  if (result.state == PackageActionState::kComplete || result.code == "publication-registration-pending")
+    if (const auto latest = records_.Find(record.install_id); latest && package_.OpensBottle(*latest))
+      (void)package_.SettleBottleModes(*latest);
   // The driver owns every durable transition. Even failures can follow file
   // effects or a newer registration arm; never write this older record back.
   if (result.state != PackageActionState::kComplete) {

@@ -139,9 +139,10 @@ class Storage {
   // Missing files are already removed and therefore succeed.
   Result<void> Remove(const std::string& relative_path) const;
 
-  // Journal operations also admit a 0711 root (others may pass through, never
-  // list): a bottle whose way to its user profile is open. Parents stay 0700.
-  Storage& AllowTraversableRoot() { traversable_root_ = true; return *this; }
+  // Journal operations admit a root and parents of the app user's at any mode while still writing
+  // 0600 files: a game's bottle, which FTP may have opened (#868) and whose title shell reads the
+  // registry it holds.
+  Storage& AllowOwnedRoot() { owned_root_ = true; return *this; }
   // Journal operations on Playden's open data (#868): the root and parents are the app user's at
   // any mode (DirectoryPolicy::kOpenTree), and files are written 0666, or 0600 for a secret
   // (platform/data_roots.h), so the console owner can delete them over FTP.
@@ -156,7 +157,7 @@ class Storage {
                                  const Bytes& bytes, bool replace_existing) const;
 
   std::string root_;
-  bool traversable_root_ = false;
+  bool owned_root_ = false;
   bool open_tree_ = false;
 };
 

@@ -53,7 +53,7 @@ PublicationBackupLoad LoadPublicationRegistryBackup(
       (binding.source_mode != 0600 && binding.source_mode != 0644) ||
       binding.size > kMaxPublicationRegistryBackupBytes || binding.sha256.size() != 64 || !Hex(binding.sha256))
     return Failure(PublicationRecoveryState::kCorrupt, "Invalid frozen registry backup binding.");
-  auto directory = ManagedDirectory::Open(control, DirectoryPolicy::kPrivate);
+  auto directory = ManagedDirectory::Open(control, DirectoryPolicy::kOpenTree);
   if (!directory) return Failure(PublicationRecoveryState::kUnavailable, "Private control directory is unavailable.");
   struct stat before{}, opened{}, after{}, named{};
   if (!directory->InspectChild(binding.filename, &before)) {
@@ -99,7 +99,7 @@ Result<RegistryBackupBinding> CreatePublicationRegistryBackup(
     return CreateFailure(StorageError::kInvalidData, "Invalid registry backup transaction, mode or size.");
   const auto hash = HashArtifactBytes(bytes);
   if (!hash) return CreateFailure(StorageError::kInvalidData, "Registry backup hashing is unavailable.");
-  auto directory = ManagedDirectory::Open(control, DirectoryPolicy::kPrivate);
+  auto directory = ManagedDirectory::Open(control, DirectoryPolicy::kOpenTree);
   if (!directory) return CreateFailure(StorageError::kOpenFailed, "Private control directory is unavailable.");
   RegistryBackupBinding binding{Filename(transaction), source_mode, bytes.size(), *hash};
   const int fd = directory->CreateExclusiveFile(binding.filename, 0600);

@@ -249,7 +249,8 @@ OpenModesResult OpenPlaydenModes(const fs::path& data_root, const fs::path& home
 }
 
 bool BottleTooOpen(const fs::path& data_root) {
-  for (const auto* relative : {"", "library", ".playden-control"}) {
+  for (const auto* relative : {"", "library", ".playden-control", "library/profiles", "library/input", "library/prefixes",
+                               "library/prefixes/game"}) {
     struct stat info{};
     const auto path = *relative ? data_root / relative : data_root;
     if (::lstat(path.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) continue;
@@ -272,6 +273,26 @@ SelfHealResult TightenBottleModes(const fs::path& data_root, const Log& log) {
   TightenFolder(data_root / "library/prefixes", true, false, log, &result, true);
   TightenFolder(data_root / "library", true, false, log, &result, true);
   if (result.failed == 0) TightenFolder(data_root, true, false, log, &result, true);
+  return result;
+}
+
+bool BottleNeedsOpening(const fs::path& data_root) {
+  struct stat info{};
+  if (::lstat(data_root.c_str(), &info) != 0) return false;  // no bottle yet
+  for (const auto* relative : {"", "library", ".playden-control"}) {
+    const auto path = *relative ? data_root / relative : data_root;
+    if (::lstat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode) && (info.st_mode & 07777) != 0777) return true;
+  }
+  const auto lock = data_root / ".playden-control/publication.lock";
+  return ::lstat(lock.c_str(), &info) == 0 && S_ISREG(info.st_mode) && (info.st_mode & 07777) != 0600;
+}
+
+SelfHealResult TightenBottleFiles(const fs::path& data_root, const Log& log, bool hives) {
+  SelfHealResult result;
+  for (const auto* relative : {"title-metadata/sce_sys", "title-metadata", "logs/sessions", "logs", ".playden-control",
+                               "library/profiles", "library/input"})
+    TightenFolder(data_root / relative, false, true, log, &result);
+  if (hives) TightenFolder(data_root / "library/prefixes/game", false, true, log, &result);
   return result;
 }
 

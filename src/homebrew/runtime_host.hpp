@@ -1070,13 +1070,16 @@ class RuntimeHost {
   void OpenGameFolders(const Composition& composition, const runtime::RuntimeInstall& record);
   // A dxvk.conf with more than one link fails the title's start check; it becomes a copy of its own.
   std::string UnlinkDxvkConfig(const runtime::RuntimeInstall& record);
-  // The bottle's way to its user profile takes the kit's mode, and with bottle-profile-shared its
-  // profile is opened to FTP again (files Wine made since are 0600). Only for a stopped title,
+  // The bottle takes its title's modes: an open bottle (OpensBottle) is opened to FTP again (Wine made its
+  // new folders 0700 and files 0600), an older title's way goes back to 0700. Only for a stopped title,
   // while no ManagedDirectory of the bottle is open. Failures are logged; the start check decides.
   void SettleBottle(Composition& composition, const runtime::RuntimeInstall& record, const char* when);
   runtime::LaunchPreflight Preflight(Composition& composition, const runtime::RuntimeInstall& record);
-  // Worker only. Tightens the bottle at data_root (console path) when it looks opened up and its title is stopped.
-  void HealBottle(Composition& composition, const std::string& data_root, const std::string& title_id);
+  // Worker only. Gives the bottle at data_root (console path) its title's modes when they drifted and its title is
+  // stopped: an older title's bottle is tightened, an open one opened. record: the game's install record when
+  // there is one (its title decides whether the bottle is open).
+  void HealBottle(Composition& composition, const std::string& data_root, const std::string& title_id,
+                  const runtime::RuntimeInstall* record);
   runtime::LaunchEvidence Evidence(Composition& composition, const runtime::RuntimeInstall& record,
                                    const std::string& session_id);
   void RunPlay(Composition& composition, std::uint32_t runtime_number, const std::string& setup_program = {},
