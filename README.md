@@ -44,7 +44,8 @@ private Windows environment and its own tile on the PS5 Home screen.
   Vulkan, all on the PS5 GPU's Vulkan driver.
 - **Gamepad support.** XInput, DirectInput, Raw Input, Windows.Gaming.Input and the Windows multimedia joystick API,
   with rumble. Games see the DualSense as an Xbox controller, or, per game, as a PlayStation controller (a DualShock 4)
-  for games that show PlayStation buttons; that choice needs a runtime kit with it.
+  for games that show PlayStation buttons; that choice needs a runtime kit with it. Controller layouts map any button,
+  stick or trigger to a controller button, keys or the mouse, per game (runtime kit 0.33 or newer).
 - **Local multiplayer.** Each signed-in PS5 user's DualSense is its own controller, up to four, for games with local
   co-op or split screen, through XInput and the HID gamepad APIs (runtime kit 0.18 or newer). Player 2 must sign in to the PS5 as another user (or a guest) with their own DualSense.
 - **Mouse and keyboard.** Plug a USB mouse and keyboard into the PS5, or use a controller preset: the left stick as a
@@ -54,6 +55,9 @@ private Windows environment and its own tile on the PS5 Home screen.
   own. See [Online play](#online-play-experimental).
 - **GOG games (experimental).** Sign in to GOG from your phone, and your GOG games join the Library next to your
   Steam games. They install, update and play like Steam games. See [GOG store](docs/gog-store.md).
+- **Rockstar games (experimental).** Grand Theft Auto IV and Grand Theft Auto V Legacy run through Rockstar's launcher
+  after you sign in to your Rockstar Games account in Settings › Accounts › Publishers. They need Steam features =
+  Offline emulation. Other Rockstar games don't work yet.
 - **Import Windows games.** Add game folders you already have, from a USB drive, an M.2 SSD or over FTP. No Steam
   account is needed. See [Import Windows games](#import-windows-games).
 - **Install to internal or external disks.** Console storage, or an exFAT USB drive formatted on a Mac or PC. USB
@@ -65,7 +69,7 @@ See the [compatibility list](COMPATIBILITY.md) for the games we have tested.
 
 - Steam game updates
 - Other stores (Epic)
-- Support for game launches (Rockstar, EA, Ubisoft)
+- Support for more game launchers (EA, Ubisoft) and more Rockstar games
 - Community recipes in the preset chooser
 
 See the [roadmap](https://github.com/users/leolobato/projects/1) for what's coming next.
