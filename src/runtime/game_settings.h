@@ -630,7 +630,9 @@ bool IsGeneratedRecipeId(std::string_view id);
 // read now (a drive not plugged in): the next Play tries again. A 32-bit recipe set up before Watcom programs got
 // Translator takes only that default when its program is one (WatcomProgram). A recipe whose first program is a
 // Unity bootstrap beside the player (UnityGameProgram) starts the player instead. One whose first program is Steam's and
-// now only starts the game is made again, as a new setup makes it, when that finds the game's own program.
+// now only starts the game is made again, as a new setup makes it, when that finds the game's own program. An Unreal
+// recipe set up before DefaultsRevision 1 is read again only when its program sat beside an "engine" folder that isn't
+// Unreal's (TakenForUnrealBefore: Cyberpunk 2077, #1163); any other keeps what it was set up with and takes the revision.
 bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe);
 // Sets each launch entry's working folder to its spelling on disk under install_root. Windows ignores case, so Steam
 // and recipes made on it may name System/ as "system" (Unreal Tournament, #844); the console's disk doesn't. A folder
@@ -716,6 +718,7 @@ struct GameProgram {
   bool steam_stub = false;   // SteamStub DRM wraps it
   bool steam_stub_supported = false;  // ...in a form Playden unpacks
   std::string steam_stub_detail;  // the SteamStub variant, or why it is not unpacked (runtime/steam_stub.h)
+  bool console_program = false;   // a command-line program (GameProbe::console_program)
 };
 inline constexpr std::size_t kMaxGamePrograms = 32;
 // The .exe files under install_root, up to six folders deep, without following symbolic links

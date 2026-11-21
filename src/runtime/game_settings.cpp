@@ -2957,21 +2957,24 @@ bool DrawsGraphics(const std::string& summary) {
 
 // The game program to start instead of a launcher: one that draws and the console may run,
 // in the launcher's folder or below it first, then the largest. A dedicated server or relay comes
-// last (Cry of Fear ships hlds.exe and hltv.exe beside cof.exe).
+// last (Cry of Fear ships hlds.exe and hltv.exe beside cof.exe). Among those as near, a command-line program comes after
+// one with a window: Cyberpunk 2077's REDmod shader compiler (tools/redmod/bin/scc.exe, 130 MB) names Direct3D 12 and is
+// larger than the game (#1163).
 std::optional<std::string> GameInsteadOf(const std::string& install_root, const std::string& launcher,
                                          const KitCapabilities& kit) {
   const auto slash = launcher.rfind('/');
   const auto folder = slash == std::string::npos ? std::string() : LowerAscii(launcher.substr(0, slash + 1));
   std::optional<std::string> best;
-  std::tuple<bool, bool, std::uintmax_t> best_rank{false, false, 0};
+  std::tuple<bool, bool, bool, std::uintmax_t> best_rank{false, false, false, 0};
   for (const auto& program : ListGamePrograms(install_root, kit)) {
     if (program.architecture.empty() || !program.refusal.empty() || !DrawsGraphics(program.detected) ||
         program.path == launcher || StartsTheGameOnly(program.path, GameProbe{}))
       continue;
     std::error_code error;
     const auto size = std::filesystem::file_size(std::filesystem::path(install_root) / program.path, error);
-    const std::tuple<bool, bool, std::uintmax_t> rank{!steam::IsDedicatedServerProgram(program.path),
-                                                      LowerAscii(program.path).rfind(folder, 0) == 0, error ? 0 : size};
+    const std::tuple<bool, bool, bool, std::uintmax_t> rank{!steam::IsDedicatedServerProgram(program.path),
+                                                            LowerAscii(program.path).rfind(folder, 0) == 0,
+                                                            !program.console_program, error ? 0 : size};
     if (!best || rank > best_rank) best = program.path, best_rank = rank;
   }
   return best;
@@ -3230,7 +3233,14 @@ bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilitie
       moved = true;
     }
   }
-  const bool current = recipe->defaults_revision >= DefaultsRevision(recipe->detected);
+  bool current = recipe->defaults_revision >= DefaultsRevision(recipe->detected);
+  // Unreal's detection narrowed (DefaultsRevision 1): only a program taken for Unreal's for an "engine" folder beside it
+  // (Cyberpunk 2077, #1163) is read again. A real Unreal game keeps what it was set up with, and takes the revision once.
+  const auto engine = std::string_view(recipe->detected).substr(0, recipe->detected.find_first_of(", "));
+  if (!current && (engine == "unreal" || engine == "unreal5") && !TakenForUnrealBefore(install_root, *on_disk)) {
+    recipe->defaults_revision = DefaultsRevision(recipe->detected);
+    current = moved = true;
+  }
   if (current && !MayNeedWatcomTranslator(*recipe)) return moved;
   if (current) return AddWatcomTranslator(install_root, *on_disk, recipe) || moved;
   const auto probe = ProbeGame(install_root, *on_disk);
@@ -3284,10 +3294,13 @@ bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilitie
   if (refreshed.defaults_revision < DefaultsRevision(recipe->detected)) {
     // XNA's marks narrowed (DefaultsRevision 1): a program that no longer counts as XNA and has no game to start in
     // its place (one the player chose) keeps what it was set up with, and isn't read again at each Play.
-    const auto engine = std::string_view(recipe->detected).substr(0, recipe->detected.find_first_of(", "));
-    if (engine != "xna") return moved;
-    recipe->defaults_revision = DefaultsRevision(recipe->detected);
-    return true;
+    if (engine == "xna") {
+      recipe->defaults_revision = DefaultsRevision(recipe->detected);
+      return true;
+    }
+    // Unreal's detection narrowed (DefaultsRevision 1): a program taken for Unreal's only for an "engine" folder beside
+    // it (Cyberpunk 2077, #1163) takes the defaults its own files give, without -dx11.
+    if (engine != "unreal" && engine != "unreal5") return moved;
   }
   *recipe = std::move(refreshed);
   return true;
@@ -3371,6 +3384,7 @@ std::vector<GameProgram> ListGamePrograms(const std::string& install_root, const
       program.steam_stub = probe.steam_stub;
       program.steam_stub_supported = probe.steam_stub_supported;
       program.steam_stub_detail = probe.steam_stub_detail;
+      program.console_program = probe.console_program;
       // The player sees which SteamStub form it is ("3.1 x86 with flags 0x4"), so a report names it.
       if (probe.steam_stub && !probe.steam_stub_supported && !probe.steam_stub_detail.empty() &&
           !program.refusal.empty() && program.refusal.back() == '.')

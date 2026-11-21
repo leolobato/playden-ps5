@@ -36,6 +36,7 @@ struct PeSpec {
   std::string resource;      // the resource directory's bytes, at RVA 0x2c00 (at most 0x400)
   std::string code_section = ".text";  // the first section's name (Watcom's linker calls it BEGTEXT)
   std::uint32_t code_raw_size = 0x1000;  // the first section's SizeOfRawData
+  std::uint16_t subsystem = 2;  // IMAGE_SUBSYSTEM_WINDOWS_GUI; 3 is a command-line program
 };
 
 // Watcom's startup at a program's entry: a near jump over its banner (NFS3's Modern Patch, 0x4f7fa0).
@@ -62,6 +63,7 @@ void WritePe(const fs::path& path, const PeSpec& spec) {
   const std::size_t optional = 0x58;
   Put16(&bytes, optional, spec.pe64 ? 0x20b : 0x10b);
   Put32(&bytes, optional + 16, 0x1010);  // entry point, in the first section
+  Put16(&bytes, optional + 68, spec.subsystem);
   const std::size_t directories = optional + (spec.pe64 ? 112 : 96);
   if (!spec.imports.empty()) Put32(&bytes, directories + 8, 0x2000);
   if (spec.clr) Put32(&bytes, directories + 14 * 8, 0x2800);
@@ -813,6 +815,148 @@ int main() {
     fs::create_directories(unity / "Engine");
     WritePe(unity / "Bonus/Binaries/Win64/Bonus-Win64-Shipping.exe", {true, {"KERNEL32.dll"}});
     CHECK(UnrealGameProgram(unity.string(), "Game.exe").empty() && ProbeGame(unity.string(), "Game.exe").engine == "unity");
+  }
+  {  // Cyberpunk 2077 (REDengine 4, #1163): Steam starts REDprelauncher.exe, beside an "engine" folder with only the
+     // engine's config and tools. It is not Unreal's: the game's own bin/x64/Cyberpunk2077.exe starts on vkd3d-proton,
+     // without -dx11.
+    const auto root = fresh();
+    WritePe(root / "REDprelauncher.exe", {true, {"KERNEL32.dll", "USER32.dll", "SHELL32.dll"}});
+    fs::create_directories(root / "engine/config/base");
+    fs::create_directories(root / "engine/tools");
+    fs::create_directories(root / "archive/pc/content");
+    fs::create_directories(root / "r6/config");
+    WritePe(root / "bin/x64/Cyberpunk2077.exe", {true, {"KERNEL32.dll", "d3d12.dll", "dxgi.dll"}, false, false, "", 0x40000});
+    WritePe(root / "bin/x64/steam_api64.dll", {true, {"KERNEL32.dll"}});
+    // REDmod's command-line tools: the shader compiler names Direct3D 12 and is larger than the game.
+    PeSpec scc{true, {"KERNEL32.dll", "d3d12.dll", "dxgi.dll"}, false, false, "", 0x80000};
+    scc.subsystem = 3;
+    WritePe(root / "tools/redmod/bin/scc.exe", scc);
+    PeSpec redmod{true, {"KERNEL32.dll"}};
+    redmod.subsystem = 3;
+    WritePe(root / "tools/redmod/bin/redMod.exe", redmod);
+    const auto launcher = ProbeGame(root.string(), "REDprelauncher.exe");
+    CHECK(launcher.engine.empty() && launcher.unreal_program.empty() && !launcher.unreal5);
+    CHECK(UnrealGameProgram(root.string(), "REDprelauncher.exe").empty());
+    KitCapabilities vkd3d_kit;
+    vkd3d_kit.vkd3d_proton = true;
+    GameRecipe recipe;
+    std::string reason;
+    CHECK(GenerateGameRecipe(1091500, "Cyberpunk 2077", {{"", "", "REDprelauncher.exe", "", ""}}, root.string(), &recipe,
+                             &reason, vkd3d_kit));
+    CHECK(recipe.launch_entries.size() == 2 && recipe.launch_entries[0].id == "game" &&
+          recipe.launch_entries[0].executable == "bin/x64/Cyberpunk2077.exe" &&
+          recipe.launch_entries[1].executable == "REDprelauncher.exe");
+    CHECK(recipe.arguments.empty() && recipe.graphics == "dxvk" && recipe.defaults.at("d3d12") == "vkd3d-proton");
+    CHECK(recipe.detected.rfind("unreal", 0) != 0 && recipe.defaults_revision == 0);
+    // Nearness to the launcher still comes first: a command-line game beside a launcher in bin/ beats a program with a
+    // window elsewhere.
+    {
+      const auto near = fresh();
+      WritePe(near / "bin/Updater.exe", {true, {"KERNEL32.dll"}});
+      PeSpec cli{true, {"KERNEL32.dll", "d3d11.dll"}};
+      cli.subsystem = 3;
+      WritePe(near / "bin/Game.exe", cli);
+      WritePe(near / "Tools/Viewer.exe", {true, {"KERNEL32.dll", "d3d11.dll"}, false, false, "", 0x40000});
+      GameRecipe picked;
+      CHECK(GenerateGameRecipe(9004, "Near", {{"", "", "bin/Updater.exe", "", ""}}, near.string(), &picked, &reason));
+      CHECK(picked.launch_entries[0].executable == "bin/Game.exe");
+    }
+    // Started as the player's Program, the game itself is not Unreal's either.
+    const auto game = ProbeGame(root.string(), "bin/x64/Cyberpunk2077.exe");
+    CHECK(game.engine.empty() && DefaultsFor(game, RuntimeAbilities{false, false, true}).d3d12 == "vkd3d-proton");
+
+    // A copy set up while it counted as Unreal starts REDprelauncher.exe with -dx11 and Wine's Direct3D 12. Its recipe
+    // is made again at the next Play, as this setup made it.
+    CHECK(DefaultsRevision("unreal") == 1 && DefaultsRevision("unreal5") == 1);
+    auto old = recipe;
+    old.launch_entries = {recipe.launch_entries[1]};
+    old.launch_entries[0].id = "launch-1";
+    old.arguments = "-dx11";
+    old.defaults.erase("d3d12");
+    old.detected = "unreal graphics=dxvk";
+    old.defaults_revision = 0;
+    CHECK(RefreshRecipeDefaults(root.string(), vkd3d_kit, &old));
+    CHECK(old.id == recipe.id && old.launch_entries.size() == 2 && old.launch_entries[0].id == "game" &&
+          old.launch_entries[0].executable == "bin/x64/Cyberpunk2077.exe" && old.launch_entries[1].id == "launch-1" &&
+          old.arguments.empty() && old.defaults.at("d3d12") == "vkd3d-proton" && old.detected == recipe.detected);
+    CHECK(!RefreshRecipeDefaults(root.string(), vkd3d_kit, &old));
+    // A launcher the player chose keeps its place, and loses -dx11.
+    auto chosen = recipe;
+    chosen.launch_entries = {recipe.launch_entries[1]};
+    chosen.launch_entries[0].id = kProgramEntryId;
+    chosen.arguments = "-dx11";
+    chosen.detected = "unreal graphics=dxvk";
+    chosen.defaults_revision = 0;
+    CHECK(RefreshRecipeDefaults(root.string(), vkd3d_kit, &chosen));
+    CHECK(chosen.launch_entries.size() == 1 && chosen.launch_entries[0].executable == "REDprelauncher.exe" &&
+          chosen.arguments.empty() && chosen.detected.rfind("unreal", 0) != 0);
+    CHECK(!RefreshRecipeDefaults(root.string(), vkd3d_kit, &chosen));
+  }
+  {  // Real Unreal games are still Unreal's, by any of Unreal's folders beside Engine.
+    KitCapabilities kit;
+    {  // Unreal 4 and 5 packages: Engine/Binaries/ThirdParty (PhysX, Ogg) beside the root program.
+      const auto root = fresh();
+      WritePe(root / "Game.exe", {true, {"KERNEL32.dll"}});
+      fs::create_directories(root / "Engine/Binaries/ThirdParty/PhysX3/Win64");
+      fs::create_directories(root / "Engine/Content");
+      WritePe(root / "Game/Binaries/Win64/Game-Win64-Shipping.exe", {true, {"d3d11.dll"}});
+      const auto probe = ProbeGame(root.string(), "Game.exe");
+      CHECK(probe.engine == "unreal" && probe.unreal_program == "Game/Binaries/Win64/Game-Win64-Shipping.exe");
+    }
+    {  // Engine without Binaries, the project's Binaries or its Content/Paks beside it.
+      const auto root = fresh();
+      WritePe(root / "Game.exe", {true, {"KERNEL32.dll"}});
+      fs::create_directories(root / "Engine/Content");
+      fs::create_directories(root / "Game/Content/Paks");
+      CHECK(ProbeGame(root.string(), "Game.exe").engine == "unreal");
+      fs::remove_all(root / "Game/Content");
+      WritePe(root / "Game/Binaries/Win64/Game-Win64-Shipping.exe", {true, {"d3d11.dll"}});
+      CHECK(ProbeGame(root.string(), "Game.exe").engine == "unreal");
+      // A Shipping program further down (<Bundle>/<Project>/Binaries/Win64) with only Engine/Config beside the program.
+      fs::remove_all(root / "Game");
+      fs::create_directories(root / "Engine/Config");
+      WritePe(root / "Bundle/Game/Binaries/Win64/Game-Win64-Shipping.exe", {true, {"d3d11.dll"}});
+      const auto nested = ProbeGame(root.string(), "Game.exe");
+      CHECK(nested.engine == "unreal" && nested.unreal_program == "Bundle/Game/Binaries/Win64/Game-Win64-Shipping.exe");
+      fs::remove_all(root / "Bundle");
+      // Engine alone, or beside folders of another engine's, is not Unreal's.
+      fs::remove_all(root / "Game");
+      fs::create_directories(root / "Game/Content");
+      CHECK(ProbeGame(root.string(), "Game.exe").engine.empty());
+    }
+    {  // An Unreal game set up before keeps what it was set up with and takes the new revision once: started as its
+       // Shipping program, as a program named otherwise (Wonders of Sodor), or as Unreal 5 on Direct3D 11.
+      const auto root = fresh();
+      WritePe(root / "Game.exe", {true, {"KERNEL32.dll"}});
+      fs::create_directories(root / "Engine/Binaries/Win64");
+      PeSpec shipping{true, {"d3d11.dll", "d3d12.dll"}};
+      shipping.text = std::string("r\0.\0N\0a\0n\0i\0t\0e\0", 16);
+      WritePe(root / "Game/Binaries/Win64/Game-Win64-Shipping.exe", shipping);
+      WritePe(root / "Sodor/Binaries/Win64/WondersOfSodor.exe", {true, {"d3d11.dll", "d3d12.dll"}});
+      KitCapabilities vkd3d_kit;
+      vkd3d_kit.vkd3d_proton = true;
+      GameRecipe recipe;
+      std::string reason;
+      CHECK(GenerateGameRecipe(9003, "Unreal", {{"", "", "Game.exe", "", ""}}, root.string(), &recipe, &reason, kit));
+      CHECK(recipe.detected == "unreal5,dx11 graphics=dxvk" && recipe.defaults_revision == 1 &&
+            recipe.arguments == "-dx11" && !recipe.defaults.count("d3d12"));
+      for (const char* program : {"Game/Binaries/Win64/Game-Win64-Shipping.exe", "Sodor/Binaries/Win64/WondersOfSodor.exe"}) {
+        auto expected = recipe;
+        expected.launch_entries[0].executable = program;
+        auto before = expected;
+        before.defaults_revision = 0;
+        // On a kit with vkd3d-proton now, the Unreal 5 game set up without it stays on Direct3D 11.
+        CHECK(RefreshRecipeDefaults(root.string(), vkd3d_kit, &before));
+        CHECK(SerializeGameRecipe(before) == SerializeGameRecipe(expected));
+        CHECK(!RefreshRecipeDefaults(root.string(), vkd3d_kit, &before));
+      }
+      // Its root launcher, beside Unreal's Engine folder, also stays.
+      auto launcher = recipe;
+      launcher.launch_entries[0].executable = "Game.exe";
+      launcher.defaults_revision = 0;
+      CHECK(RefreshRecipeDefaults(root.string(), kit, &launcher) && launcher.arguments == "-dx11" &&
+            launcher.defaults_revision == 1 && launcher.launch_entries[0].executable == "Game.exe");
+    }
   }
   {  // Generated recipes: DXVK through overrides that follow the graphics value; graphics is open.
     const auto root = fresh();

@@ -18,6 +18,7 @@ struct GameProbe {
   // and for node-webkit before NW.js 0.13 (no nw.dll). Logs and the settings sheet show it.
   std::string engine_version;
   bool x64 = false;     // the program is PE32+ (x64)
+  bool console_program = false;  // a command-line program (Windows' console subsystem), not one with its own window
   bool il2cpp = false;  // Unity with GameAssembly.dll
   bool legacy_unity = false;  // Unity before 2017.2: the player is built into the program
   int unity_major = 0;  // for legacy_unity, the Unity version from the data folder (4, 5); 0 when unknown
@@ -73,6 +74,10 @@ std::string TakeRefusedGameProgram(const std::string& prefix_dir, const std::str
 // launcher, which only starts that one as a child process, which the console cannot do; relative to install_root,
 // as spelled on disk. Empty for any other program. GameProbe::unreal_program, without reading the programs.
 std::string UnrealGameProgram(const std::string& install_root, const std::string& executable);
+
+// Whether executable sits beside an "engine" folder that isn't Unreal's (no UnrealLayout): a program Playden took for an
+// Unreal launcher before DefaultsRevision 1 (Cyberpunk 2077's REDprelauncher.exe, #1163). Not for a *-Shipping.exe.
+bool TakenForUnrealBefore(const std::string& install_root, const std::string& executable);
 
 // The same for a Unity game: GameProbe::unity_program, without reading the programs.
 std::string UnityGameProgram(const std::string& install_root, const std::string& executable);

@@ -94,6 +94,7 @@ struct PeFacts {
   bool unaligned_shared = false;
   bool pe64 = false;                 // PE32+ (x64), otherwise PE32 (x86)
   bool watcom = false;               // linked by Watcom (its BEGTEXT or DGROUP section, or its banner at the entry)
+  bool console_program = false;      // IMAGE_SUBSYSTEM_WINDOWS_CUI: a command-line program
   std::uint64_t resource_offset = 0;  // file offset of the resource directory, 0 when there is none
   std::uint32_t resource_size = 0;
   std::vector<std::string> imports;  // lower case
@@ -126,6 +127,7 @@ PeFacts ReadPe(const std::string& path, bool delay_imports = false) {
   const std::uint32_t delay_rva = directory(13);
   facts.clr = directory(14) != 0;
   facts.pe64 = magic == 0x20b;
+  facts.console_program = U16(optional.data() + 68) == 3;  // Subsystem, at the same place in PE32 and PE32+
 
   std::vector<unsigned char> table(sections * 40u);
   if (!program.ReadAt(pe + 24 + optional_size, table.data(), table.size())) return facts;
@@ -429,11 +431,32 @@ std::string FindShipping(const fs::path& root, const std::string& relative, cons
   return found.empty() ? FindUnrealProgram(root, relative, 0, false, launcher_stem, launcher_folder) : found;
 }
 
-// An Unreal root program: <Game>.exe beside the Engine folder, not an installer the game ships there.
-bool UnrealLauncher(const std::vector<std::pair<std::string, bool>>& here, const std::string& lower_file) {
-  return !EndsWith(lower_file, "-shipping.exe") && Find(here, "engine", true) &&
+// Unreal's own folders beside an Engine folder in directory: Engine/Binaries (a packaged Unreal 4 or 5 keeps its
+// ThirdParty libraries and tools there), Binaries beside Engine (Unreal 3), a project folder with Binaries or
+// Content/Paks (<Project>/Binaries/Win64, <Project>/Content/Paks/<Project>-WindowsNoEditor.pak), or a *-Shipping.exe
+// in a Binaries/Win64 further down. Another engine may name a folder "engine" too: Cyberpunk 2077 (REDengine 4, #1163)
+// keeps engine/config and shader caches beside REDprelauncher.exe, and none of these.
+bool UnrealLayout(const fs::path& directory, const std::vector<std::pair<std::string, bool>>& here) {
+  const auto engine = Find(here, "engine", true);
+  if (!engine) return false;
+  if (Find(here, "binaries", true) || Find(Entries(directory / *engine), "binaries", true)) return true;
+  for (const auto& [name, is_directory] : here) {
+    if (!is_directory || Lower(name) == "engine") continue;
+    const auto project = Entries(directory / name);
+    if (Find(project, "binaries", true)) return true;
+    if (const auto content = Find(project, "content", true); content && Find(Entries(directory / name / *content), "paks", true))
+      return true;
+  }
+  return !FindUnrealProgram(directory, std::string(), 0, true, std::string(), 0).empty();
+}
+
+// An Unreal root program: <Game>.exe beside Unreal's Engine folder, not an installer the game ships there.
+bool UnrealLauncher(const fs::path& directory, const std::vector<std::pair<std::string, bool>>& here,
+                    const std::string& lower_file) {
+  return !EndsWith(lower_file, "-shipping.exe") &&
          std::none_of(std::begin(kInstallerWords), std::end(kInstallerWords),
-                      [&](const char* word) { return lower_file.find(word) != std::string::npos; });
+                      [&](const char* word) { return lower_file.find(word) != std::string::npos; }) &&
+         UnrealLayout(directory, here);
 }
 
 std::string LowerStem(const std::string& lower_file) {
@@ -536,8 +559,23 @@ std::string UnrealGameProgram(const std::string& install_root, const std::string
   const auto here = Entries(root / folder);
   // As ProbeGame decides: a Unity program beside an Engine folder is Unity's.
   if (Find(here, "unityplayer.dll", false) || Find(here, LowerStem(lower_file) + "_data", true)) return {};
-  if (!UnrealLauncher(here, lower_file)) return {};
+  if (!UnrealLauncher(root / folder, here, lower_file)) return {};
   return FindShipping(root, folder, LowerStem(lower_file));
+}
+
+bool TakenForUnrealBefore(const std::string& install_root, const std::string& executable) {
+  const fs::path root(install_root);
+  const auto slash = executable.rfind('/');
+  const std::string folder = slash == std::string::npos ? std::string() : executable.substr(0, slash);
+  const auto lower_file = Lower(slash == std::string::npos ? executable : executable.substr(slash + 1));
+  const auto here = Entries(root / folder);
+  // The rule before: any program but an installer or a Shipping program beside an Engine folder, Unity's aside.
+  if (EndsWith(lower_file, "-shipping.exe") || !Find(here, "engine", true) ||
+      std::any_of(std::begin(kInstallerWords), std::end(kInstallerWords),
+                  [&](const char* word) { return lower_file.find(word) != std::string::npos; }) ||
+      Find(here, "unityplayer.dll", false) || Find(here, LowerStem(lower_file) + "_data", true))
+    return false;
+  return !UnrealLayout(root / folder, here);
 }
 
 bool ProgramUsesPhysx(const std::string& install_root, const std::string& executable) {
@@ -676,6 +714,7 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
   }
   probe.shared_section = program.unaligned_shared;
   probe.x64 = program.pe64;
+  probe.console_program = program.console_program;
   probe.watcom = program.watcom && !program.pe64;
   AddImports(program, &probe.apis);
   for (const auto& [name, directory] : here)
@@ -691,7 +730,7 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
       if (const auto data = Find(here, Lower(stem) + "_data", true)) probe.unity_major = UnityMajorVersion(root / folder / *data);
     if (unity) ScanNames((root / folder / *unity).string(), &probe.apis);
     probe.unity_program = UnityPlayerBeside(root / folder, here, folder, lower_file);
-  } else if (EndsWith(lower_file, "-shipping.exe") || UnrealLauncher(here, lower_file)) {
+  } else if (EndsWith(lower_file, "-shipping.exe") || UnrealLauncher(root / folder, here, lower_file)) {
     probe.engine = "unreal";
     if (!EndsWith(lower_file, "-shipping.exe")) {
       probe.unreal_program = FindShipping(root, folder, LowerStem(lower_file));
@@ -757,6 +796,9 @@ int DefaultsRevision(std::string_view engine) {
   // 1: XNA's name alone no longer makes a .NET launcher the game (Borderlands 2). 2: the profile turns Wine's d3d11 off
   // (ProfileDllOverrides), so an XNA game set up before is published again.
   if (engine == "xna") return 2;
+  // 1: Unreal needs Unreal's own folders beside Engine (UnrealLayout), so a game set up before is read again: another
+  // engine's root program beside an "engine" folder (Cyberpunk 2077's REDprelauncher.exe, #1163) is not Unreal's.
+  if (engine == "unreal" || engine == "unreal5") return 1;
   return 0;
 }
 
