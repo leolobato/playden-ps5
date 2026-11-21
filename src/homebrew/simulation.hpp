@@ -112,6 +112,7 @@ struct InstallRequest {
     std::string branch;
     // Install: the install-size estimate of the chosen version (the game's when Steam gives none for it),
     // which the install service reserves on the drive; empty: unknown. ChangeDlc: what the DLC turned on install.
+    // Update: the measured update's changed files (GameUpdate::staged_bytes), reserved on the game's drive.
     std::optional<std::uint64_t> install_bytes;
     // Install: the DLC turned off in the install sheet, sorted. ChangeDlc: every DLC the game is to leave out, sorted.
     std::vector<GameId> excluded_dlc;
@@ -2408,6 +2409,9 @@ private:
     std::set<std::pair<GameId, std::uint64_t>> update_sizes_newer_;  // measured targets Steam was asked about again
     // An update's size as the screens say it: the download, "Checking size…" while it is measured, else "Size unknown".
     [[nodiscard]] std::string update_size_text(GameId id) const;
+    // What an update needs on its game's drive, as its request carries it for the drive to reserve: the changed files'
+    // bytes it stages beside the game, when measured; empty while unknown (the download checks the room itself).
+    [[nodiscard]] std::optional<std::uint64_t> update_reserve_bytes(GameId id) const;
 
     // The screen opened (`forced` false: only a store whose last full check is a day old) or Check for updates:
     // every store with an account, or one.

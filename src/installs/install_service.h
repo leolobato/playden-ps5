@@ -292,8 +292,10 @@ class InstallService {
   // Queues an update of an installed game: `options` select the content; empty fields keep what its
   // install record says (its branch and language). The game stays installed and playable while the
   // update downloads; once the update puts its files in place, Locked is true until it finishes. A
-  // game with a job, or that isn't installed and available, is not updated. `estimated_bytes` (the
-  // download) is reserved as for installs. With `options.dlc_choice` the update changes the game's DLC to
+  // game with a job, or that isn't installed and available, is not updated. `estimated_bytes` (the changed files
+  // it stages beside the game) is reserved as for installs, less what the staged files already hold; a plain
+  // update is not refused when it doesn't fit (its download checks the room), a DLC change is. With
+  // `options.dlc_choice` the update changes the game's DLC to
   // `options.excluded_dlc`: DLC turned on downloads, files only a turned-off DLC had are deleted. Empty when
   // queued, or why not (a sentence for the player).
   // With `options.workshop` (Steam games only) the update brings the game's Workshop items in line instead; see
@@ -443,7 +445,7 @@ class InstallService {
 
   InstallRunner* RunnerFor(Store store) const;
   static void ClearWait(Job& job);
-  bool Admit(Job& job, const std::string& target, std::optional<std::uint64_t> estimated_bytes);
+  bool Admit(Job& job, const std::string& target, std::optional<std::uint64_t> estimated_bytes, bool refuse_short = true);
 
   Runners runners_;
   std::chrono::milliseconds first_retry_{5000};

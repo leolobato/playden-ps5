@@ -2572,7 +2572,11 @@ void Simulation::queue_manage_updates(bool anyway) {
     }
     if (live() && !queue_fits(plan.games.size())) return;
     if (live())
-        for (const auto id : plan.games) pending_install_requests_.push_back({InstallRequestKind::Update, id});
+        for (const auto id : plan.games) {
+            InstallRequest request{InstallRequestKind::Update, id};
+            request.install_bytes = update_reserve_bytes(id);
+            pending_install_requests_.push_back(std::move(request));
+        }
     manage_tabs_[ManageTab::Updates].selected.clear();
     show_manage_queue(plan.games.front());
     const auto* game = plan.games.size() == 1 ? find_game(state_, plan.games.front()) : nullptr;
@@ -4391,7 +4395,8 @@ void Simulation::choose_steam_launch(GameId id, const std::string& program) {
 
 // Used space is what the drive reports, which already includes what downloads have written or
 // preallocated; reserved space is the rest of each download's install estimate, as the install
-// service reserves it when admitting a download.
+// service reserves it when admitting a download. An update reserves only what it was asked with (its
+// changed files), never the whole game: without that estimate it reserves nothing, as the service does.
 void Simulation::apply_live_volume_usage() {
     for (auto& volume : state_.volumes) {
         volume.games_bytes = 0;
@@ -4403,7 +4408,8 @@ void Simulation::apply_live_volume_usage() {
                 job.state == JobState::Cancelled || job.state == JobState::Downloaded) continue;
             const auto* game = find_game(state_, job.game_id);
             // What this install was asked with: the game's figures count DLC it may have left out.
-            const auto estimate = job.estimated_bytes ? job.estimated_bytes : game ? game->install_bytes : std::nullopt;
+            const auto estimate = job.estimated_bytes ? job.estimated_bytes
+                                  : game && !job.update ? game->install_bytes : std::nullopt;
             if (!estimate) continue;
             const auto pending = steam::PendingInstallBytes(estimate, job.held_bytes);
             const auto maximum = std::numeric_limits<std::uint64_t>::max();
@@ -5251,8 +5257,8 @@ Simulation::UpdateCheck Simulation::update_check(GameId id) const {
     if (!volume->writable) { check.reason = "Drive is read-only"; return check; }
     // The download checks the room its changed files need and fails as an install does.
     if (volume->capacity_known) {
-        const auto occupied = std::min(volume->capacity_bytes, volume->used_bytes + volume->reserved_bytes);
-        check.free_bytes = volume->capacity_bytes - occupied;
+        const auto used = std::min(volume->capacity_bytes, volume->used_bytes);
+        check.free_bytes = volume->capacity_bytes - used - std::min(volume->reserved_bytes, volume->capacity_bytes - used);
     }
     // Files are put in place while the game is closed.
     const auto runtime = state_.runtime_games.find(id);
@@ -6287,6 +6293,14 @@ std::string Simulation::update_size_text(GameId id) const {
     const bool waiting = found != state_.update_check.games.end() && !update_sizes_ended_.contains({id, found->second.target}) &&
                          state_.account(id.store).authentication == AuthState::SignedIn;
     return waiting ? "Checking size…" : "Size unknown";
+}
+
+std::optional<std::uint64_t> Simulation::update_reserve_bytes(GameId id) const {
+    const auto found = state_.update_check.games.find(id);
+    if (found != state_.update_check.games.end())
+        return found->second.sized ? std::optional<std::uint64_t>(found->second.staged_bytes) : std::nullopt;
+    const auto* game = find_game(state_, id);
+    return game && game->update.sized ? std::optional<std::uint64_t>(game->update.staged_bytes) : std::nullopt;
 }
 
 void Simulation::PreferencesSaveResult(std::uint64_t revision, playden::StorageError error) {
@@ -13704,8 +13718,11 @@ void Simulation::activate() {
     } else if (action_name == "update-confirm") {
         const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
         if (!update_check(id).allowed) return;
-        if (live()) pending_install_requests_.push_back({InstallRequestKind::Update, id});
-        else push_notice({"update-" + ToKey(id), "Update queued", "", false, kLiveNoticeSeconds, false, "Fixture: nothing downloads"});
+        if (live()) {
+            InstallRequest request{InstallRequestKind::Update, id};
+            request.install_bytes = update_reserve_bytes(id);
+            pending_install_requests_.push_back(std::move(request));
+        } else push_notice({"update-" + ToKey(id), "Update queued", "", false, kLiveNoticeSeconds, false, "Fixture: nothing downloads"});
         close_modal();
         state_.navigation.focus_key = "details-play";
     } else if (live() && action_name == "live-install") {

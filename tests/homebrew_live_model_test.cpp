@@ -3785,6 +3785,9 @@ void live_manage_update_selected(const std::filesystem::path& base) {
     check(requests.size() == 2 && requests[0].kind == InstallRequestKind::Update && requests[0].game_id == SteamId(10) &&
               requests[1].kind == InstallRequestKind::Update && requests[1].game_id == SteamId(20),
           "update selected: the batch queues each checked game's update in the list's order");
+    check(requests[0].install_bytes == std::optional<std::uint64_t>(2 * gb) &&
+              requests[1].install_bytes == std::optional<std::uint64_t>(1 * gb),
+          "update selected: each update carries its changed files for its drive to reserve (#1208)");
     check(navigation.route == Route::Downloads, "update selected: the screen closes on the Queue");
     const auto notice = std::find_if(model.state().notices.begin(), model.state().notices.end(),
                                      [](const auto& value) { return value.id == "update-batch"; });

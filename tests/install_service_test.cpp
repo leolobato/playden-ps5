@@ -1681,6 +1681,65 @@ void WorkshopJobLeavesTheGame(const std::filesystem::path& root) {
   }
 }
 
+// #1208: an update reserves the changed files it was asked with, not the whole game, and a plain update that looks
+// short is still queued (the player may start it anyway; its download checks the room).
+void UpdateReservesItsChangedFiles(const std::filesystem::path& root) {
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  Sessions sessions;
+  Runner runner(sessions);
+  const auto game = SteamId(930);
+  InstallService service(runner, root.string());
+  service.Install(game);
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return Installed(s, game) && !JobOf(s, game); });
+  runner.block = true;
+  CHECK(service.Update(game, {}, std::numeric_limits<std::uint64_t>::max()).empty());
+  auto snapshot = service.Snapshot();
+  const auto* job = JobOf(snapshot, game);
+  CHECK(job && job->kind == InstallJobKind::kUpdate && job->state != InstallJobState::kFailed &&
+        job->estimated_bytes == std::optional<std::uint64_t>(std::numeric_limits<std::uint64_t>::max()));
+  service.Cancel(game);
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, game); });
+
+  const auto space = QueryVolumeSpace(root.string());
+  CHECK(space && space->free_bytes > 256ull * 1024 * 1024);
+  const auto estimate = space->free_bytes / 4 * 3;
+  CHECK(service.Update(game, {}, estimate).empty());
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) {
+    const auto* running = JobOf(s, game);
+    return running && running->state == InstallJobState::kRunning;
+  });
+  CHECK(RegistryLine(root, "930").find("\test=" + std::to_string(estimate)) != std::string::npos);
+  // The update's changed files are reserved: an install that would need the same room is refused.
+  service.Install(SteamId(931), estimate);
+  snapshot = service.Snapshot();
+  CHECK(JobOf(snapshot, SteamId(931)) && JobOf(snapshot, SteamId(931))->state == InstallJobState::kFailed);
+  service.Cancel(SteamId(931));
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, SteamId(931)); });
+  // A second update started anyway on the same drive is queued too, though the first holds the room; a DLC
+  // change is refused as an install is.
+  const auto second = SteamId(932);
+  runner.block = false;
+  service.Cancel(game);
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, game); });
+  service.Install(second);
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return Installed(s, second) && !JobOf(s, second); });
+  runner.block = true;
+  CHECK(service.Update(game, {}, space->free_bytes).empty());
+  CHECK(service.Update(second, {}, space->free_bytes).empty());
+  snapshot = service.Snapshot();
+  CHECK(JobOf(snapshot, second) && JobOf(snapshot, second)->state != InstallJobState::kFailed);
+  service.Cancel(second);
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, second); });
+  InstallOptions dlc;
+  dlc.dlc_choice = true;
+  CHECK(service.Update(second, dlc, space->free_bytes).empty());
+  snapshot = service.Snapshot();
+  CHECK(JobOf(snapshot, second) && JobOf(snapshot, second)->state == InstallJobState::kFailed);
+  service.Shutdown();
+  std::filesystem::remove_all(root);
+}
+
 void DlcChangeKeepsItsChoice(const std::filesystem::path& root) {
   std::filesystem::remove_all(root);
   Sessions sessions;
@@ -2115,6 +2174,7 @@ int main() {
                                         ("playden-uninstall-service-" + std::to_string(::getpid())));
   RunningJobReportsItsStep(std::filesystem::temp_directory_path() / ("playden-step-service-" + std::to_string(::getpid())));
   SpaceAdmission(std::filesystem::temp_directory_path() / ("playden-space-service-" + std::to_string(::getpid())));
+  UpdateReservesItsChangedFiles(std::filesystem::temp_directory_path() / ("playden-update-reserve-service-" + std::to_string(::getpid())));
   LiveTelemetryDecaysWithoutCallbacks(std::filesystem::temp_directory_path() / ("playden-rate-service-" + std::to_string(::getpid())));
   UnreachableSteamWaits(std::filesystem::temp_directory_path() / ("playden-unreachable-service-" + std::to_string(::getpid())));
   WaitingJobsDontBlockTheQueue(std::filesystem::temp_directory_path() / ("playden-waiting-service-" + std::to_string(::getpid())));

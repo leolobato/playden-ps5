@@ -889,8 +889,10 @@ std::string InstallService::Update(GameId id, const InstallOptions& options, std
   job.options = Registrable(job.options, id);
   job.view.dlc_change = job.options.dlc_choice;
   job.view.workshop_change = job.options.workshop;
-  // Workshop items go to the game's bottle, not its drive: nothing is reserved there.
-  Admit(job, game->volume_id, job.options.workshop ? std::nullopt : estimated_bytes);
+  // Workshop items go to the game's bottle, not its drive: nothing is reserved there. A plain update's estimate (its
+  // changed files) is reserved but never refuses it up front: the player may start it anyway, and its download checks
+  // the room it needs. A DLC change is refused as an install is.
+  Admit(job, game->volume_id, job.options.workshop ? std::nullopt : estimated_bytes, job.options.dlc_choice);
   jobs_.push_back(job);
   Publish();
   wake_.notify_all();
@@ -988,7 +990,8 @@ std::string InstallService::Move(GameId id, const std::string& volume_id) {
   if (free) {
     auto available = *free;
     for (const auto& pending : jobs_) {
-      if (pending.view.volume_id != volume_id || pending.cancel_requested || pending.view.state == InstallJobState::kFailed)
+      if (pending.view.volume_id != volume_id || pending.cancel_requested || pending.dropped ||
+          pending.view.state == InstallJobState::kFailed)
         continue;
       available -= std::min(available, PendingInstallBytes(pending.estimated_bytes, pending.view.held_bytes));
     }
@@ -1010,8 +1013,10 @@ std::string InstallService::Move(GameId id, const std::string& volume_id) {
   return {};
 }
 
-// Sets the job's volume and estimate; a volume that is absent or short of space fails the job.
-bool InstallService::Admit(Job& job, const std::string& target, std::optional<std::uint64_t> estimated_bytes) {
+// Sets the job's volume and estimate; a volume that is absent or short of space fails the job. With
+// `refuse_short` false the estimate is reserved without refusing the job when it doesn't fit.
+bool InstallService::Admit(Job& job, const std::string& target, std::optional<std::uint64_t> estimated_bytes,
+                           bool refuse_short) {
   job.view.volume_id = target;
   job.estimated_bytes = job.view.estimated_bytes = estimated_bytes;
   const auto* volume = FindVolume(target);
@@ -1028,12 +1033,17 @@ bool InstallService::Admit(Job& job, const std::string& target, std::optional<st
     auto available = *space;
     // Free space already counts what other downloads have written; reserve only the rest.
     for (const auto& pending : jobs_) {
-      if (pending.view.volume_id != target || pending.cancel_requested ||
+      if (pending.view.volume_id != target || pending.cancel_requested || pending.dropped ||
           pending.view.state == InstallJobState::kFailed) continue;
       const auto reserved = PendingInstallBytes(pending.estimated_bytes, pending.view.held_bytes);
       available -= std::min(available, reserved);
     }
-    if (available < kInstallSpaceMargin || estimated_bytes.value_or(0) > available - kInstallSpaceMargin) {
+    // Without `refuse_short` only a drive that is full already refuses: other jobs' reservations don't, so a batch of
+    // updates started anyway is queued whole and each download checks its own room.
+    const bool short_of_space =
+        refuse_short ? available < kInstallSpaceMargin || estimated_bytes.value_or(0) > available - kInstallSpaceMargin
+                     : *space < kInstallSpaceMargin;
+    if (short_of_space) {
       job.view.state = InstallJobState::kFailed;
       job.view.failure = "Not enough free space after reserving space for other downloads.";
     }

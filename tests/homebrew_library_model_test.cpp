@@ -5609,6 +5609,8 @@ void live_game_update() {
     auto requests = model.TakeInstallRequests();
     check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Update && requests[0].game_id == SteamId(42),
           "confirming sends one update request");
+    check(requests[0].install_bytes == std::optional<std::uint64_t>(1'400'000'000),
+          "the request carries the changed files the drive reserves (#1208)");
     check(model.view().surface != "update", "the sheet closes");
 
     // DLC bought since wins the label, even when an update downloads with it.
@@ -5656,6 +5658,16 @@ void live_game_update() {
                                      [](const auto& value) { return value.game_id == SteamId(42); });
     check(queued != model.state().jobs.end() && queued->stage_text == "Updating" && queued->state_text.empty(),
           "the queue says Updating with the job's own state");
+    // #1208: an update without an estimate reserves nothing on the drive, not the whole 6 GB game; one with an
+    // estimate reserves its changed files, less what it already staged.
+    check(model.state().volumes[0].reserved_bytes == 0, "an update without an estimate reserves nothing");
+    job.estimated_bytes = 300'000'000;
+    job.held_bytes = 100'000'000;
+    model.UpdateInstalls({job}, {{SteamId(42), 6'000'000'000, "internal"}});
+    check(model.state().volumes[0].reserved_bytes == 200'000'000, "an update reserves its changed files only");
+    job.estimated_bytes.reset();
+    job.held_bytes = 0;
+    model.UpdateInstalls({job}, {{SteamId(42), 6'000'000'000, "internal"}});
 
     // Putting the files in place: Play waits and says why; Pause and Cancel are not offered.
     job.applying = true;
