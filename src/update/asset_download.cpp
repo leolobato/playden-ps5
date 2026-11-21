@@ -141,14 +141,20 @@ DownloadResult DownloadAsset(const std::string& url, std::uint64_t size, const s
   if (!IsSha256(sha256)) return fail("no checksum for this download");
   const std::string part = path + ".part";
   struct stat st{};
-  std::uint64_t done = stat(part.c_str(), &st) == 0 ? static_cast<std::uint64_t>(st.st_size) : 0;
+  // A partial that isn't a plain file (a link put there, say) is never written through: it goes.
+  if (lstat(part.c_str(), &st) == 0 && !S_ISREG(st.st_mode)) unlink(part.c_str());
+  std::uint64_t done = lstat(part.c_str(), &st) == 0 ? static_cast<std::uint64_t>(st.st_size) : 0;
   if (done > size) {
     unlink(part.c_str());
     done = 0;
   }
   if (done) Log(options, "download " + path + " resumes at " + std::to_string(done));
-  const int fd = open(part.c_str(), O_CREAT | O_WRONLY, 0666);
+  const int fd = open(part.c_str(), O_CREAT | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0666);
   if (fd < 0) return fail("cannot create " + part + " errno=" + std::to_string(errno));
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+    close(fd);
+    return fail("cannot create " + part + ": not a file");
+  }
   fchmod(fd, 0666);
   if (ftruncate(fd, static_cast<off_t>(done)) != 0) {
     close(fd);

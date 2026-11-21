@@ -96,7 +96,7 @@ int main() {
   CHECK(Read(pack / version / release.archive) == bytes);
   CHECK(Mode(pack) == 0755 && Mode(pack / version) == 0755);
   CHECK(Mode(pack / version / release.archive) == 0644 && Mode(pack / version / "release.json") == 0644);
-  CHECK(!fs::exists(pack / ("." + version + ".upload")));
+  CHECK(!fs::exists(pack / ("." + version + ".download")));
   auto status = CheckPublisherPack(pack.string(), version, {release});
   CHECK(status.version_matches && PublisherSupported(status, Publisher::kRockstar));
   // Playden's release.json is the trimmed one: this archive only.
@@ -106,7 +106,8 @@ int main() {
   // Over an older install: the old version, leftovers and other unpacked copies go; the rest stays.
   Write(pack / "1.old" / "release.json", "{}");
   Write(pack / "1.old" / "playden-rgschost-1.old.tzst", "old");
-  Write(pack / ("." + version + ".upload") / "half.tzst", "half");
+  Write(pack / ("." + version + ".download") / "half.tzst", "half");
+  Write(pack / ("." + version + ".upload") / "busy.tzst", "kept: the upload tool may be writing it");
   Write(pack / "notes.txt", "kept: not a pack");
   Write(pack / "folder-without-release" / "a", "kept");
   Write(pack / "cache" / "release.json", "kept: CheckPublisherPack's reserved name");
@@ -122,7 +123,8 @@ int main() {
   CHECK(InstallPublisherPack(install, archive.string(), &reason));
   CHECK(PublisherSupported(CheckPublisherPack(pack.string(), version, {release}), Publisher::kRockstar));
   CHECK(!fs::exists(pack / version / "playden-ubisoft-2.test.tzst"));
-  CHECK(!fs::exists(pack / "1.old") && !fs::exists(pack / ("." + version + ".upload")));
+  CHECK(!fs::exists(pack / "1.old") && !fs::exists(pack / ("." + version + ".download")));
+  CHECK(Read(pack / ("." + version + ".upload") / "busy.tzst") == "kept: the upload tool may be writing it");
   CHECK(!fs::exists(pack / ("." + version + ".replaced")));
   CHECK(fs::exists(pack / "notes.txt") && fs::exists(pack / "folder-without-release") && fs::exists(pack / "cache"));
   CHECK(!fs::exists(cache / "playden-rgschost-1.old"));
@@ -133,6 +135,43 @@ int main() {
   CHECK(logged_removal);
   // The download itself is left to the caller.
   CHECK(fs::exists(archive));
+
+  // An install that stopped after setting this version aside: the copy set aside is put back, then replaced.
+  fs::rename(pack / version, pack / ("." + version + ".replaced"));
+  CHECK(!fs::exists(pack / version));
+  CHECK(InstallPublisherPack(install, archive.string(), &reason));
+  CHECK(PublisherSupported(CheckPublisherPack(pack.string(), version, {release}), Publisher::kRockstar));
+  CHECK(!fs::exists(pack / ("." + version + ".replaced")));
+
+  // Root can't be given up after the placement: reported as a failure, and nothing more is done (no cache cleanup).
+  {
+    Write(cache / "playden-rgschost-0.left" / "a", "kept: cleanup stops");
+    auto stuck = install;
+    stuck.as_root = [](const std::function<bool()>& work) {
+      work();
+      return false;
+    };
+    reason.clear();
+    CHECK(!InstallPublisherPack(stuck, archive.string(), &reason));
+    CHECK(reason.find("root") != std::string::npos);
+    CHECK(fs::exists(cache / "playden-rgschost-0.left"));
+    fs::remove_all(cache / "playden-rgschost-0.left");
+  }
+
+  // A cache folder reached through a link (itself, or a folder above it) is not cleaned: nothing is removed where the
+  // link points.
+  {
+    const auto target = root / "work-target";
+    Write(target / "cache" / "playden-rgschost-9.other" / "a", "kept: not reached through a link");
+    fs::create_directory_symlink(target, root / "work-link");
+    fs::create_directory_symlink(target / "cache", root / "cache-link");
+    for (const auto& linked_cache : {root / "work-link" / "cache", root / "cache-link"}) {
+      auto through = install;
+      through.cache_root = linked_cache.string();
+      CHECK(InstallPublisherPack(through, archive.string(), &reason));
+      CHECK(fs::exists(target / "cache" / "playden-rgschost-9.other"));
+    }
+  }
 
   // A link in the pack folder's path is refused (ManagedDirectory), and nothing is written through it.
   const auto elsewhere = root / "elsewhere";

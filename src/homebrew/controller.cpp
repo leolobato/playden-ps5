@@ -1081,6 +1081,8 @@ void Controller::TickPublishers() {
     item.obtained_at = static_cast<std::int64_t>(view.obtained_at);
     item.launcher = view.launcher;
     item.pack_ready = view.pack_ready;
+    item.pack_checked = view.pack_checked;
+    item.pack_message = view.pack_message;
     // Listed once it matters: the pack can start the publisher's games, a prepared game is the
     // publisher's, or an account is kept (so it can be signed out of).
     item.shown = view.pack_ready || view.account != runtime::PublisherAccountState::kSignedOut;
@@ -3857,8 +3859,10 @@ void Controller::TickSelfUpdate() {
     else if (request == "kit-check") self_update_->CheckKit();
     else if (request == "kit-install") self_update_->InstallKit();
     else if (request == "kit-cancel") self_update_->Cancel();
-    else if (request == "pack-check") self_update_->CheckPack();
-    else if (request == "pack-cancel") self_update_->Cancel();
+    else if (request == "pack-check") pack_check_pending_ = true;
+    // The worker's cancel stops whatever runs: only the pack's own download is cancelled from its job.
+    else if (request == "pack-cancel" && self_update_->Snapshot().pack.phase == update::PackInstallPhase::kDownloading)
+      self_update_->Cancel();
     else if (request.rfind("skip ", 0) == 0) self_update_skip_pending_ = request.substr(5);
   }
   // A skip waits for the worker like a check: a busy worker would drop it.
@@ -3876,6 +3880,11 @@ void Controller::TickSelfUpdate() {
   // no offer when it isn't in place.
   if (!pack_check_asked_ && !self_update_->Busy()) {
     pack_check_asked_ = true;
+    self_update_->CheckPack();
+  }
+  // Try again in Settings waits for the worker too: a busy worker would drop it.
+  if (pack_check_pending_ && !self_update_->Busy()) {
+    pack_check_pending_ = false;
     self_update_->CheckPack();
   }
   // The runtime started without a usable kit (a first run), or with another kit than the one this

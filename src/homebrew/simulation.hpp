@@ -279,6 +279,8 @@ struct LivePublisher {
     // Its games start beside the publisher's launcher, which Steam features = Online leaves out.
     bool launcher = false;
     bool pack_ready = false;  // its pack is loaded: LivePublishers::untested is known
+    bool pack_checked = false;  // the runtime looked for the pack
+    std::string pack_message;   // why the pack can't be used, once checked
     bool operator==(const LivePublisher&) const = default;
 };
 // The phone sign-in screen, from its one-time page (runtime/phone_relay.h).

@@ -129,8 +129,9 @@ bool PlaceArchive(const PublisherPackInstall& install, const std::string& archiv
   auto pack = parent->OpenChild(root.substr(slash + 1), DirectoryPolicy::kApprovedTree, true, kFolderMode);
   if (!pack) return Fail(reason, "cannot open " + root);
 
-  // The upload tool's and the builds page's staging name: what any of them left behind goes first.
-  const std::string staging_name = "." + install.version + ".upload";
+  // A staging name of Playden's own: the upload tool and the builds page stage in ".<version>.upload" and may be
+  // writing there right now. What a previous download left behind goes first.
+  const std::string staging_name = "." + install.version + ".download";
   const std::string staging_path = root + "/" + staging_name;
   if (!RemoveTree(staging_path)) return Fail(reason, "cannot remove " + staging_path);
   auto staging = pack->OpenChild(staging_name, DirectoryPolicy::kApprovedTree, true, kFolderMode);
@@ -149,22 +150,31 @@ bool PlaceArchive(const PublisherPackInstall& install, const std::string& archiv
   staging.reset();
 
   // This version's folder (damaged, incomplete, or holding archives this build doesn't pin) is set aside, and put
-  // back if the new one can't take its place.
+  // back if the new one can't take its place. A folder set aside by an install that stopped before its rename is
+  // put back first, so the only copy of a version is never removed.
   const std::string final_path = root + "/" + install.version;
   const std::string aside_name = "." + install.version + ".replaced";
   const std::string aside_path = root + "/" + aside_name;
-  if (!RemoveTree(aside_path)) return abandon("cannot remove " + aside_path);
   struct stat info {};
+  if (!Lstat(final_path, &info) && Lstat(aside_path, &info) &&
+      !pack->RenameChild(aside_name, *pack, install.version, false))
+    return abandon("cannot put " + aside_path + " back");
+  if (!RemoveTree(aside_path)) return abandon("cannot remove " + aside_path);
   const bool had_version = Lstat(final_path, &info);
-  if (had_version && !pack->RenameChild(install.version, *pack, aside_name, false))
-    return abandon("cannot move " + final_path + " aside");
+  if (had_version && !pack->RenameChild(install.version, *pack, aside_name, false)) {
+    // Not ours to rename (another owner): a damaged copy is only removed, which needs write access to the folder.
+    log("publisher pack: cannot move " + final_path + " aside, removing it");
+    if (!RemoveTree(final_path)) return abandon("cannot replace " + final_path);
+  }
+  const bool aside = had_version && Lstat(aside_path, &info);
   if (!pack->RenameChild(staging_name, *pack, install.version, false)) {
-    if (had_version) pack->RenameChild(aside_name, *pack, install.version, false);
+    if (aside && !pack->RenameChild(aside_name, *pack, install.version, false))
+      log("publisher pack: could not put " + aside_path + " back; the next install does");
     return abandon("cannot rename " + staging_path);
   }
-  pack->Sync();
-  parent->Sync();
-  if (had_version && !RemoveTree(aside_path)) log("publisher pack: could not remove " + aside_path);
+  // The old copy goes only once the new one is durably in place.
+  if (!pack->Sync() || !parent->Sync()) return Fail(reason, "cannot sync " + root);
+  if (aside && !RemoveTree(aside_path)) log("publisher pack: could not remove " + aside_path);
 
   // Other versions: this build can't use them (the same rule CheckPublisherPack uses to find one).
   for (const auto& name : List(root)) {
@@ -198,22 +208,28 @@ bool InstallPublisherPack(const PublisherPackInstall& install, const std::string
     return Fail(reason, "the downloaded " + install.release.archive + " does not match its pin");
   std::string why;
   bool placed = false;
-  if (install.as_root) {
-    install.as_root([&] { return placed = PlaceArchive(install, archive, &why); });
-  } else {
-    placed = PlaceArchive(install, archive, &why);
-  }
+  // as_root fails when root can't be raised or the app's user can't be put back: nothing more is done then.
+  const bool privileges_ok = install.as_root ? install.as_root([&] { return placed = PlaceArchive(install, archive, &why); })
+                                             : (placed = PlaceArchive(install, archive, &why));
   if (!placed) return Fail(reason, why.empty() ? "cannot install the pack" : why);
+  if (!privileges_ok) return Fail(reason, "the pack is in place, but root could not be given up");
 
-  // Unpacked copies of other archives: Playden's own files, removed without root.
-  if (!install.cache_root.empty()) {
+  // Unpacked copies of other archives: Playden's own files, removed without root. The cache folder is checked
+  // first (ManagedDirectory refuses a link anywhere in its path), so nothing is removed through a link.
+  if (!install.cache_root.empty() && IsFolder(install.cache_root)) {
+    const auto cache = ManagedDirectory::Open(install.cache_root, DirectoryPolicy::kApprovedTree);
+    if (!cache) {
+      if (install.log) install.log("publisher cache: " + install.cache_root + " refused, not cleaned");
+      return true;
+    }
     const auto keep = Stem(install.release.archive);
     for (const auto& name : List(install.cache_root)) {
       if (name.empty() || name[0] == '.' || name == keep || name.rfind("playden-", 0) != 0) continue;
-      const std::string path = install.cache_root + "/" + name;
-      if (!IsFolder(path)) continue;
-      const bool removed = RemoveTree(path);
-      if (install.log) install.log(removed ? "publisher cache: removed " + name : "publisher cache: could not remove " + path);
+      struct stat info {};
+      if (!cache->InspectChild(name, &info) || !S_ISDIR(info.st_mode)) continue;
+      const bool removed = RemoveTree(install.cache_root + "/" + name);
+      if (install.log)
+        install.log(removed ? "publisher cache: removed " + name : "publisher cache: could not remove " + name);
     }
   }
   return true;

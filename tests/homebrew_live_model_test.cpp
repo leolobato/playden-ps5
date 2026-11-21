@@ -2356,6 +2356,34 @@ void live_publisher_pack(const std::filesystem::path& base) {
     row = find_row(model, "settings-publisher-pack");
     check(row && row->value == "Ready", "pack: already in place reads Ready");
 
+    // In place, but the runtime can't use it: Settings says what the runtime says, not Ready.
+    LivePublishers publishers;
+    LivePublisher rockstar;
+    rockstar.slug = "rockstar";
+    rockstar.name = "Rockstar Games";
+    rockstar.pack_checked = true;
+    rockstar.pack_message = "The publisher pack could not be unpacked: cannot create the publisher cache";
+    publishers.publishers.push_back(rockstar);
+    model.SetPublishers(publishers);
+    to(Route::Settings);
+    row = find_row(model, "settings-publisher-pack");
+    check(row && row->value == "Not ready" && row->subtitle == rockstar.pack_message,
+          "pack: a pack the runtime can't use isn't Ready");
+    rockstar.pack_ready = true;
+    rockstar.pack_message.clear();
+    publishers.publishers = {rockstar};
+    model.SetPublishers(publishers);
+
+    // While installing, the job's actions offer no cancel.
+    update.pack_phase = "installing";
+    model.UpdateSelfUpdate(update);
+    to(Route::Downloads);
+    check(model.action("focus:job-publisher-pack") && model.action("cross"), "pack: the installing job opens its actions");
+    check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().action_keys ==
+              std::vector<std::string>{"cancel"},
+          "pack: installing can't be cancelled");
+    model.action("circle");
+
     // The Queue job's actions: Cancel download asks the service to stop.
     update.pack_phase = "downloading";
     model.UpdateSelfUpdate(update);

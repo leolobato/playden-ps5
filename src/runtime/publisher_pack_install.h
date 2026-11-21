@@ -29,8 +29,9 @@ struct PublisherPackInstall {
 };
 
 // Puts a downloaded archive in place, as tools/console_publisher_upload.py and the builds page's Install button do:
-// the archive (copied, then read back against the pin) and release.json go into <pack_root>/.<version>.upload,
-// which then replaces <pack_root>/<version>. Every other version, and a staging folder left behind, is removed.
+// the archive (copied, then read back against the pin) and release.json go into <pack_root>/.<version>.download
+// (not their ".upload", which one of them may be writing), which then replaces <pack_root>/<version>. Every other
+// version, and Playden's own staging folder left behind, is removed.
 // The archive must match the release's pinned SHA-256. Folders are 0755 and files 0644. On failure the installed
 // pack, if any, is left as it was, unless it was this version's (damaged: it is the one being replaced).
 bool InstallPublisherPack(const PublisherPackInstall& install, const std::string& archive, std::string* reason);

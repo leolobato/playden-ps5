@@ -67,6 +67,8 @@ struct UpdateConfig {
     std::uint64_t size = 0;
     std::string sha256;
     std::function<bool()> ready;
+    // The download's SHA-256 check; empty: config.hash_file.
+    std::function<std::optional<std::string>(const std::string& path)> hash_file;
     std::function<bool(const std::string& archive_path, std::string* reason)> install;
   };
   PublisherPack pack;

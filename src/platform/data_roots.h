@@ -79,6 +79,10 @@ inline const std::vector<std::string>& SecretFileNames() {
       "session",          // GOG sign-in (user/gog/)
       // Publisher sign-ins (user/state/), runtime::PublisherAccountFileName
       "publisher-account-rockstar.v1",
+      // Parked publishers: no build signs in to them now, but a file from a test build stays owner-only.
+      "publisher-account-steamhost.v1",
+      "publisher-account-ea.v1",
+      "publisher-account-ubisoft.v1",
   };
   return names;
 }

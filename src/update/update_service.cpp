@@ -934,6 +934,9 @@ void UpdateService::DoPack() {
   const std::string path = config_.work_root + "/downloads/" + pack.archive;
   auto options = Downloads("pack");
   options.allowed_url_prefix = pack.allowed_url_prefix;
+  if (pack.hash_file) options.hash_file = pack.hash_file;
+  // A few MB: small ranges, so progress moves and a stopped download resumes where it was.
+  options.chunk_bytes = 256 << 10;
   const auto download = DownloadAsset(pack.url, pack.size, pack.sha256, path, options);
   if (!download.ok) {
     if (download.cancelled) return FailPack("The " + pack.name + " download was cancelled.", "cancelled");

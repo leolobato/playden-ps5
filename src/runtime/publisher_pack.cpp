@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <dirent.h>
 #include <fcntl.h>
 #include <filesystem>
 #include <optional>
@@ -128,12 +129,33 @@ bool Digests(const fs::path& root, std::map<std::string, std::string>* digests) 
   return !error;
 }
 
-void RemoveStaging(const fs::path& cache_root) {
-  std::error_code error;
-  for (fs::directory_iterator it(cache_root, error), end; !error && it != end; it.increment(error)) {
-    const auto name = it->path().filename().string();
-    if (name.rfind(kStagingPrefix, 0) == 0) fs::remove_all(it->path(), error);
+// lstat/unlink/rmdir, never following a link: std::filesystem::remove_all crashes the console title
+// (results/20261007-game-removal). True when nothing is left.
+bool RemoveTree(const std::string& path) {
+  struct stat info {};
+  if (::lstat(path.c_str(), &info) != 0) return errno == ENOENT;
+  if (!S_ISDIR(info.st_mode)) return ::unlink(path.c_str()) == 0;
+  bool ok = true;
+  if (DIR* dir = ::opendir(path.c_str())) {
+    std::vector<std::string> names;
+    while (const dirent* entry = ::readdir(dir)) {
+      const std::string name = entry->d_name;
+      if (name != "." && name != "..") names.push_back(name);
+    }
+    ::closedir(dir);
+    for (const auto& name : names) ok = RemoveTree(path + "/" + name) && ok;
+  } else {
+    ok = false;
   }
+  return ::rmdir(path.c_str()) == 0 && ok;
+}
+
+void RemoveStaging(const fs::path& cache_root) {
+  std::vector<fs::path> staging;
+  std::error_code error;
+  for (fs::directory_iterator it(cache_root, error), end; !error && it != end; it.increment(error))
+    if (it->path().filename().string().rfind(kStagingPrefix, 0) == 0) staging.push_back(it->path());
+  for (const auto& path : staging) RemoveTree(path.string());
 }
 
 // Writes one archive's entries below stage, keeping the path rules.
@@ -320,8 +342,7 @@ bool PreparePublisherRelease(const std::string& pack_root, const std::string& ve
   fs::create_directories(stage, error);
   if (error) return Fail(reason, "cannot create the publisher cache");
   const auto abandon = [&](std::string text) {
-    std::error_code ignored;
-    fs::remove_all(stage, ignored);
+    RemoveTree(stage.string());
     return Fail(reason, std::move(text));
   };
 
@@ -346,8 +367,7 @@ bool PreparePublisherRelease(const std::string& pack_root, const std::string& ve
   files += "}";
   if (!WriteSmall(stage / kFilesMarker, files) || !WriteSmall(stage / kReleaseMarker, release.sha256))
     return abandon("cannot record the publisher cache");
-  fs::remove_all(target, error);
-  if (error) return abandon("cannot replace the publisher cache");
+  if (!RemoveTree(target.string())) return abandon("cannot replace the publisher cache");
   fs::rename(stage, target, error);
   if (error) return abandon("cannot finish the publisher cache");
   if (!PublisherCacheValid(target.string(), release)) return Fail(reason, "the publisher cache did not verify");

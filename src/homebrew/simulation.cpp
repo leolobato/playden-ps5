@@ -3704,7 +3704,7 @@ void Simulation::UpdateSelfUpdate(const LiveSelfUpdate& update) {
     // The Rockstar Games pack: no offer and no alert. A failure shows in Settings › Publishers.
     if (update.pack_phase == "installed" && before.pack_phase != "installed")
         push_notice({"publisher-pack-installed", "Rockstar Games pack installed", "", false, kLiveNoticeSeconds, false,
-                     "Rockstar Games' games can be played now"});
+                     std::string("Version ") + rt::kPublisherPackVersion});
     sync_self_update_job();
     show_update_prompt();
     rebuild_view();
@@ -7690,6 +7690,7 @@ bool Simulation::scenario(const std::string& name) {
         pack.completed_bytes = 940'000;
         pack.bytes_per_second = 1'800'000;
         pack.eta_seconds = 1;
+        pack.volume_id = "internal";  // the work folder's drive: the fixture clock leaves a job on a known drive running
         state_.jobs.push_back(std::move(pack));
         Job game;
         game.id = "install-" + ToKey(GameId::Steam(900002));
@@ -11393,6 +11394,16 @@ void Simulation::rebuild_view() {
             } else if (phase == "installing") {
                 pack.value = "Installing…";
                 pack.subtitle = "Putting the downloaded pack in place";
+            } else if (const auto rockstar = std::find_if(state_.publishers.publishers.begin(), state_.publishers.publishers.end(),
+                                                          [](const LivePublisher& item) { return item.slug == "rockstar"; });
+                       rockstar != state_.publishers.publishers.end() && rockstar->pack_checked && !rockstar->pack_ready &&
+                       !rockstar->pack_message.empty()) {
+                // In place, but the runtime can't use it (its files can't be unpacked, say): what the runtime says.
+                pack.value = "Not ready";
+                pack.subtitle = rockstar->pack_message;
+                pack.kind = RowKind::Status;
+                pack.action.clear();
+                pack.enabled = false;
             } else {
                 pack.value = "Ready";
                 pack.subtitle = std::string("Version ") + rt::kPublisherPackVersion;
@@ -13408,7 +13419,11 @@ void Simulation::activate() {
     } else if (action_name == "job-action" && selected.key == "job-kit-install") {
         open_modal({"job-actions", "Runtime kit", selected.key, {"kit-cancel", "cancel"}, 0, false});
     } else if (action_name == "job-action" && selected.key == "job-publisher-pack") {
-        open_modal({"job-actions", "Rockstar Games pack", selected.key, {"pack-cancel", "cancel"}, 0, false});
+        // Only a download can be cancelled; installing takes a moment and finishes.
+        std::vector<std::string> actions;
+        if (state_.self_update.pack_phase == "downloading") actions.push_back("pack-cancel");
+        actions.push_back("cancel");
+        open_modal({"job-actions", "Rockstar Games pack", selected.key, std::move(actions), 0, false});
     } else if (action_name == "job-action" && selected.key == "job-playden-update") {
         const auto& phase = state_.self_update.phase;
         std::vector<std::string> actions;
@@ -15344,7 +15359,10 @@ void Simulation::activate() {
             state_.navigation.focus_key = "job-publisher-pack";
         } else if (phase == "failed") self_update_requests_.push_back("pack-check");
     }
-    else if (live() && action_name == "pack-cancel") { close_modal(); self_update_requests_.push_back("pack-cancel"); }
+    else if (live() && action_name == "pack-cancel") {
+        close_modal();
+        if (state_.self_update.pack_phase == "downloading") self_update_requests_.push_back("pack-cancel");
+    }
     else if (live() && action_name == "self-update-cancel") { close_modal(); self_update_requests_.push_back("cancel"); }
     else if (live() && action_name == "self-update-restart") { close_modal(); request_self_update_restart(); }
     else if (live() && action_name == "self-update-notes") open_release_notes(false);

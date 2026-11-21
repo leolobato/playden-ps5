@@ -614,11 +614,19 @@ int main() {
             pack.archive = release.archive;
             pack.size = release.size;
             pack.sha256 = release.sha256;
+            // Hashing opens files through ManagedDirectory, which refuses a changed effective user: root isn't raised
+            // by another thread meanwhile.
             pack.ready = [] {
+                const auto hold = playden::ps5::HoldEffectiveUid();
                 const auto status = rt::CheckPublisherPack(rt::kPublisherPackRoot);
                 return rt::PublisherSupported(status, rt::Publisher::kRockstar);
             };
+            pack.hash_file = [](const std::string& path) {
+                const auto hold = playden::ps5::HoldEffectiveUid();
+                return rt::HashArtifactFile(path);
+            };
             pack.install = [release](const std::string& archive, std::string* reason) {
+                const auto hold = playden::ps5::HoldEffectiveUid();
                 rt::PublisherPackInstall install;
                 install.pack_root = rt::kPublisherPackRoot;
                 install.version = rt::kPublisherPackVersion;

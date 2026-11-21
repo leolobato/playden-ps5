@@ -2,6 +2,9 @@
 #include "update/file_ops.h"
 #include "zip_fixture.h"
 
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -159,6 +162,23 @@ int main() {
     const auto result = DownloadAsset(kPage, body.size(), good, root + "/w.zip", options);
     std::string part;
     CHECK(!result.ok && ReadSmallFile(root + "/w.zip.part", &part) && part == body.substr(0, 10));
+  }
+  // A .part that is a link is never written through: it is replaced by a file of its own, and the file it pointed at
+  // keeps its bytes and mode.
+  {
+    FakeGitHub github;
+    github.body = body;
+    const std::string victim = root + "/victim.txt";
+    CHECK(zip_fixture::Write(victim, "keep"));
+    chmod(victim.c_str(), 0600);
+    CHECK(symlink(victim.c_str(), (root + "/l.zip.part").c_str()) == 0);
+    const auto result = DownloadAsset(kPage, body.size(), good, root + "/l.zip", Options(github, body));
+    CHECK(result.ok && github.ranges_seen.front() == "bytes=0-9");
+    std::string text;
+    CHECK(ReadSmallFile(victim, &text) && text == "keep");
+    struct stat info{};
+    CHECK(stat(victim.c_str(), &info) == 0 && (info.st_mode & 0777) == 0600);
+    CHECK(ReadSmallFile(root + "/l.zip", &text) && text == body);
   }
   // Resume: an existing .part is kept and only the rest is fetched.
   {
