@@ -1344,7 +1344,7 @@ void live_my_presets(const std::filesystem::path& base) {
     auto change = model.CreateMyPreset("  point AND click ", {{"resolution", "2560x1440"}}, &created);
     check(change.refusal == R::kNameTaken && created.empty() && presets_on_disk() == seeded, "my presets: a taken name is refused");
     check(model.DeleteMyPreset("my-0000000000000bad").refusal == R::kUnknownId, "my presets: an unknown preset is refused");
-    check(model.ReplaceMyPresetSettings(mine, {{"graphics", "dxvk"}}).refusal == R::kSettingRefused &&
+    check(model.ReplaceMyPresetSettings(mine, {{"architecture", "pe64"}}).refusal == R::kSettingRefused &&
               model.MyPresets() == seeded && on_disk() == records,
           "my presets: a setting a preset may not set is refused");
 

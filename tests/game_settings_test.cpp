@@ -1050,8 +1050,36 @@ int main(int argc, char** argv) {
     const SettingsPreset* opengl_preset = nullptr;
     for (const auto& preset : presets)
       if (preset.id == "opengl-game") opengl_preset = &preset;
-    CHECK(opengl_preset && opengl_preset->settings == (std::map<std::string, std::string>{{"refresh", "60"}}));
+    CHECK(opengl_preset && opengl_preset->settings ==
+                               (std::map<std::string, std::string>{{"graphics", "opengl"}, {"refresh", "60"}}));
     CHECK(BuildEffectiveSettings(opengl, opengl_preset, old_record.overrides, zink, &settings, &error));
+
+    // The OpenGL game preset switches a game set up for DXVK to OpenGL, without DXVK's overrides (#1232).
+    auto detected = hl2;
+    detected.id = GeneratedRecipeId(220);
+    detected.graphics = "dxvk";
+    detected.dll_overrides.clear();
+    detected.locked.clear();
+    CHECK(BuildEffectiveSettings(detected, nullptr, {}, zink, &settings, &error));
+    CHECK(settings.graphics == "dxvk" && settings.dll_overrides == kDxvkOverrides);
+    CHECK(BuildEffectiveSettings(detected, opengl_preset, {}, zink, &settings, &error));
+    CHECK(settings.graphics == "opengl" && settings.values.at("graphics").source == ValueSource::kPreset &&
+          settings.dll_overrides.empty());
+    CHECK(RenderProsperoProfile(detected, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\ngraphics = opengl\n") != std::string::npos &&
+          profile.text.find("dll_overrides") == std::string::npos);
+    // A share carries the Graphics the game plays with, in the recipe's own field, and no "graphics" row.
+    const auto shared = BuildCommunityRecipe(detected, settings, playden::GameRef::Steam(220), "Half-Life 2");
+    CHECK(shared.recipe.graphics == "opengl" && !shared.recipe.defaults.count("graphics"));
+    // The player's own Graphics still wins over the preset's.
+    CHECK(BuildEffectiveSettings(detected, opengl_preset, {{"graphics", "dxvk"}}, zink, &settings, &error));
+    CHECK(settings.graphics == "dxvk" && settings.values.at("graphics").source == ValueSource::kUser);
+    // A recipe that locks Graphics keeps its own (Scott Pilgrim EX draws only on DXVK).
+    GameRecipe scott;
+    CHECK(ParseGameRecipe(ReadText(source / "runtime/recipes/steam-2640950-scottpilgrimex-v1.json"), &scott, &reason));
+    CHECK(BuildEffectiveSettings(scott, opengl_preset, {}, zink, &settings, &error));
+    CHECK(settings.graphics == "dxvk" && settings.values.at("graphics").locked &&
+          settings.dll_overrides == kDxvkOverrides);
   }
   // A Zink kit's runtime reads Environment variables as [debug] env lines; names it does not take are left out.
   CHECK(!settings.values.at("environment").reason.size());
@@ -2675,7 +2703,13 @@ int main(int argc, char** argv) {
     CHECK(environment.find("PW_DEBUG_REGISTERS_ZERO=1") != std::string::npos &&
           environment.find("PW_SUBPAGE_FIXES=1") != std::string::npos);
   }
-  CHECK(!ParseSettingsPresets(R"({"presets":[{"id":"x","name":"X","settings":{"graphics":"gdi"}}]})", &presets, &reason));
+  {
+    std::vector<SettingsPreset> graphics;
+    CHECK(ParseSettingsPresets(R"({"presets":[{"id":"x","name":"X","settings":{"graphics":"opengl"}}]})", &graphics,
+                               &reason));
+    CHECK(!ParseSettingsPresets(R"({"presets":[{"id":"x","name":"X","settings":{"graphics":"vulkan"}}]})", &graphics,
+                                &reason));
+  }
   CHECK(!ParseSettingsPresets(R"({"presets":[{"id":"x","name":"X","settings":{"extra_arguments":"-a"}}]})", &presets, &reason));
   // The "my-" prefix is the player's own presets'; a built-in one may not take it.
   {
@@ -2688,9 +2722,12 @@ int main(int argc, char** argv) {
   CHECK(ValidatePresetSetting("controller_preset", "mouse", &reason));
   CHECK(ValidatePresetSetting("resolution", "1280x720", &reason));
   CHECK(!ValidatePresetSetting("resolution", "huge", &reason));
-  for (const char* refused : {"launch_option", "graphics", "architecture", "start_check", "extra_arguments", "program",
+  for (const char* refused : {"launch_option", "architecture", "start_check", "extra_arguments", "program",
                               "no_such_setting", "opengl_thread"})
     CHECK(!ValidatePresetSetting(refused, "x", &reason));
+  // Graphics is a choice a preset may make (the OpenGL game preset, #1232), with a value the row takes.
+  CHECK(ValidatePresetSetting("graphics", "opengl", &reason) && ValidatePresetSetting("graphics", "dxvk", &reason));
+  CHECK(!ValidatePresetSetting("graphics", "vulkan", &reason));
   CHECK(RetiredSetting("opengl_thread") && !RetiredSetting("refresh"));
 
   // A player preset made from a game keeps what the player chose for it, by where each value came from.
@@ -2708,7 +2745,7 @@ int main(int argc, char** argv) {
         {"performance_overlay", "off"},      // equal to Playden's default, over the recipe's value
         {"button.cross", "space"},           // a button binding: free text a preset may hold
         {"extra_arguments", "-windowed"},    // free text a preset may not hold
-        {"graphics", "dxvk"},                // never in a preset
+        {"graphics", "dxvk"},                // a player change a preset may carry
         {"steam_input", "off"},              // a locked row, changed anyway
         {"unlock.steam_input", "on"},
         {"vsync", "off"},                    // a locked row: the player's value doesn't apply
@@ -2734,10 +2771,10 @@ int main(int argc, char** argv) {
     auto kept = PresetSettingsFromGame(own, settings, PresetCapture::kSave);
     const std::map<std::string, std::string> chosen = {
         {"controller_preset", "gamepad"}, {"refresh", "60"}, {"controller", Value(settings, "controller")},
-        {"rumble", "50"}, {"performance_overlay", "off"}, {"button.cross", "space"}};
+        {"rumble", "50"}, {"performance_overlay", "off"}, {"button.cross", "space"}, {"graphics", "dxvk"}};
     for (const auto& [id, value] : chosen) CHECK(kept.count(id) && kept.at(id) == value);
     // Everything else is left out: the recipe's values, Playden's, locked and unavailable rows, what a preset can't set.
-    for (const char* left : {"resolution", "window_view", "steam_features", "extra_arguments", "graphics", "steam_input",
+    for (const char* left : {"resolution", "window_view", "steam_features", "extra_arguments", "steam_input",
                              "unlock.steam_input", "vsync", "volume", "launch_option", "architecture"})
       CHECK(!kept.count(left));
     for (const auto& [id, value] : kept) {
@@ -2748,7 +2785,7 @@ int main(int argc, char** argv) {
     // Own changes only: the preset's values stay with the preset.
     kept = PresetSettingsFromGame(own, settings, PresetCapture::kOwnChanges);
     CHECK(kept == (std::map<std::string, std::string>{
-                      {"rumble", "50"}, {"performance_overlay", "off"}, {"button.cross", "space"}}));
+                      {"rumble", "50"}, {"performance_overlay", "off"}, {"button.cross", "space"}, {"graphics", "dxvk"}}));
 
     // Changing the controller layout also changes inputs inherited from the old settings preset.
     // Update must move those effective inputs, or the old preset's explicit rows win again.

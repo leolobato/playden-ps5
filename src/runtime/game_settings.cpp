@@ -924,7 +924,7 @@ std::map<std::string, std::string> PresetSettingsFromGame(const GameRecipe& reci
     const bool chosen = value.source == ValueSource::kUser ||
                         own_input ||
                         (capture == PresetCapture::kSave && value.source == ValueSource::kPreset) ||
-                        (community && value.source == ValueSource::kRecipe);
+                        (community && value.source == ValueSource::kRecipe && id != "graphics");
     if (!chosen || value.locked || (!value.available && !value.waits_for_update)) continue;
     const auto& wanted = ChosenValue(value);
     if (ValidatePresetSetting(id, wanted, nullptr)) kept[id] = wanted;
@@ -2540,11 +2540,12 @@ bool RetiredSetting(std::string_view id) {
 }
 
 bool ValidatePresetSetting(std::string_view id, std::string_view value, std::string* reason) {
-  // Presets bundle choices and button bindings; launch entries, graphics and free text belong to the recipe or the
-  // player. So does where a game is installed (Steam library folder): moving a game that already ran can break it.
+  // Presets bundle choices and button bindings; launch entries and free text belong to the recipe or the player. So
+  // does where a game is installed (Steam library folder): moving a game that already ran can break it. Graphics is a
+  // choice like the others: the OpenGL game preset sets it (#1232), and a recipe's lock still keeps it.
   const auto* definition = FindSetting(id);
   const bool button = id.compare(0, 7, "button.") == 0;
-  if (!definition || id == "launch_option" || id == "graphics" || id == "architecture" || id == "start_check" ||
+  if (!definition || id == "launch_option" || id == "architecture" || id == "start_check" ||
       id == "steam_library_path" ||
       (definition->kind == SettingKind::kText && !button && id != "controller_layout" && id != "touchpad_hold_layout")) {
     if (reason) *reason = "unsupported setting";
@@ -3328,15 +3329,20 @@ bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilitie
   }
   // A program with no engine and nothing it draws (DefaultsRevision 1): one that imports a Qt web view only starts the
   // game (Fahrenheit Remastered's Aspyr launcher, #1197), so it's read once for the game's own program to start
-  // first. Any other keeps what it was set up with and takes the revision.
+  // first. Ren'Py's games had no engine either (DefaultsRevision 2: Roadwarden, #960): one takes Ren'Py's defaults.
+  // Any other keeps what it was set up with and takes the revision.
+  std::optional<GameProbe> probed;
   if (!current && engine == "unknown") {
-    if (StartGameProgramFirst(install_root, *on_disk, ProbeGame(install_root, *on_disk), kit, recipe)) return true;
-    recipe->defaults_revision = DefaultsRevision(recipe->detected);
-    current = moved = true;
+    probed = ProbeGame(install_root, *on_disk);
+    if (recipe->defaults_revision < 1 && StartGameProgramFirst(install_root, *on_disk, *probed, kit, recipe)) return true;
+    if (probed->engine != "renpy") {
+      recipe->defaults_revision = DefaultsRevision(recipe->detected);
+      current = moved = true;
+    }
   }
   if (current && !MayNeedWatcomTranslator(*recipe)) return moved;
   if (current) return AddWatcomTranslator(install_root, *on_disk, recipe) || moved;
-  const auto probe = ProbeGame(install_root, *on_disk);
+  const auto probe = probed ? *probed : ProbeGame(install_root, *on_disk);
   if (StartGameProgramFirst(install_root, *on_disk, probe, kit, recipe)) return true;
   RuntimeAbilities abilities;
   abilities.shared_sections = kit.shared_sections;
@@ -3357,7 +3363,7 @@ bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilitie
   if (defaults.cpu.empty()) refreshed.defaults.erase("cpu");
   else refreshed.defaults["cpu"] = defaults.cpu;
   // The files no longer show this engine (an update changed it): that's for the files-changed path, not this one.
-  if (refreshed.defaults_revision < DefaultsRevision(recipe->detected)) {
+  if (std::string_view(defaults.summary).substr(0, defaults.summary.find_first_of(", ")) != engine) {
     // XNA's marks narrowed (DefaultsRevision 1): a program that no longer counts as XNA and has no game to start in
     // its place (one the player chose) keeps what it was set up with, and isn't read again at each Play.
     if (engine == "xna") {
@@ -3365,8 +3371,9 @@ bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilitie
       return true;
     }
     // Unreal's detection narrowed (DefaultsRevision 1): a program taken for Unreal's only for an "engine" folder beside
-    // it (Cyberpunk 2077, #1163) takes the defaults its own files give, without -dx11.
-    if (engine != "unreal" && engine != "unreal5") return moved;
+    // it (Cyberpunk 2077, #1163) takes the defaults its own files give, without -dx11. A game with no engine gets here
+    // only as Ren'Py, which takes its defaults.
+    if (engine != "unreal" && engine != "unreal5" && engine != "unknown") return moved;
   }
   *recipe = std::move(refreshed);
   return true;

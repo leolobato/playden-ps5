@@ -32,9 +32,10 @@
     {
       "id": "opengl-game",
       "name": "OpenGL game",
-      "try_when": "Older engines that draw with OpenGL, such as id Tech and GoldSrc games.",
+      "try_when": "Games that draw with OpenGL: id Tech, GoldSrc and Ren'Py. Sets Graphics to OpenGL.",
       "short_hint": "Older engines",
       "settings": {
+        "graphics": "opengl",
         "refresh": "60"
       }
     }

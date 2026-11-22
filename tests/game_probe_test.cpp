@@ -452,6 +452,59 @@ int main() {
     CHECK(defaults.graphics == "opengl" && defaults.summary == "love graphics=opengl");
     CHECK(DetectedLabel(defaults.summary) == "L\xC3\x96VE \xC2\xB7 OpenGL");
   }
+  {  // Ren'Py: its Python loads SDL and OpenGL at run time, so the program names no graphics library (#1232, #960).
+    // Under DXVK it stops at its presplash with "No matching GL pixel format available".
+    const auto root = fresh();
+    // Ren'Py 8 (City Lights and Love Bites): a 64-bit program, lib/py3-windows-x86_64/librenpython.dll.
+    WritePe(root / "CityLights.exe", {true, {"KERNEL32.dll"}});
+    fs::create_directories(root / "renpy");
+    fs::create_directories(root / "game");
+    Touch(root / "lib/py3-windows-x86_64/librenpython.dll");
+    auto defaults = DefaultsFor(ProbeGame(root.string(), "CityLights.exe"));
+    CHECK(defaults.graphics == "opengl" && defaults.summary == "renpy graphics=opengl");
+    CHECK(DetectedLabel(defaults.summary) == "Ren'Py \xC2\xB7 OpenGL");
+    // Without its renpy folder it is no Ren'Py game, and nothing names a graphics library: DXVK, as before.
+    fs::remove_all(root / "renpy");
+    defaults = DefaultsFor(ProbeGame(root.string(), "CityLights.exe"));
+    CHECK(defaults.graphics == "dxvk" && defaults.summary == "unknown graphics=dxvk");
+    // Nor with a lib folder that holds no Ren'Py Python.
+    fs::create_directories(root / "renpy");
+    fs::remove(root / "lib/py3-windows-x86_64/librenpython.dll");
+    Touch(root / "lib/py3-windows-x86_64/readme.txt");
+    CHECK(ProbeGame(root.string(), "CityLights.exe").engine.empty());
+  }
+  {  // Ren'Py 7 (Roadwarden): a 32-bit program, lib/py2-windows-i686/librenpython.dll, in a folder of its own.
+    const auto root = fresh();
+    WritePe(root / "Roadwarden/Roadwarden.exe", {false, {"KERNEL32.dll"}});
+    fs::create_directories(root / "Roadwarden/renpy");
+    Touch(root / "Roadwarden/lib/py2-windows-i686/librenpython.dll");
+    Touch(root / "Roadwarden/lib/py2-windows-x86_64/librenpython.dll");
+    const auto defaults = DefaultsFor(ProbeGame(root.string(), "Roadwarden/Roadwarden.exe"));
+    CHECK(defaults.graphics == "opengl" && defaults.summary == "renpy graphics=opengl");
+  }
+  {  // Ren'Py 6 (Doki Doki Literature Club): the program at the top only starts lib/windows-i686/DDLC.exe, the game.
+    const auto root = fresh();
+    WritePe(root / "DDLC.exe", {false, {"KERNEL32.dll"}});
+    fs::create_directories(root / "renpy");
+    WritePe(root / "lib/windows-i686/DDLC.exe", {false, {"python27.dll", "KERNEL32.dll"}});
+    Touch(root / "lib/windows-i686/python27.dll");
+    CHECK(DefaultsFor(ProbeGame(root.string(), "lib/windows-i686/DDLC.exe")).summary == "renpy graphics=opengl");
+    CHECK(DefaultsFor(ProbeGame(root.string(), "DDLC.exe")).summary == "renpy graphics=opengl");
+    // A lib folder that is a link to elsewhere isn't the game's.
+    fs::create_directories(root / "elsewhere/windows-i686");
+    WritePe(root / "elsewhere/windows-i686/Other.exe", {false, {"python27.dll", "KERNEL32.dll"}});
+    fs::create_directory_symlink(root / "elsewhere", root / "lib2");
+    fs::rename(root / "lib", root / "lib-real");
+    fs::rename(root / "lib2", root / "lib");
+    CHECK(ProbeGame(root.string(), "lib/windows-i686/Other.exe").engine.empty());
+    fs::remove(root / "lib");
+    fs::rename(root / "lib-real", root / "lib");
+    // Nothing above the game's folder counts: a game installed in a folder that happens to be lib/windows-i686.
+    CHECK(ProbeGame((root / "lib/windows-i686").string(), "DDLC.exe").engine.empty());
+    // A lib/windows-* program with no renpy folder two levels up is some other game's.
+    fs::remove_all(root / "renpy");
+    CHECK(ProbeGame(root.string(), "lib/windows-i686/DDLC.exe").engine.empty());
+  }
   {  // SIL (FTL): OpenGL, though the program also imports Direct3D 11; known by its settings names.
     const auto root = fresh();
     PeSpec ftl{false, {"OPENGL32.dll", "d3d11.dll", "KERNEL32.dll"}};
@@ -577,8 +630,8 @@ int main() {
     plain.defaults.erase("cpu");
     plain.detected = "unknown graphics=auto";
     plain.launch_entries.front().executable = "Plain.exe";
-    // It takes "unknown"'s revision 1 once (no launcher in front of it), and nothing else.
-    CHECK(RefreshRecipeDefaults(root.string(), kit, &plain) && !plain.defaults.count("cpu") && plain.defaults_revision == 1);
+    // It takes "unknown"'s revision 2 once (no launcher in front of it, no Ren'Py), and nothing else.
+    CHECK(RefreshRecipeDefaults(root.string(), kit, &plain) && !plain.defaults.count("cpu") && plain.defaults_revision == 2);
     CHECK(!RefreshRecipeDefaults(root.string(), kit, &plain));
     auto x64 = plain;
     x64.launch_entries.front().executable = "falloutwHR.exe";
@@ -1398,7 +1451,7 @@ int main() {
     // A copy set up before the web-view rule: Steam's launcher first, no engine, defaults revision 0. Its next Play
     // starts the game's own program and keeps Steam's after it; then it's left alone.
     const auto picked = recipe;
-    CHECK(DefaultsRevision("unknown graphics=auto") == 1);
+    CHECK(DefaultsRevision("unknown graphics=auto") == 2);
     CHECK(GenerateGameRecipe(312840, "Fahrenheit: Indigo Prophecy Remastered", {{"", "", "Fahrenheit.exe", "", ""}},
                              root.string(), &recipe, &reason, {}));
     auto old = recipe;
@@ -1419,7 +1472,7 @@ int main() {
     mine.detected = "unknown graphics=auto";
     mine.defaults_revision = 0;
     CHECK(RefreshRecipeDefaults(root.string(), {}, &mine));
-    CHECK(mine.launch_entries[0].executable == "Fahrenheit.exe" && mine.defaults_revision == 1 &&
+    CHECK(mine.launch_entries[0].executable == "Fahrenheit.exe" && mine.defaults_revision == 2 &&
           mine.detected == "unknown graphics=auto" && mine.graphics == picked.graphics);
     CHECK(!RefreshRecipeDefaults(root.string(), {}, &mine));
 
@@ -1447,8 +1500,38 @@ int main() {
     tool.arguments = "-old";
     CHECK(tool.detected.rfind("unknown", 0) == 0);
     CHECK(RefreshRecipeDefaults(widgets.string(), {}, &tool));
-    CHECK(tool.launch_entries[0].executable == "Tool.exe" && tool.arguments == "-old" && tool.defaults_revision == 1);
+    CHECK(tool.launch_entries[0].executable == "Tool.exe" && tool.arguments == "-old" && tool.defaults_revision == 2);
     CHECK(!RefreshRecipeDefaults(widgets.string(), {}, &tool));
+    // Set up at revision 1, it isn't read for a launcher again, and takes revision 2 the same way.
+    tool.defaults_revision = 1;
+    CHECK(RefreshRecipeDefaults(widgets.string(), {}, &tool) && tool.arguments == "-old" && tool.defaults_revision == 2);
+  }
+  {  // A Ren'Py game set up before Ren'Py was detected (Roadwarden, #960): no engine, DXVK. Its next Play takes OpenGL.
+    const auto root = fresh();
+    WritePe(root / "Roadwarden.exe", {false, {"KERNEL32.dll"}});
+    fs::create_directories(root / "renpy");
+    Touch(root / "lib/py2-windows-i686/librenpython.dll");
+    GameRecipe recipe;
+    std::string reason;
+    CHECK(GenerateGameRecipe(1155970, "Roadwarden", {{"", "", "Roadwarden.exe", "", ""}}, root.string(), &recipe,
+                             &reason, {}));
+    CHECK(recipe.graphics == "opengl" && recipe.detected == "renpy graphics=opengl" && recipe.defaults_revision == 0);
+    for (const int revision : {0, 1}) {
+      auto old = recipe;
+      old.graphics = "dxvk";
+      old.detected = "unknown graphics=dxvk";
+      old.defaults_revision = revision;
+      CHECK(RefreshRecipeDefaults(root.string(), {}, &old));
+      CHECK(old.graphics == "opengl" && old.detected == "renpy graphics=opengl" && old.defaults_revision == 0 &&
+            old.launch_entries.size() == 1 && old.launch_entries[0].executable == "Roadwarden.exe");
+      CHECK(!RefreshRecipeDefaults(root.string(), {}, &old));
+    }
+    // Set up since revision 2 with no engine, it is left alone: the files said nothing then either.
+    auto current = recipe;
+    current.graphics = "dxvk";
+    current.detected = "unknown graphics=dxvk";
+    current.defaults_revision = 2;
+    CHECK(!RefreshRecipeDefaults(root.string(), {}, &current) && current.graphics == "dxvk");
   }
 
   {  // A program's own imports decide, not the libraries beside it: Hotline Miami's launcher sits next to cgGL.dll.
@@ -1495,6 +1578,19 @@ int main() {
     WritePe(root / "game/Game-Win64-Shipping.exe", {false, {"KERNEL32.dll"}});
     note("Z:\\data\\games\\1\\Game-Win64-Shipping.exe");
     CHECK(take() == "Game-Win64-Shipping.exe");
+    // Ren'Py 7.3 and earlier (Sakura Spirit): the top program starts lib/windows-i686/<game>.exe, which imports only its
+    // Python. It is the game when a renpy folder sits two levels up.
+    WritePe(root / "game/lib/windows-i686/Sakura Spirit.exe", {false, {"python27.dll", "KERNEL32.dll"}});
+    note("Z:\\data\\games\\1\\lib\\windows-i686\\Sakura Spirit.exe");
+    CHECK(take().empty());
+    fs::create_directories(root / "game/renpy");
+    note("Z:\\data\\games\\1\\lib\\windows-i686\\Sakura Spirit.exe");
+    CHECK(take() == "lib/windows-i686/Sakura Spirit.exe");
+    // Another program beside the renpy folder is a helper, not the game the top program starts.
+    Touch(root / "game/lib/windows-i686/python27.dll");
+    note("Z:\\data\\games\\1\\Reporter.exe");
+    CHECK(take().empty());
+    fs::remove_all(root / "game/renpy");
     // A title with [steam] shows the game in steamapps\common through links in the bottle: a program named there, in
     // any case and by any of the links' names, counts; with no link there, it doesn't.
     note("C:\\Program Files (x86)\\Steam\\steamapps\\common\\The Game\\bin\\Game.exe");

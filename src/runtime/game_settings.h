@@ -498,9 +498,10 @@ enum class PresetCapture { kSave, kOwnChanges };
 // The settings a preset made from a game's effective settings holds: each row a preset may set (ValidatePresetSetting)
 // whose value the player chose, as the row shows it (ChosenValue). Chosen means from the player (kUser) or a preset
 // (kPreset, which includes the rows a chosen controller preset brings) and, for kSave on a community recipe (recipe
-// is the one the settings were built from), the recipe's values. The game's own recipe (built-in or detected) and
-// Playden's defaults describe this game, so they are left out, as are rows the recipe locks (also when changed
-// anyway) and rows that don't apply here (unavailable, except one that waits for the kit update). A chosen value
+// is the one the settings were built from), the recipe's values other than its graphics. The game's own recipe
+// (built-in or detected), a community recipe's graphics and Playden's defaults describe this game, so they are left
+// out, as are rows the recipe locks (also when changed anyway) and rows that don't apply here (unavailable, except one
+// that waits for the kit update). A chosen value
 // equal to Playden's default is kept: it is what makes the row differ from a recipe or preset underneath, like the
 // built-in OpenGL game preset's 60 Hz.
 std::map<std::string, std::string> PresetSettingsFromGame(const GameRecipe& recipe, const EffectiveSettings& settings,
@@ -612,8 +613,9 @@ bool ParseSettingsPresets(std::string_view json, std::vector<SettingsPreset>* pr
 // may still name them; they are dropped where read, so the file still loads.
 bool RetiredSetting(std::string_view id);
 // Whether a preset, built-in or the player's, may set id to value: a known setting that makes sense on any game.
-// Never launch_option, graphics, architecture, start_check or free text other than button.*; the value must pass
-// ValidateSettingValue. A retired setting (RetiredSetting) is refused here: callers drop those first.
+// Never launch_option, architecture, start_check or free text other than button.*; the value must pass
+// ValidateSettingValue. Graphics may be set (the OpenGL game preset); a community recipe's preset still leaves it out.
+// A retired setting (RetiredSetting) is refused here: callers drop those first.
 bool ValidatePresetSetting(std::string_view id, std::string_view value, std::string* reason);
 bool ParseGameSettingsRecord(std::string_view json, GameSettingsRecord* record, std::string* reason);
 // A Steam app ID as a steam_appid.txt or the "steam_app_id" setting holds it: canonical decimal
@@ -644,7 +646,8 @@ bool IsGeneratedRecipeId(std::string_view id);
 // recipe set up before DefaultsRevision 1 is read again only when its program sat beside an "engine" folder that isn't
 // Unreal's (TakenForUnrealBefore: Cyberpunk 2077, #1163); any other keeps what it was set up with and takes the revision.
 // So is one with no engine ("unknown") set up before DefaultsRevision 1: only a Steam program that now only starts the
-// game (a Qt web-view launcher: Fahrenheit Remastered, #1197) gives way to the game's own program.
+// game (a Qt web-view launcher: Fahrenheit Remastered, #1197) gives way to the game's own program. One with no engine
+// set up before DefaultsRevision 2 takes Ren'Py's defaults when its program is now detected as Ren'Py (#960, #1232).
 bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe);
 // Sets each launch entry's working folder to its spelling on disk under install_root. Windows ignores case, so Steam
 // and recipes made on it may name System/ as "system" (Unreal Tournament, #844); the console's disk doesn't. A folder

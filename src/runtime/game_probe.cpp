@@ -537,6 +537,44 @@ void ScanMfc(const fs::path& root, const std::string& relative, int depth, MfcIm
     if (directory && !MfcScanDone(*out)) ScanMfc(root, relative.empty() ? name : relative + "/" + name, depth + 1, out, seen);
 }
 
+// A folder in a Ren'Py game's lib/ that holds its Windows Python: windows-i686 (Ren'Py 7.3 and earlier),
+// py2-windows-i686 or py3-windows-x86_64 (7.4 and later).
+bool RenpyWindowsFolder(const std::string& name) {
+  const auto lower = Lower(name);
+  return lower.rfind("windows-", 0) == 0 || (lower.rfind("py", 0) == 0 && lower.find("-windows-") != std::string::npos);
+}
+
+// Ren'Py: a renpy folder beside the program, and a lib/ Windows folder with its Python in it. Or a program inside that
+// lib/ folder, whose game is two folders up (Doki Doki Literature Club's lib/windows-i686/DDLC.exe: the program at the
+// top only starts it, which a PS5 title can't). folder is the program's, relative to root ('/' separators); nothing
+// above root is read.
+bool RenpyLayout(const fs::path& root, const std::string& folder, const std::vector<std::pair<std::string, bool>>& here) {
+  const auto directory = root / folder;
+  if (Find(here, "renpy", true)) {
+    const auto lib = Find(here, "lib", true);
+    if (!lib) return false;
+    for (const auto& [name, is_directory] : Entries(directory / *lib)) {
+      if (!is_directory || !RenpyWindowsFolder(name)) continue;
+      for (const auto& [file, file_is_directory] : Entries(directory / *lib / name)) {
+        const auto lower = Lower(file);
+        if (!file_is_directory && (lower == "librenpython.dll" || (lower.rfind("python", 0) == 0 && EndsWith(lower, ".dll"))))
+          return true;
+      }
+    }
+    return false;
+  }
+  const auto slash = folder.rfind('/');
+  if (slash == std::string::npos || !RenpyWindowsFolder(folder.substr(slash + 1))) return false;
+  const auto lib = folder.substr(0, slash);
+  const auto above = lib.rfind('/');
+  if (Lower(above == std::string::npos ? lib : lib.substr(above + 1)) != "lib") return false;
+  // The lib folder and the one in it are the game's own, not links to elsewhere.
+  std::error_code error;
+  for (const auto& part : {root / lib, root / folder})
+    if (!fs::is_directory(fs::symlink_status(part, error)) || error) return false;
+  return Find(Entries(above == std::string::npos ? root : root / lib.substr(0, above)), "renpy", true).has_value();
+}
+
 }  // namespace
 
 MfcImports FindMfcImports(const std::string& install_root) {
@@ -608,7 +646,8 @@ namespace {
 
 // Whether a program itself looks like a game: what it imports or names, not the libraries beside it (a crash reporter
 // sits next to the game's DLLs). A game may load its graphics at run time, so the names inside it count too.
-bool ProgramLooksLikeGame(const fs::path& path, const PeFacts& facts) {
+bool ProgramLooksLikeGame(const fs::path& root, const std::string& relative, const PeFacts& facts) {
+  const auto path = root / relative;
   std::set<std::string> apis;
   AddImports(facts, &apis);
   for (const auto& name : facts.delay_imports) {
@@ -624,7 +663,13 @@ bool ProgramLooksLikeGame(const fs::path& path, const PeFacts& facts) {
   };
   if (has(facts.imports, "unityplayer.dll") || has(facts.delay_imports, "unityplayer.dll")) return true;
   const auto stem = LowerStem(Lower(path.filename().string()));
-  return stem == "java" || stem == "javaw" || EndsWith(stem, "-shipping");
+  if (stem == "java" || stem == "javaw" || EndsWith(stem, "-shipping")) return true;
+  // Ren'Py 7.3 and earlier: the program at the top starts lib/windows-i686/<game>.exe, which only imports its Python.
+  // Only that program: another one beside the game's renpy folder is a helper.
+  const auto slash = relative.rfind('/');
+  const auto folder = slash == std::string::npos ? std::string() : relative.substr(0, slash);
+  const auto here = Entries(root / folder);
+  return !Find(here, "renpy", true) && RenpyLayout(root, folder, here);
 }
 
 }  // namespace
@@ -696,7 +741,7 @@ std::string TakeRefusedGameProgram(const std::string& prefix_dir, const std::str
     const auto path = fs::path(host_root) / named;
     const auto facts = ReadPe(path.string(), true);
     if (!facts.valid) return {};  // stays: the drive may answer at a later start
-    if (ProgramLooksLikeGame(path, facts)) program = named;
+    if (ProgramLooksLikeGame(host_root, named, facts)) program = named;
   }
   // One that can't be removed would say the same at every start, without another failed run.
   if (!fs::remove(note, error) || error) return {};
@@ -785,6 +830,8 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
                                   [](const auto& file) { return !file.second && EndsWith(Lower(file.first), ".pk3"); });
              })) {
     probe.engine = "idtech3";  // Quake III Arena's engine and its heirs: data in .pk3 files one folder down
+  } else if (RenpyLayout(root, folder, here)) {
+    probe.engine = "renpy";  // Ren'Py draws with OpenGL through SDL, which its Python loads at run time
   } else {
     probe.engine = marked_engine;
   }
@@ -814,8 +861,10 @@ int DefaultsRevision(std::string_view engine) {
   // engine's root program beside an "engine" folder (Cyberpunk 2077's REDprelauncher.exe, #1163) is not Unreal's.
   if (engine == "unreal" || engine == "unreal5") return 1;
   // 1: a program that draws nothing and imports a Qt web view only starts the game (Fahrenheit Remastered, #1197), so a
-  // game set up before with no engine is read once for the game's own program.
-  if (engine == "unknown") return 1;
+  // game set up before with no engine is read once for the game's own program. 2: Ren'Py is detected (it names no
+  // graphics library, so it got DXVK and stopped with "No matching GL pixel format available": Roadwarden, #960, #1232),
+  // so a game set up before with no engine is read once more for it.
+  if (engine == "unknown") return 2;
   return 0;
 }
 
@@ -874,9 +923,9 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
     // Automatic graphics leave FNA without a GL pixel format ("No matching GL pixel format available").
     // Wine Mono's FNA3D would still pick Wine's Direct3D 11: the profile turns it off (ProfileDllOverrides).
     out.graphics = "opengl";
-  } else if (probe.engine == "love" || probe.engine == "sil" || probe.engine == "java") {
+  } else if (probe.engine == "love" || probe.engine == "sil" || probe.engine == "java" || probe.engine == "renpy") {
     // SIL (FTL) draws with OpenGL though its program also names Direct3D 11; under DXVK it
-    // quits right after setting up video.
+    // quits right after setting up video. Ren'Py under DXVK gets no GL pixel format (#1232).
     out.graphics = "opengl";
   } else if (probe.engine == "idtech3") {
     // id Tech 3 copies the OpenGL extension list into a fixed buffer; Mesa's is far longer than any
@@ -944,7 +993,7 @@ std::string DetectedLabel(const std::string& summary) {
            {"unity", "Unity"}, {"unity-il2cpp", "Unity"}, {"unity-legacy", "Unity"}, {"unity-legacy5", "Unity"},
            {"unreal", "Unreal Engine"}, {"unreal5", "Unreal Engine 5"}, {"source", "Source"},
            {"gamemaker", "GameMaker"}, {"godot", "Godot"}, {"love", "L\xC3\x96VE"}, {"nwjs", "NW.js"}, {"sil", "SIL"},
-           {"idtech3", "id Tech 3"}, {"hashlink", "HashLink"}, {"xna", "XNA"}, {"java", "Java"}})
+           {"idtech3", "id Tech 3"}, {"hashlink", "HashLink"}, {"xna", "XNA"}, {"java", "Java"}, {"renpy", "Ren'Py"}})
     if (facts.count(id)) engine = name;
   for (const auto& fact : facts)
     if (engine == "NW.js" && fact.rfind("nwjs-", 0) == 0) engine += " " + fact.substr(5);

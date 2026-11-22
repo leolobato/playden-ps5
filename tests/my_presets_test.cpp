@@ -86,7 +86,7 @@ void Changes() {
   refused(AddMyPreset(&presets, "mouse", "Other", mouse, 101), R::kBadId);
   refused(AddMyPreset(&presets, Id(2), "Other", {}, 101), R::kNoSettings);
   refused(AddMyPreset(&presets, Id(2), "Other", {{"opengl_thread", "off"}}, 101), R::kNoSettings);
-  for (const auto& setting : std::vector<Settings>{{{"graphics", "dxvk"}},
+  for (const auto& setting : std::vector<Settings>{{{"graphics", "vulkan"}},
                                                    {{"architecture", "pe64"}},
                                                    {{"launch_option", "game"}},
                                                    {{"start_check", "off"}},
@@ -105,7 +105,12 @@ void Changes() {
   refused(ReplaceMyPresetSettings(&presets, Id(9), mouse, 101), R::kUnknownId);
   refused(DeleteMyPreset(&presets, Id(9)), R::kUnknownId);
   refused(RenameMyPreset(&presets, Id(1), " ", 101), R::kNameEmpty);
-  refused(ReplaceMyPresetSettings(&presets, Id(1), {{"graphics", "dxvk"}}, 101), R::kSettingRefused);
+  refused(ReplaceMyPresetSettings(&presets, Id(1), {{"architecture", "pe64"}}, 101), R::kSettingRefused);
+  // Graphics is a choice a player preset may hold, like the built-in OpenGL game preset (#1232).
+  {
+    auto graphics = presets;
+    CHECK(AddMyPreset(&graphics, Id(8), "OpenGL", {{"graphics", "opengl"}}, 101).ok());
+  }
   refused(ReplaceMyPresetSettings(&presets, Id(1), {}, 101), R::kNoSettings);
   // A controller layout travels in a preset like any other row, checked by the same parser.
   {
@@ -166,12 +171,12 @@ void Format() {
 
   // Retired settings and settings this build refuses (a newer Playden's) are dropped; the preset stays.
   CHECK(ParseMyPresets(R"({"format":1,"presets":[{"id":"my-0000000000000001","name":"A","created":1,"updated":2,
-      "settings":{"refresh":"60","opengl_thread":"off","future_setting":"x","graphics":"dxvk"}}]})",
+      "settings":{"refresh":"60","opengl_thread":"off","future_setting":"x","graphics":"opengl","architecture":"pe64"}}]})",
                        &loaded, &dropped, &reason));
-  CHECK(loaded.size() == 1 && loaded[0].preset.settings == (Settings{{"refresh", "60"}}) && loaded[0].created == 1 &&
-        loaded[0].updated == 2);
+  CHECK(loaded.size() == 1 && loaded[0].preset.settings == (Settings{{"graphics", "opengl"}, {"refresh", "60"}}) &&
+        loaded[0].created == 1 && loaded[0].updated == 2);
   CHECK(dropped == (std::vector<std::string>{"my-0000000000000001 opengl_thread", "my-0000000000000001 future_setting",
-                                             "my-0000000000000001 graphics"}));
+                                             "my-0000000000000001 architecture"}));
 
   const auto refused = [&](const std::string& json) {
     std::vector<MyPreset> out = presets;
@@ -253,7 +258,7 @@ void Storage() {
   invalid.push_back(invalid.front());
   refused_save(invalid);
   invalid = presets;
-  invalid[0].preset.settings["graphics"] = "dxvk";
+  invalid[0].preset.settings["architecture"] = "pe64";
   refused_save(invalid);
   // A failed first save must not create a file that the loader would set aside either.
   fs::remove(path);
