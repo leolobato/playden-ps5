@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <utility>
 
@@ -474,22 +475,89 @@ bool ReadInstallScript(const std::string& path, std::string* text) {
   return ReadScript(path, text);
 }
 
+namespace {
+
+// A regular file at relative under root, with no link or missing folder on the way.
+bool PlainFileUnder(const std::string& root, const std::string& relative) {
+  std::string path = root;
+  std::size_t start = 0;
+  while (start <= relative.size()) {
+    const auto slash = relative.find('/', start);
+    const auto end = slash == std::string::npos ? relative.size() : slash;
+    path += "/" + relative.substr(start, end - start);
+    struct stat info {};
+    if (::lstat(path.c_str(), &info) != 0) return false;
+    if (slash == std::string::npos) return S_ISREG(info.st_mode);
+    if (!S_ISDIR(info.st_mode)) return false;
+    start = slash + 1;
+  }
+  return false;
+}
+
+bool SafeRelative(const std::string& path) {
+  if (path.empty() || path.front() == '/' || path.back() == '/' || path.find('\\') != std::string::npos ||
+      path.find('\0') != std::string::npos)
+    return false;
+  std::size_t start = 0;
+  while (true) {
+    const auto slash = path.find('/', start);
+    const auto part = path.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
+    if (part.empty() || part == "." || part == "..") return false;
+    if (slash == std::string::npos) return true;
+    start = slash + 1;
+  }
+}
+
+}  // namespace
+
+InstallScriptFiles FindInstallScripts(const std::string& game_root) {
+  InstallScriptFiles out;
+  std::string list;
+  const auto list_path = std::filesystem::path(game_root) / kInstallScriptList;
+  struct stat list_info {};
+  if (::lstat(list_path.c_str(), &list_info) == 0 && S_ISREG(list_info.st_mode) && ReadScript(list_path, &list)) {
+    std::vector<std::string> lines;
+    std::size_t start = 0;
+    while (start < list.size()) {
+      auto end = list.find('\n', start);
+      if (end == std::string::npos) end = list.size();
+      auto line = list.substr(start, end - start);
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      lines.push_back(std::move(line));
+      start = end + 1;
+    }
+    if (!lines.empty() && lines.front() == "v1") {
+      out.flagged = true;
+      for (std::size_t index = 1; index < lines.size(); ++index)
+        if (SafeRelative(lines[index]) && PlainFileUnder(game_root, lines[index])) out.paths.push_back(lines[index]);
+    }
+  }
+  if (!out.flagged) {
+    std::error_code error;
+    for (std::filesystem::directory_iterator it(game_root, error), end; !error && it != end; it.increment(error)) {
+      std::error_code type_error;
+      const auto name = it->path().filename().string();
+      if (InstallScriptName(name) && it->is_regular_file(type_error) && !it->is_symlink(type_error)) out.paths.push_back(name);
+    }
+  }
+  // The top level's first, then the rest, each by name (byte order).
+  std::sort(out.paths.begin(), out.paths.end(), [](const std::string& left, const std::string& right) {
+    const bool left_top = left.find('/') == std::string::npos, right_top = right.find('/') == std::string::npos;
+    return left_top != right_top ? left_top : left < right;
+  });
+  out.paths.erase(std::unique(out.paths.begin(), out.paths.end()), out.paths.end());
+  return out;
+}
+
 InstallScriptResult ApplyInstallScripts(const std::string& game_root, const std::string& install_dir,
                                         const std::string& language, const std::string& prefix_dir,
                                         std::int64_t unix_time) {
   InstallScriptResult result;
-  std::vector<std::filesystem::path> scripts;
-  std::error_code error;
-  for (std::filesystem::directory_iterator it(game_root, error), end; !error && it != end; it.increment(error)) {
-    std::error_code type_error;
-    if (InstallScriptName(it->path().filename().string()) && it->is_regular_file(type_error) && !it->is_symlink(type_error))
-      scripts.push_back(it->path());
-  }
-  std::sort(scripts.begin(), scripts.end());
+  auto scripts = FindInstallScripts(game_root).paths;
   if (scripts.size() > kMaxScripts) scripts.resize(kMaxScripts);
   InstallScriptValues values;
-  for (const auto& path : scripts) {
-    const auto name = path.filename().string();
+  for (const auto& name : scripts) {
+    const auto path = std::filesystem::path(game_root) / name;
     result.found.push_back(name);
     std::string text, reason;
     InstallScriptValues parsed;

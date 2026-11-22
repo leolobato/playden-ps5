@@ -117,6 +117,9 @@ struct AppInfo {
   std::string controller_support;
   std::string icon;  // common/icon: the hash of the library icon, as GetOwnedGames img_icon_url
   CloudSaveInfo cloud;
+  // extended/installscript: the Windows install script the app names, a path in its install folder (any slashes, as
+  // written). Older apps name their script only here; newer ones flag it in their depot manifest instead.
+  std::string install_script;
 };
 
 // Parses a PICS app buffer (text VDF with optional trailing NULs) whose root is "appinfo".

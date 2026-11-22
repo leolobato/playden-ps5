@@ -1454,17 +1454,11 @@ RedistInstallResult InstallRedistributables(const std::string& game_root, const 
   for (const auto& path : publisher_installers) publisher.insert(Lower(path));
   std::vector<std::string> scripts;
   {
-    // The top level first (its scripts' registry values are ApplyInstallScripts' job too).
-    std::error_code error;
-    std::vector<std::string> top;
-    for (std::filesystem::directory_iterator it(game_root, error), end; !error && it != end; it.increment(error)) {
-      std::error_code type_error;
-      if (InstallScriptName(it->path().filename().string()) && it->is_regular_file(type_error) && !it->is_symlink(type_error))
-        top.push_back(it->path().filename().string());
-    }
-    std::sort(top.begin(), top.end());
-    scripts = top;
-    FindScripts(game_root, std::string(), 0, &scripts);
+    // The scripts the game's depots flag, as Steam runs them. Without that list: the top level's scripts (their
+    // registry values are ApplyInstallScripts' job too), then those in redistributable folders.
+    auto found = FindInstallScripts(game_root);
+    scripts = std::move(found.paths);
+    if (!found.flagged) FindScripts(game_root, std::string(), 0, &scripts);
     if (scripts.size() > kMaxScripts) scripts.resize(kMaxScripts);
   }
   // Steam's scripts are run as they always were: a Burn bundle they name is not looked into.

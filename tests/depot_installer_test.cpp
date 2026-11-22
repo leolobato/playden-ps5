@@ -1182,6 +1182,9 @@ void FactsGoInBeforeTheRecord(const std::filesystem::path& root) {
 
 void InstallsMergedDepotsAndWritesRecord(const std::filesystem::path& root) {
   auto world = MakeWorld();
+  // A file the depot marks as an install script, whatever its name.
+  world.manifests[441].files.push_back(world.AddFile("Redist/odd.vdf", {"\"InstallScript\" {}"}));
+  world.manifests[441].files.back().flags = kDepotFileFlagInstallScript;
   for (std::uint8_t index = 0; index < 20; ++index) world.manifests[441].files[0].sha_content[index] = static_cast<std::uint8_t>(index * 13);
   DepotInstaller installer(world.Hooks());
   installer.SetTuning({1, 256});
@@ -1189,6 +1192,8 @@ void InstallsMergedDepotsAndWritesRecord(const std::filesystem::path& root) {
   InstallProgress last;
   auto target = Target(root);
   target.language = "german";
+  // And one the appinfo names (with a backslash, in another case), which no depot flags; one the install doesn't hold.
+  target.named_install_scripts = {"DATA\\Level.DAT", "missing.vdf"};
   target.depots[1].owner_app = 450;  // a DLC's depot, listed in the DLC's own appinfo
   target.depots[1].source_app = 450;
   const auto outcome = installer.Run({}, target, cancel, [&](const InstallProgress& progress) { last = progress; });
@@ -1199,9 +1204,9 @@ void InstallsMergedDepotsAndWritesRecord(const std::filesystem::path& root) {
   CHECK(std::filesystem::exists(root / DepotInstaller::kInstallRecord));
   CHECK(!std::filesystem::exists(root / DepotInstaller::kJournalDir));
   CHECK(Read(root / DepotInstaller::kFileList).find("f\tdata/level.dat") != std::string::npos);
-  CHECK(last.download_done == last.download_total && last.files_total == 3);
+  CHECK(last.download_done == last.download_total && last.files_total == 4);
   CHECK(last.held_bytes == last.install_total);  // every written byte is on the drive
-  CHECK(world.chunk_calls == 3);  // the shadowed base level.dat is never fetched
+  CHECK(world.chunk_calls == 4);  // the shadowed base level.dat is never fetched
   // A Steam record names no store or game; version 2 adds the branch, the language and each depot's owner and
   // source.
   const auto text = Read(root / DepotInstaller::kInstallRecord);
@@ -1218,8 +1223,11 @@ void InstallsMergedDepotsAndWritesRecord(const std::filesystem::path& root) {
         "v1\n"
         "8eaf8755d1f863e507024462baa384b6be8b9878\t13\tdata/level.dat\n"
         "da39a3ee5e6b4b0d3255bfef95601890afd80709\t0\tempty.txt\n"
-        "000d1a2734414e5b6875828f9ca9b6c3d0ddeaf7\t26\tgame.exe\n");
+        "000d1a2734414e5b6875828f9ca9b6c3d0ddeaf7\t26\tgame.exe\n"
+        "659c062b76c37503ad254e1823db3ad6d4799b06\t18\tRedist/odd.vdf\n");
   CHECK(!std::filesystem::exists(root / (std::string(DepotInstaller::kFileTree) + ".tmp")));
+  // The install scripts the depots flag, by path.
+  CHECK(Read(root / DepotInstaller::kInstallScripts) == "v1\ndata/level.dat\nRedist/odd.vdf\n");
 }
 
 // Measure fetches the manifests an install would and merges them as it does, without writing anything: depots
@@ -1774,6 +1782,7 @@ void RemovesOnlyManagedFolders(const std::filesystem::path& base) {
   CHECK(failure.find("could not be deleted") != std::string::npos);
   CHECK(std::filesystem::exists(managed / DepotInstaller::kInstallRecord));
   CHECK(!std::filesystem::exists(managed / DepotInstaller::kFileTree));
+  CHECK(!std::filesystem::exists(managed / DepotInstaller::kInstallScripts));
   CHECK(chmod((managed / "locked").c_str(), 0700) == 0);
   CHECK(RemoveManagedInstall(managed.string()));
   CHECK(!std::filesystem::exists(managed));
@@ -1841,6 +1850,8 @@ void UpdateReplacesChangedFiles(const std::filesystem::path& root) {
   base.files[0] = world.AddFile("game.exe", {"MZ-executable-", "patched-chunk"});
   base.files.erase(base.files.begin() + 3);  // empty.txt
   base.files.push_back(world.AddFile("new/added.txt", {"added"}));
+  base.files.back().flags = kDepotFileFlagInstallScript;  // marked as an install script by the new version
+  CHECK(Read(root / DepotInstaller::kInstallScripts) == "v1\n");
   auto target = UpdateTarget(root);
   target.depots[0].manifest_gid = 21;
   target.language = "german";
@@ -1891,6 +1902,7 @@ void UpdateReplacesChangedFiles(const std::filesystem::path& root) {
   CHECK(tree.find(HexOf(base.files[0].sha_content) + "\t27\tgame.exe\n") != std::string::npos);
   const auto list = Read(root / DepotInstaller::kFileList);
   CHECK(list.find("f\tnew/added.txt\n") != std::string::npos && list.find("empty.txt") == std::string::npos);
+  CHECK(Read(root / DepotInstaller::kInstallScripts) == "v1\nnew/added.txt\n");
   // Nothing changed: nothing is fetched.
   target.before_apply = {};
   world.chunk_calls = 0;
@@ -2118,8 +2130,15 @@ void UpdateFinishIsReentrant(const std::filesystem::path& base) {
     // What the deletion did, then (moved) the tree, file list and record in place and junk left in staging.
     std::filesystem::remove(root / "empty.txt");
     std::filesystem::remove(Update(root, "old"));
+    // Not moved: planned by a Playden that kept no list, so the old version's list goes rather than name the wrong
+    // files. Moved: the new list went in place too, and stays.
+    if (!moved) {
+      std::filesystem::remove(Update(root, "scripts"));
+      std::ofstream(root / DepotInstaller::kInstallScripts) << "v1\nold.vdf\n";
+    }
     if (moved) {
       std::filesystem::rename(Update(root, "tree"), root / DepotInstaller::kFileTree);
+      std::filesystem::rename(Update(root, "scripts"), root / DepotInstaller::kInstallScripts);
       std::filesystem::rename(Update(root, "files"), root / DepotInstaller::kFileList);
       std::filesystem::rename(Update(root, "record"), root / DepotInstaller::kInstallRecord);
       std::ofstream(Update(root, "staging/leftover.bin")) << "junk";
@@ -2128,6 +2147,8 @@ void UpdateFinishIsReentrant(const std::filesystem::path& base) {
     const auto finished = DepotInstaller::FinishUpdate(root.string(), cancel);
     CHECK(finished.error == InstallError::kNone && finished.progress.install_total == 45);
     CHECK(!std::filesystem::exists(root / DepotInstaller::kUpdateDir));
+    CHECK(moved ? Read(root / DepotInstaller::kInstallScripts) == "v1\n"
+                : !std::filesystem::exists(root / DepotInstaller::kInstallScripts));
     CHECK(Read(root / "game.exe") == "MZ-executable-patched-chunk" && Read(root / "new/added.txt") == "added");
     CHECK(Read(root / "data/level.dat") == "level-patched" && !std::filesystem::exists(root / "empty.txt"));
     CHECK(Read(root / DepotInstaller::kFileList).find("f\tnew/added.txt\n") != std::string::npos);

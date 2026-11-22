@@ -28,6 +28,9 @@ inline constexpr std::uint32_t kManifestEndMagic = 0x32C415ABu;
 // EDepotFileFlag bits used by the reference.
 inline constexpr std::uint32_t kDepotFileFlagExecutable = 32;
 inline constexpr std::uint32_t kDepotFileFlagDirectory = 64;
+// A file the developer marked as an install script (the InstallScript directive of a depot build script). The Steam
+// client runs every file with this flag, whatever its name.
+inline constexpr std::uint32_t kDepotFileFlagInstallScript = 256;
 
 struct ManifestChunk {
   std::array<std::uint8_t, 20> sha{};
@@ -47,6 +50,7 @@ struct ManifestFile {
 
   bool is_directory() const { return (flags & kDepotFileFlagDirectory) != 0; }
   bool is_symlink() const { return !link_target.empty(); }
+  bool is_install_script() const { return (flags & kDepotFileFlagInstallScript) != 0; }
 };
 
 struct DepotManifest {

@@ -372,6 +372,9 @@ std::optional<AppInfo> ParseAppInfo(std::uint32_t app_id, std::string_view buffe
     if (const VdfNode* extended = common->Find("extended")) dlc_list = extended->String("listofdlc");
   }
   if (dlc_list) app.dlc_app_ids = ParseDlcList(*dlc_list);
+  if (const VdfNode* extended = root->Find("extended")) app.install_script = ChildString(extended, "installscript");
+  if (app.install_script.empty() && common != nullptr)
+    if (const VdfNode* extended = common->Find("extended")) app.install_script = ChildString(extended, "installscript");
   if (const VdfNode* extended = root->Find("extended")) app.free_app = ChildU32(extended, "isfreeapp").value_or(0) != 0;
   if (!app.free_app && common != nullptr)
     if (const VdfNode* extended = common->Find("extended")) app.free_app = ChildU32(extended, "isfreeapp").value_or(0) != 0;

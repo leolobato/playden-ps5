@@ -92,7 +92,7 @@ void TestRefusals() {
 void TestReserved() {
   for (const char* name : {".playden-install.json", ".playden-files", ".playden-files.tmp", ".playden-download",
                            ".playden-gog", ".playden-copy", ".playden-update", ".playden-tree",
-                           ".playden-files-changed"}) {
+                           ".playden-files-changed", ".playden-install-scripts"}) {
     CHECK(Refusal(name) == PathRefusal::kReserved);
     CHECK(Refusal(std::string(name) + "/x") == PathRefusal::kReserved);
     CHECK(Refusal(std::string("\\") + name) == PathRefusal::kReserved);

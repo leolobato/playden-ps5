@@ -912,6 +912,36 @@ void TestFoundPhysx() {
   CHECK(result.outcomes.size() == 1 && result.outcomes[0].script == "42670_install.vdf" &&
         result.outcomes[0].detail == "redist/Chosen.msi" && result.outcomes[0].result == "installed" && !result.physx_searched);
 
+  // A game whose depots flag their install scripts: those are the scripts, at any depth and whatever their names
+  // (Cthulhu Saves the World's CSTW2.vdf); a script by name that isn't flagged is not run.
+  const auto flagged = base / "flagged";
+  WriteText(flagged / "Data/CSTW2.vdf",
+            "\"InstallScript\" { \"Run Process\" { \"PhysX\" { \"process 1\" \"msiexec\" "
+            "\"command 1\" \"/i \\\"%INSTALLDIR%\\\\redist\\\\Chosen.msi\\\" /quiet\" } } }");
+  WriteText(flagged / "redist/Chosen.msi", SamplePackage());
+  WriteText(flagged / "installscript.vdf",
+            "\"InstallScript\" { \"Run Process\" { \"Other\" { \"process 1\" \"msiexec\" "
+            "\"command 1\" \"/i \\\"%INSTALLDIR%\\\\redist\\\\Broken.msi\\\" /quiet\" } } }");
+  WriteText(flagged / "redist/Broken.msi", "broken");
+  WriteText(flagged / "real/s.vdf", "\"InstallScript\" { }");
+  std::filesystem::create_directory_symlink(flagged / "real", flagged / "linked");
+  WriteText(flagged / kInstallScriptList, "v1\nmissing.vdf\n../flagged/installscript.vdf\n/etc/x.vdf\nlinked/s.vdf\n"
+                                          "Data/CSTW2.vdf\nData//CSTW2.vdf\nData\n");
+  auto scripts = FindInstallScripts(flagged.string());
+  CHECK(scripts.flagged && scripts.paths == std::vector<std::string>{"Data/CSTW2.vdf"});
+  prefix = fresh_prefix("flagged-prefix");
+  result = InstallRedistributables(flagged.string(), "Z:\\games\\107310", prefix.string(), 1700000100, true);
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].script == "Data/CSTW2.vdf" &&
+        result.outcomes[0].detail == "redist/Chosen.msi" && result.outcomes[0].result == "installed");
+  // An empty list: the game has no install scripts.
+  WriteText(flagged / kInstallScriptList, "v1\n");
+  scripts = FindInstallScripts(flagged.string());
+  CHECK(scripts.flagged && scripts.paths.empty());
+  // A list Playden can't read is no list: the scripts are found by name.
+  WriteText(flagged / kInstallScriptList, "v2\nData/CSTW2.vdf\n");
+  scripts = FindInstallScripts(flagged.string());
+  CHECK(!scripts.flagged && scripts.paths == std::vector<std::string>{"installscript.vdf"});
+
   // Which version a game was built for, and whether a bottle has it.
   {
     const auto versioned = base / "versioned";

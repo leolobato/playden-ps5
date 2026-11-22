@@ -471,6 +471,10 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
   target.app_id = id;
   target.excluded_dlc.assign(excluded.begin(), excluded.end());
   target.install_root = root;
+  // The scripts the game's and its DLC's appinfo name; the installer keeps those the install holds.
+  if (!app->install_script.empty()) target.named_install_scripts.push_back(app->install_script);
+  for (const auto& dlc : dlc_apps)
+    if (!dlc.install_script.empty()) target.named_install_scripts.push_back(dlc.install_script);
   // Like the reference, only depots this account's licenses grant are installed. Accounts with
   // thousands of licenses take a minute here (issue #47), so the player sees this step.
   if (step) step(InstallStep::kCheckingLicenses);

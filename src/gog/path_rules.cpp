@@ -11,6 +11,7 @@ namespace {
 const char* const kReserved[] = {
     ".playden-install.json", ".playden-files", ".playden-files.tmp", ".playden-download", ".playden-gog",
     ".playden-copy",         ".playden-update", ".playden-tree",      ".playden-files-changed",
+    ".playden-install-scripts",
 };
 
 char Lower(char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; }

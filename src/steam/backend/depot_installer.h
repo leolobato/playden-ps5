@@ -47,6 +47,9 @@ struct InstallTarget {
   std::string language;
   // Written to the install record: DLC the player turned off, which `depots` leave out.
   std::vector<std::uint32_t> excluded_dlc;
+  // The install scripts the game's and its DLC's appinfo name (AppInfo::install_script), as written. With the files the
+  // depots flag as install scripts they make kInstallScripts, as far as the install holds them.
+  std::vector<std::string> named_install_scripts;
   // An update of the finished install at install_root: only files whose content changed are downloaded,
   // into <root>/.playden-update/staging/ with their own journal, while the game stays as it was. Once
   // everything is there they replace the game's files, files the new version dropped are deleted, and
@@ -226,6 +229,10 @@ class DepotInstaller {
   // per file (the depot entry that won the merge; folders and links left out), path as installed.
   // Written before the install record.
   static constexpr const char* kFileTree = ".playden-tree";
+  // The install scripts the Steam client would run: the files the depots mark as install scripts
+  // (kDepotFileFlagInstallScript) and those InstallTarget::named_install_scripts names. A "v1" line, then each path as
+  // installed, a line each. Written with the tree, and by updates; an install made before it was kept has none.
+  static constexpr const char* kInstallScripts = ".playden-install-scripts";
   // An update's work folder (installs::kUpdateDirName). Beside update.json and the journal it holds
   // "staging/<path>" (the changed files), "staged" (their paths, a line each), "old" (the file list the
   // game had), "files", "tree" and "record" (what the game gets when the update finishes) and "paths"

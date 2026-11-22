@@ -510,7 +510,7 @@ needs go instead:
 | Other `Software\Wine\…` keys (for example `Drivers`, `Direct3D`) | They change Wine for the whole bottle, including what the kit checks (`Drivers\Audio`). | A section under `AppDefaults\<program>` |
 | `Environment` | It would get around the environment allow-list. | The `environment` row in `defaults` |
 | `Software\Microsoft`, `Software\Classes`, `Software\Policies`, `Control Panel`, other roots | Windows' own keys, not the game's. | Ask in an issue first. |
-| `HKEY_LOCAL_MACHINE` values | The field writes `HKEY_CURRENT_USER` only. | Playden applies the game's Steam install script (`installscript.vdf`), including its `HKEY_LOCAL_MACHINE` values. Ask in an issue if a game needs more. |
+| `HKEY_LOCAL_MACHINE` values | The field writes `HKEY_CURRENT_USER` only. | Playden applies the game's Steam install scripts (the files its depots mark as install scripts), including their `HKEY_LOCAL_MACHINE` values. Ask in an issue if a game needs more. |
 
 Other rules: string values only, at most 16 values, printable ASCII, no `"` in
 names or values, no `\` in values, no `[` or `]` in keys, and each value once

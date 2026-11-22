@@ -2264,6 +2264,14 @@ int main(int argc, char** argv) {
     CHECK(named.find("\n[Software\\\\Wow6432Node\\\\Activision\\\\Singularity] 1791800000\n"
                      "\"InstallPath\"=\"Z:\\\\data\\\\games\\\\22380\"\n") != std::string::npos);
     CHECK(named.find("SOFTWARE\\\\Other") == std::string::npos);
+    // With the list of the scripts the game's depots flag, those are its scripts, whatever their names.
+    std::ofstream(game / "CSTW2.vdf")
+        << "\"InstallScript\" { \"Registry\" { \"HKEY_CURRENT_USER\\\\Software\\\\Zeboyd\" "
+           "{ \"string\" { \"Path\" \"%INSTALLDIR%\" } } } }";
+    std::ofstream(game / kInstallScriptList) << "v1\nCSTW2.vdf\n";
+    applied = ApplyInstallScripts(game.string(), "Z:\\data\\games\\22380", "", bottle.string(), 1791900000);
+    CHECK(applied.ok && applied.found == std::vector<std::string>{"CSTW2.vdf"} && applied.values == 1);
+    CHECK(ReadText(bottle / "user.reg").find("\"Path\"=\"Z:\\\\data\\\\games\\\\22380\"") != std::string::npos);
     std::filesystem::remove_all(script_root);
   }
 

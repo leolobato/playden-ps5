@@ -53,10 +53,24 @@ void SetRegistryValue(std::vector<RegistryValue>* list, RegistryValue value);
 // "<app id>_install.vdf" (Singularity's 42670_install.vdf). A game's appinfo names its script, in either form.
 bool InstallScriptName(std::string_view name);
 
-// Applies the Registry sections of the install scripts at the top of game_root (InstallScriptName) to the stopped
-// bottle at
+// The list of a Steam game's install scripts that Playden keeps when it downloads the game
+// (steam::DepotInstaller::kInstallScripts): the files its depots flag as install scripts, which the Steam client runs
+// whatever their names.
+inline constexpr const char* kInstallScriptList = ".playden-install-scripts";
+
+// The install scripts of the game at game_root, as paths relative to it ('/' separators), sorted with the top
+// level's first. A game with kInstallScriptList: the files it names (at any depth) that are there as regular files,
+// with no link on the way; flagged is set. Without the list (a Steam game installed before it was kept, an
+// imported or GOG game): the files at the top that InstallScriptName accepts.
+struct InstallScriptFiles {
+  std::vector<std::string> paths;
+  bool flagged = false;
+};
+InstallScriptFiles FindInstallScripts(const std::string& game_root);
+
+// Applies the Registry sections of the game's install scripts (FindInstallScripts) to the stopped bottle at
 // prefix_dir, backing each hive up first. A later script's value replaces an earlier one's of
-// the same key and name. An unchanged hive is not written. found lists the scripts read; a
+// the same key and name. An unchanged hive is not written. found lists the scripts read (paths in game_root); a
 // script that cannot be read or parsed is skipped and named in skipped; dropped names the values
 // left out of the scripts that were read ("<script>: <key> [<name>]: <reason>", the first 16), and dropped_count
 // counts them all.

@@ -240,6 +240,7 @@ constexpr const char* kUpdateStaged = "staged";
 constexpr const char* kUpdateOld = "old";
 constexpr const char* kUpdateFiles = "files";
 constexpr const char* kUpdateTree = "tree";
+constexpr const char* kUpdateScripts = "scripts";
 constexpr const char* kUpdateRecord = "record";
 constexpr const char* kUpdatePaths = "paths";
 constexpr const char* kSteamFacts = ".playden-steam";  // runtime/steamworks.h kSteamworksFactsFile
@@ -1068,6 +1069,25 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
     }
     return true;
   };
+  // The install scripts among the files the merge kept: those a depot flags (the depot that won the merge) and those
+  // the appinfo names, by path in any case and with either slash.
+  std::set<std::string> named_scripts;
+  for (auto name : target.named_install_scripts) {
+    std::replace(name.begin(), name.end(), '\\', '/');
+    while (!name.empty() && name.front() == '/') name.erase(name.begin());
+    if (!name.empty()) named_scripts.insert(Lower(name));
+  }
+  const auto script_lines = [&](const std::function<bool(const std::string&)>& out) {
+    if (!out("v1\n")) return false;
+    for (const auto& [key, placement] : placements) {
+      const auto& file = *placement.file;
+      if ((!file.is_install_script() && !named_scripts.count(key)) || file.is_directory() || file.is_symlink() ||
+          file.path.find_first_of("\r\n") != std::string::npos)
+        continue;
+      if (!out(file.path + "\n")) return false;
+    }
+    return true;
+  };
   const auto list_lines = [&](const std::function<bool(const std::string&)>& out) {
     for (const auto& [key, placement] : placements)
       if (!placement.file->is_symlink() &&
@@ -1146,6 +1166,7 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
     }
     if (!WriteText(update_dir + "/" + kUpdatePaths, paths_text) || !WriteText(update_dir + "/" + kUpdateOld, old_list) ||
         !WriteText(update_dir + "/" + kUpdateFiles, new_list) || !WriteLines(update_dir + "/" + kUpdateTree, tree_lines) ||
+        !WriteLines(update_dir + "/" + kUpdateScripts, script_lines) ||
         !WriteText(update_dir + "/" + kUpdateRecord, record_text()) ||
         !WriteText(update_dir + "/" + kUpdateStaged, staged_text) ||
         !WriteText(update_dir + "/" + installs::kUpdateStateName, installs::FormatUpdateState(update_state)))
@@ -1897,6 +1918,8 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
   if (target.before_apply && !target.before_apply(target.install_root, outcome.skipped_depots))
     return fail(InstallError::kStorage, "cannot finish install");
   if (!WriteLines(target.install_root + "/" + kFileTree, tree_lines)) return fail(InstallError::kStorage, "cannot write file tree");
+  if (!WriteLines(target.install_root + "/" + kInstallScripts, script_lines))
+    return fail(InstallError::kStorage, "cannot write install script list");
   if (!WriteText(target.install_root + "/" + kInstallRecord, record_text()))
     return fail(InstallError::kStorage, "cannot write install record");
   std::remove(journal_path.c_str());
@@ -2002,7 +2025,13 @@ InstallOutcome DepotInstaller::FinishUpdate(const std::string& install_root, con
     return fail(InstallError::kStorage, "cannot mark the game's files changed");
   // The new version's tree, file list and Steamworks facts, then its record, then the work folder.
   const std::pair<const char*, std::string> moves[] = {
-      {kUpdateTree, kFileTree}, {kUpdateFiles, kFileList}, {kSteamFacts, kSteamFacts}, {kUpdateRecord, kInstallRecord}};
+      {kUpdateTree, kFileTree}, {kUpdateScripts, kInstallScripts}, {kUpdateFiles, kFileList}, {kSteamFacts, kSteamFacts},
+      {kUpdateRecord, kInstallRecord}};
+  // An update planned before the script list was kept has a tree and no list: the old version's list would name the
+  // wrong scripts. (Once the tree has moved, the list moved after it or the plan had none and this ran already.)
+  if (!Present(work + "/" + kUpdateScripts) && Present(work + "/" + kUpdateTree) &&
+      std::remove((install_root + "/" + kInstallScripts).c_str()) != 0 && errno != ENOENT)
+    return fail(InstallError::kStorage, std::string("cannot remove ") + kInstallScripts);
   for (const auto& [from, to] : moves) {
     const auto source = work + "/" + from;
     if (!Present(source)) continue;
@@ -2091,7 +2120,9 @@ bool RemoveManagedInstall(const std::string& install_root, std::string* failure)
   if (Exists(UpdateDir(install_root))) DiscardManagedUpdate(install_root);
   RemoveTree(UpdateDir(install_root));
   for (const auto& file : files) std::remove(file.c_str());
-  for (const char* name : {DepotInstaller::kFileTree, ".playden-tree.tmp"}) std::remove((install_root + "/" + name).c_str());
+  for (const char* name : {DepotInstaller::kFileTree, ".playden-tree.tmp", DepotInstaller::kInstallScripts,
+                           ".playden-install-scripts.tmp"})
+    std::remove((install_root + "/" + name).c_str());
   std::sort(directories.begin(), directories.end(),
             [](const std::string& left, const std::string& right) { return left.size() > right.size(); });
   for (const auto& directory : directories) rmdir(directory.c_str());
