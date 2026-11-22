@@ -6383,10 +6383,13 @@ void PlayInstallsMfcFromSteamsSharedDepots() {
   const auto steam_root = fixture.root / "data/playden/redist/steam";
   std::map<std::uint32_t, std::pair<std::string, std::string>> depot_files = {
       {228989, {"_CommonRedist/vcredist/2022/VC_redist.x64.exe", playden::test::msi::MfcBundle(true)}},
-      {228983, {"_CommonRedist/vcredist/2010/vcredist_x86.exe", playden::test::msi::Vc2010Setup(false)}}};
+      {228983, {"_CommonRedist/vcredist/2010/vcredist_x86.exe", playden::test::msi::Vc2010Setup(false)}},
+      {229033, {"_CommonRedist/PhysX/9.14.0702/PhysX-9.14.0702-SystemSoftware.msi",
+                playden::test::msi::RuntimePackage("AGEIA Technologies", {{"PhysXCore.dll", "CORE"}})}}};
   std::map<std::uint32_t, RuntimeHostConfig::SharedDepot::Status> answers = {
       {228989, RuntimeHostConfig::SharedDepot::Status::kReady},
       {228983, RuntimeHostConfig::SharedDepot::Status::kReady},
+      {229033, RuntimeHostConfig::SharedDepot::Status::kReady},
       {228981, RuntimeHostConfig::SharedDepot::Status::kRefused},
       {228984, RuntimeHostConfig::SharedDepot::Status::kUnavailable}};
   std::set<std::uint32_t> kept;
@@ -6441,7 +6444,16 @@ void PlayInstallsMfcFromSteamsSharedDepots() {
     return out;
   };
   const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
-  Write(game / "hl2.exe", "existing-game", 0644);
+  // The game's program uses PhysX 2.8.1 (its NxCooking.dll says so) and ships no package for it.
+  Write(game / "hl2.exe", ImportingDll(false, "PhysXLoader.dll"), 0644);
+  {
+    std::string resource("MZ", 2);
+    for (const char value : std::string("VS_VERSION_INFO")) { resource += value; resource += '\0'; }
+    resource += std::string(6, '\0');
+    resource += std::string("\xBD\x04\xEF\xFE\x00\x00\x01\x00", 8);  // signature, struct version
+    resource += std::string("\x08\x00\x02\x00\x0F\x00\x01\x00", 8);  // 2.8 and 1.15, low words first
+    Write(game / "NxCooking.dll", resource, 0644);
+  }
   Write(game / "bin/chroma.dll", ImportingDll(true, "MFC140U.dll"), 0644);
   Write(game / "kenshi.exe", ImportingDll(false, "mfc100u.dll"), 0644);
   Write(game / "FahrenheitSub.exe", ImportingDll(false, "MFC80.DLL"), 0644);
@@ -6519,6 +6531,13 @@ void PlayInstallsMfcFromSteamsSharedDepots() {
             "Microsoft's download instead"));
   CHECK(has("mfc upgrade app=220 arch=x86 mfc=80 program=FahrenheitSub.exe installed files=8 from=download ms="));
   CHECK(has("mfc upgrade app=220 arch=x64 mfc=110 program=tools/old.dll skipped: depot 228984 unavailable: steam said no"));
+  // PhysX 2.8.1's package from depot 229033, as nothing in the game folder carries it.
+  const auto physx = logged("redist app=220 physx engine=");
+  CHECK(std::any_of(physx.begin(), physx.end(), [](const std::string& line) {
+    return line.rfind("redist app=220 physx engine=2.8.1 depot 229033 result=installed downloaded "
+                      "detail=PhysX-9.14.0702-SystemSoftware.msi files=1 ms=", 0) == 0;
+  }));
+  CHECK(Read(windows.parent_path() / "Program Files (x86)/AGEIA Technologies/PhysXCore.dll") == "CORE");
   CHECK(host.Handoff());
   end_session(host);
 
@@ -6533,11 +6552,15 @@ void PlayInstallsMfcFromSteamsSharedDepots() {
   played = WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
   {
     std::lock_guard<std::mutex> lock(depot_mutex);
-    // Only the kept copy of MFC 11's depot is looked for (a Play may run the step more than once).
+    // Only kept copies are looked for: MFC 11's depot (its download failed a moment ago) and PhysX's (this stand-in
+    // package has no real engine, so the engine still reads as missing; the package is not installed again).
     CHECK(!asked.empty() && std::all_of(asked.begin(), asked.end(), [](const auto& call) {
-      return call == std::pair<std::uint32_t, bool>{228984, false};
+      return !call.second && (call.first == 228984 || call.first == 229033);
     }));
+    CHECK(std::any_of(asked.begin(), asked.end(), [](const auto& call) { return call.first == 228984; }));
   }
+  const auto again = logged("redist app=220 physx engine=");
+  CHECK(again.back().rfind("redist app=220 physx engine=2.8.1 depot 229033 result=already kept", 0) == 0);
   const auto after = logged("mfc upgrade ");
   CHECK(after.size() > count && after.back().find("depot 228984 download failed ") != std::string::npos &&
         after.back().find(" s ago") != std::string::npos);

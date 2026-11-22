@@ -308,6 +308,30 @@ bool RecordPackage(const std::filesystem::path& prefix, const std::string& sha25
 // Reads a cabinet the package names as a file beside it into *bytes.
 using CabinetSource = std::function<bool(const std::string& name, std::string* bytes)>;
 
+// A large stream of package copied into a file in folder (removed again at once) and mapped into *mapped, piece by
+// piece, so no copy of it is held in the heap. False when it isn't a large stream or the copy can't be made.
+bool StageStream(std::string_view package, const std::string& name, const std::filesystem::path& folder, MappedFile* mapped) {
+  const auto path = folder / (".playden-cabinet-" + std::to_string(static_cast<long long>(::getpid())));
+  ::unlink(path.c_str());
+  const int file = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (file < 0) return false;
+  std::size_t total = 0;
+  const bool copied = CopyMsiStream(package, name, [&](std::string_view piece) {
+    for (std::size_t written = 0; written < piece.size();) {
+      const auto count = ::write(file, piece.data() + written, piece.size() - written);
+      if (count < 0 && errno == EINTR) continue;
+      if (count <= 0) return false;
+      written += static_cast<std::size_t>(count);
+    }
+    total += piece.size();
+    return true;
+  });
+  const bool closed = ::close(file) == 0;
+  const bool opened = copied && closed && total > 0 && mapped->Open(path, total);
+  ::unlink(path.c_str());  // the mapping stays
+  return opened;
+}
+
 // Installs one package: its files (those keep accepts, when given) and its registry and PATH values.
 // Counts the files written in *files, or gives a reason in *reason.
 bool InstallPlan(std::string_view package, const CabinetSource& beside, const std::filesystem::path& prefix,
@@ -341,8 +365,12 @@ bool InstallPlan(std::string_view package, const CabinetSource& beside, const st
     const auto& cabinet = plan.cabinets[index];
     std::string bytes;
     std::optional<std::string_view> view;  // an embedded cabinet in place, without a copy, when it can be
+    MappedFile staged;                     // or a copy of it on disk, mapped
     if (cabinet.embedded) {
       view = ViewMsiStream(package, cabinet.name);
+      // A cabinet whose sectors don't follow one another (NVIDIA's PhysX 9.13 and 9.14 packages, 40 to 56 MB) is
+      // copied to a file beside the bottle's hives and mapped, outside the console's small heap.
+      if (!view && StageStream(package, cabinet.name, prefix, &staged)) view = staged.View();
       if (!view) {
         auto stream = ReadMsiStream(package, cabinet.name);
         if (!stream) {
@@ -1356,6 +1384,63 @@ void RedistRun::Run(const std::string& script, const RedistEntry& entry) {
 }
 
 }  // namespace
+
+std::vector<SteamPhysx> SteamPhysxPackages() {
+  return {{229033, "PhysX-9.14.0702-SystemSoftware.msi", {"2.7.1", "2.7.3", "2.7.4", "2.7.5", "2.7.6", "2.8.0", "2.8.1", "2.8.3"}}};
+}
+
+std::optional<SteamPhysx> SteamPhysxFor(const std::string& version) {
+  for (const auto& package : SteamPhysxPackages())
+    if (version.empty() || std::find(package.engines.begin(), package.engines.end(), version) != package.engines.end())
+      return package;
+  return std::nullopt;
+}
+
+RedistOutcome InstallPhysxPackage(const std::string& path, const std::string& name, const std::string& prefix_dir,
+                                  std::int64_t unix_time, const RedistProgress& progress) {
+  RedistOutcome outcome;
+  outcome.script = "steam";
+  outcome.name = name;
+  const auto base_name = std::filesystem::path(path).filename().string();
+  outcome.detail = base_name;
+  const auto fail = [&](const std::string& why) {
+    outcome.result = "failed";
+    outcome.detail += ": " + why;
+    return outcome;
+  };
+  const std::filesystem::path prefix(prefix_dir);
+  struct stat info {};
+  if (::stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode) || info.st_size <= 0 ||
+      static_cast<std::uint64_t>(info.st_size) > kMaxPackageBytes)
+    return fail("the package is missing or not one Playden can read");
+  // Mapped: these packages are 25 to 60 MB, a large share of the console's 128 MiB heap.
+  MappedFile mapped;
+  if (!mapped.Open(path, static_cast<std::size_t>(info.st_size))) return fail("the package could not be read");
+  const auto bytes = mapped.View();
+  const auto hash = HashArtifactBytes(bytes);
+  if (!hash) return fail("the package could not be hashed");
+  if (InstalledPackages(prefix).count(*hash)) {
+    outcome.result = "already";
+    return outcome;
+  }
+  std::string_view package = bytes;
+  if (!PackageWithFiles(bytes)) {
+    const auto at = FindEmbeddedMsi(bytes);
+    if (!at) return fail("it carries no Windows Installer package");
+    package = bytes.substr(*at);
+  }
+  std::string failure;
+  const auto files_done = [&](std::size_t done, std::size_t total) {
+    if (progress) progress(name, done, total);
+  };
+  files_done(0, 1);
+  if (!InstallPackageBytes(package, path, prefix, RedistEntry{name, "", "", ""}, unix_time, &outcome.files, &failure,
+                           files_done))
+    return fail(failure);
+  if (!RecordPackage(prefix, *hash, base_name)) return fail("installed, but could not be recorded");
+  outcome.result = "installed";
+  return outcome;
+}
 
 RedistInstallResult InstallRedistEntries(const std::string& game_root, const std::string& install_dir,
                                          const std::string& prefix_dir, std::int64_t unix_time,

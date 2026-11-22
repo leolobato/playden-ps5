@@ -1460,6 +1460,10 @@ int main() {
     WritePe(root / "Physx/None.exe", {false, {"KERNEL32.dll", "PhysXDevice.dll"}});
     CHECK(ProgramUsesPhysx(root.string(), "Physx/Direct.exe") && ProgramUsesPhysx(root.string(), "Physx/Delayed.exe"));
     CHECK(!ProgramUsesPhysx(root.string(), "Physx/None.exe") && !ProgramUsesPhysx(root.string(), "Physx/Missing.exe"));
+    // One that links the SDK's extensions and loads the loader itself (Singularity) counts too.
+    WritePe(root / "Physx/Extensions.exe", {false, {"KERNEL32.dll", "PhysXExtensions.dll"}});
+    WritePe(root / "Physx/Cooking.exe", {false, {"KERNEL32.dll"}, false, false, "", 0x1400, false, {"NxCooking.dll"}});
+    CHECK(ProgramUsesPhysx(root.string(), "Physx/Extensions.exe") && ProgramUsesPhysx(root.string(), "Physx/Cooking.exe"));
     // Neither: a game without MFC.
     const auto plain = fresh();
     WritePe(plain / "Game.exe", {true, {"KERNEL32.dll", "VCRUNTIME140.dll", "d3d11.dll"}});

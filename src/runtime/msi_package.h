@@ -60,6 +60,10 @@ std::optional<std::string> ReadMsiStream(std::string_view package, const std::st
 // The same stream in place, without a copy, when its sectors follow one another in the package (a
 // large cabinet's usually do); nullopt otherwise, and the caller reads it with ReadMsiStream.
 std::optional<std::string_view> ViewMsiStream(std::string_view package, const std::string& name);
+// A large stream's bytes in order, in pieces handed to sink (each in place in package), so a stream whose sectors don't
+// follow one another needn't be copied whole into memory. False when it isn't one (a small stream: ReadMsiStream), the
+// package doesn't read, or sink returns false.
+bool CopyMsiStream(std::string_view package, const std::string& name, const std::function<bool(std::string_view)>& sink);
 
 // Extracts the files of a cabinet (MSZIP, LZX or stored folders; Quantum is refused), calling sink
 // with each member's name and contents in cabinet order; the sink may move the contents away. With

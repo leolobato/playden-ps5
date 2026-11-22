@@ -139,6 +139,9 @@ Other versions can work, but these are the ones we know.
 - **Microsoft's MFC library.** Wine doesn't include it. When a game needs it (Visual C++ 2005 to 2022), Playden
   downloads the Visual C++ redistributable Steam shares between games (6 to 25 MB, once per console), or Microsoft's own
   download when Steam's can't be had, and installs only its MFC files into that game's Windows folder.
+- **NVIDIA PhysX.** A game built on PhysX 2.x installs the PhysX package it ships. When that package can't be installed
+  or isn't there, and the game still lacks its engine, Playden installs NVIDIA's PhysX System Software that Steam shares
+  between games (57 MB, once per console).
 
 ## Online play (experimental)
 

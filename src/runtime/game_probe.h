@@ -65,8 +65,10 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
 // Unlike GameProbe::apis, the libraries beside it don't count, so a launcher next to the game's DLLs is not one.
 bool ProgramDrawsWithOpenGLOnly(const std::string& install_root, const std::string& executable);
 
-// Whether a program loads PhysX through NVIDIA's loader (PhysXLoader.dll, imported directly or delay-loaded), which
-// finds the engine the PhysX System Software installs. executable is relative to install_root, '/' separators.
+// Whether a program loads PhysX through NVIDIA's loader, which finds the engine the PhysX System Software installs: it
+// imports (directly or delay-loaded) PhysXLoader.dll, or a PhysX 2 SDK library that goes with it (PhysXExtensions.dll,
+// NxCooking.dll, PhysXCooking.dll; a program may load the loader itself). executable is relative to install_root, '/'
+// separators.
 bool ProgramUsesPhysx(const std::string& install_root, const std::string& executable);
 
 // The program a game's last run couldn't start, from the note the title's Wine leaves in the bottle: what a launcher

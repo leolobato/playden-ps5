@@ -59,6 +59,8 @@ class Compound {
   bool Read(const CompoundEntry& entry, std::string* out) const;
   // The stream in place when its sectors follow one another, as a large stream's usually do.
   std::optional<std::string_view> View(const CompoundEntry& entry) const;
+  // A large stream's bytes in order, as runs of sectors that follow one another, without a copy of the stream.
+  bool Pieces(const CompoundEntry& entry, const std::function<bool(std::string_view)>& sink) const;
 
  private:
   bool Chain(const std::vector<std::uint32_t>& table, std::uint32_t start, std::uint64_t size, bool mini,
@@ -132,6 +134,28 @@ std::optional<std::string_view> Compound::View(const CompoundEntry& entry) const
     if (sector >= fat_.size() || (index + 1 < sectors && fat_[sector] != sector + 1)) return std::nullopt;
   }
   return data_.substr(static_cast<std::size_t>(at), static_cast<std::size_t>(entry.size));
+}
+
+bool Compound::Pieces(const CompoundEntry& entry, const std::function<bool(std::string_view)>& sink) const {
+  if (entry.size < cutoff_ || entry.size > kMaxStreamBytes) return false;
+  std::uint64_t done = 0, run_at = 0, run_size = 0;
+  std::uint32_t sector = entry.start;
+  for (std::size_t steps = 0; done < entry.size; ++steps) {
+    if (sector == kEndOfChain || sector >= fat_.size() || steps > fat_.size()) return false;
+    const std::uint64_t take = std::min<std::uint64_t>(sector_size_, entry.size - done);
+    const std::uint64_t at = (static_cast<std::uint64_t>(sector) + 1) * sector_size_;
+    if (at + take > data_.size()) return false;
+    if (run_size && run_at + run_size == at) {
+      run_size += take;
+    } else {
+      if (run_size && !sink(data_.substr(static_cast<std::size_t>(run_at), static_cast<std::size_t>(run_size)))) return false;
+      run_at = at;
+      run_size = take;
+    }
+    done += take;
+    sector = fat_[sector];
+  }
+  return !run_size || sink(data_.substr(static_cast<std::size_t>(run_at), static_cast<std::size_t>(run_size)));
 }
 
 bool Compound::Open(std::string_view data, std::string* reason) {
@@ -1004,6 +1028,14 @@ std::optional<std::string_view> ViewMsiStream(std::string_view package, const st
   if (!compound.Open(package, &reason)) return std::nullopt;
   const auto* entry = compound.Find(name);
   return entry ? compound.View(*entry) : std::nullopt;
+}
+
+bool CopyMsiStream(std::string_view package, const std::string& name, const std::function<bool(std::string_view)>& sink) {
+  Compound compound;
+  std::string reason;
+  if (!compound.Open(package, &reason)) return false;
+  const auto* entry = compound.Find(name);
+  return entry && compound.Pieces(*entry, sink);
 }
 
 std::optional<std::string> ReadMsiStream(std::string_view package, const std::string& name) {

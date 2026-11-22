@@ -637,8 +637,11 @@ bool TakenForUnrealBefore(const std::string& install_root, const std::string& ex
 bool ProgramUsesPhysx(const std::string& install_root, const std::string& executable) {
   const auto facts = ReadPe((fs::path(install_root) / executable).string(), true);
   if (!facts.valid) return false;
+  // The loader, or one of the PhysX 2 SDK's libraries that only a program using the loader links (Singularity imports
+  // PhysXExtensions.dll and loads PhysXLoader.dll itself, at run time).
   for (const auto* list : {&facts.imports, &facts.delay_imports})
-    if (std::find(list->begin(), list->end(), "physxloader.dll") != list->end()) return true;
+    for (const char* library : {"physxloader.dll", "physxextensions.dll", "nxcooking.dll", "physxcooking.dll"})
+      if (std::find(list->begin(), list->end(), library) != list->end()) return true;
   return false;
 }
 

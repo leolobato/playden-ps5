@@ -1863,20 +1863,6 @@ std::string RuntimeHost::InstallScriptsStep(Composition& c, const GameFiles& fil
   const auto redist = rt::InstallRedistributables(files.root.string(), *install_dir, files.prefix, config_.unix_time(),
                                                   uses_physx, progress, publisher_installers);
   progress_done();
-  if (redist.physx_missing) Log("redist app=" + std::to_string(record.runtime_number) + " physx needed, no package in the game folder");
-  // Still without the engine the game was built for, and a package added to its folder would be found: say which.
-  std::optional<std::string> physx_needed;
-  if (redist.physx_searched)
-    physx_needed = rt::MissingPhysxEngine(files.root.string(), files.programs, files.prefix, [&files](const std::string& program) {
-      return rt::ProgramUsesPhysx(files.root.string(), program);
-    });
-  if (physx_needed) Log("redist app=" + std::to_string(number) + " physx engine missing version=" + (physx_needed->empty() ? "unknown" : *physx_needed));
-  // Kept in the bottle: the game's page says it again after Playden restarts, before the next Play checks.
-  if (!rt::RecordPhysxNeeded(files.prefix, physx_needed)) Log("redist app=" + std::to_string(number) + " physx note not saved");
-  Publish([&](RuntimeSnapshot& s) {
-    if (physx_needed) s.physx_needed[number] = *physx_needed;
-    else s.physx_needed.erase(number);
-  });
   // Names and reasons come from the game's files: one line each, whatever they hold.
   const auto field = [](std::string text) {
     if (text.size() > 240) text.resize(240);
@@ -1894,6 +1880,47 @@ std::string RuntimeHost::InstallScriptsStep(Composition& c, const GameFiles& fil
   log_outcomes(redist);
   if (GameOf(record).store == Store::kGog) GogRedistStep(files, *install_dir, progress, log_outcomes);
   progress_done();
+  // A program still without the PhysX engine it was built for once the game's own packages are in (none, or a setup
+  // program the console can't run): NVIDIA's package from Steam's shared depot, when one has that engine.
+  if (uses_physx && config_.shared_redist) {
+    const auto uses = [&files](const std::string& program) { return rt::ProgramUsesPhysx(files.root.string(), program); };
+    if (const auto missing = rt::MissingPhysxEngine(files.root.string(), files.programs, files.prefix, uses)) {
+      const auto line = "redist app=" + std::to_string(number) + " physx engine=" + (missing->empty() ? "unknown" : *missing);
+      const auto package = rt::SteamPhysxFor(*missing);
+      if (!package) {
+        Log(line + " skipped: no Steam package has it");
+      } else {
+        const auto from = line + " depot " + std::to_string(package->depot);
+        bool downloaded = false, not_downloaded = false;
+        std::string why;
+        const auto file = SharedRedistFile(package->depot, package->package, kPlayDownloadingPhysx, &downloaded, &not_downloaded, &why);
+        if (file.empty()) {
+          Log(from + " skipped: " + why);
+        } else {
+          const auto began = std::chrono::steady_clock::now();
+          const auto outcome = rt::InstallPhysxPackage(file, "PhysX", files.prefix, config_.unix_time(), progress);
+          progress_done();
+          const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count();
+          Log(from + " result=" + outcome.result + (downloaded ? " downloaded" : " kept") + " detail=" + outcome.detail +
+              (outcome.files ? " files=" + std::to_string(outcome.files) : std::string()) + " ms=" + std::to_string(ms));
+        }
+      }
+    }
+  }
+  if (redist.physx_missing) Log("redist app=" + std::to_string(record.runtime_number) + " physx needed, no package in the game folder");
+  // Still without the engine the game was built for, and a package added to its folder would be found: say which.
+  std::optional<std::string> physx_needed;
+  if (redist.physx_searched)
+    physx_needed = rt::MissingPhysxEngine(files.root.string(), files.programs, files.prefix, [&files](const std::string& program) {
+      return rt::ProgramUsesPhysx(files.root.string(), program);
+    });
+  if (physx_needed) Log("redist app=" + std::to_string(number) + " physx engine missing version=" + (physx_needed->empty() ? "unknown" : *physx_needed));
+  // Kept in the bottle: the game's page says it again after Playden restarts, before the next Play checks.
+  if (!rt::RecordPhysxNeeded(files.prefix, physx_needed)) Log("redist app=" + std::to_string(number) + " physx note not saved");
+  Publish([&](RuntimeSnapshot& s) {
+    if (physx_needed) s.physx_needed[number] = *physx_needed;
+    else s.physx_needed.erase(number);
+  });
   return {};
 }
 
@@ -2026,6 +2053,48 @@ struct RuntimeHost::RedistWorkScope {
   RedistWorkScope& operator=(const RedistWorkScope&) = delete;
 };
 
+std::string RuntimeHost::SharedRedistFile(std::uint32_t depot, const std::string& name, const char* progress_text,
+                                          bool* downloaded, bool* not_downloaded, std::string* why) {
+  using Status = RuntimeHostConfig::SharedDepot::Status;
+  const auto began = std::chrono::steady_clock::now();
+  const auto depot_name = "depot " + std::to_string(depot);
+  const auto key = "steam-" + std::to_string(depot);
+  const auto failed = redist_download_failed_.find(key);
+  const bool waits = failed != redist_download_failed_.end() && began - failed->second < config_.redist_retry_wait;
+  *downloaded = false;
+  *not_downloaded = false;
+  auto got = config_.shared_redist(depot, name, nullptr, cancel_downloads_);
+  if (got.status == Status::kNotCached && redist_work_.downloads && !waits && !cancel_downloads_) {
+    // The session the worker read before its hold; none (not signed in) leaves only what else there is.
+    if (batch_online_session_) {
+      if (redist_work_.play_app) Publish([&](RuntimeSnapshot& s) { s.play_progress[*redist_work_.play_app] = progress_text; });
+      got = config_.shared_redist(depot, name, &*batch_online_session_, cancel_downloads_);
+      if (redist_work_.play_app) Publish([&](RuntimeSnapshot& s) { s.play_progress.erase(*redist_work_.play_app); });
+    } else {
+      got.status = Status::kUnavailable;
+      got.detail = batch_online_session_loaded_ ? "not signed in to Steam" : "the session was not read for this work";
+    }
+    if (got.status == Status::kReady) redist_download_failed_.erase(key);
+    else if (got.status != Status::kNotCached) redist_download_failed_[key] = std::chrono::steady_clock::now();
+  }
+  if (got.status == Status::kReady) {
+    *downloaded = got.downloaded;
+    return got.file;
+  }
+  *not_downloaded = true;
+  if (got.status == Status::kNotCached)
+    *why = depot_name + (waits ? " download failed " +
+                                     std::to_string(std::chrono::duration_cast<std::chrono::seconds>(began - failed->second).count()) +
+                                     " s ago"
+                         : redist_work_.downloads ? std::string(" not downloaded")
+                                                  : std::string(" waits for Play"));
+  else
+    *why = depot_name + " " +
+           (got.status == Status::kRefused ? "refused" : got.status == Status::kUnavailable ? "unavailable" : "failed") +
+           (got.detail.empty() ? std::string() : ": " + got.detail);
+  return {};
+}
+
 // Generic step: Microsoft's MFC for a game whose files import it (Wine has none; a Unity plugin of Moonlighter's
 // stops the game without it), downloaded once per console and installed into the bottle once. It comes from Steam's
 // shared depot of that Visual C++ version (config_.shared_redist), else from Microsoft's pinned download where
@@ -2097,45 +2166,19 @@ void RuntimeHost::MfcStep(const GameFiles& files) {
     bool steam_not_downloaded = false;
     if (const auto shared = rt::SteamVcRedistFor(mfc); shared && config_.shared_redist) {
       const auto depot_name = "depot " + std::to_string(shared->depot);
-      const auto key = "steam-" + std::to_string(shared->depot);
-      const auto failed = redist_download_failed_.find(key);
-      const bool waits = failed != redist_download_failed_.end() && began - failed->second < config_.redist_retry_wait;
-      using Status = RuntimeHostConfig::SharedDepot::Status;
-      const auto& name = architecture == "x64" ? shared->x64_program : shared->x86_program;
-      auto depot = config_.shared_redist(shared->depot, name, nullptr, cancel_downloads_);
-      if (depot.status == Status::kNotCached && redist_work_.downloads && !waits && !cancel_downloads_) {
-        // The session the worker read before its hold; none (not signed in) leaves only the pinned download.
-        if (batch_online_session_) {
-          progress(true);
-          depot = config_.shared_redist(shared->depot, name, &*batch_online_session_, cancel_downloads_);
-          progress(false);
-        } else {
-          depot.status = Status::kUnavailable;
-          depot.detail = batch_online_session_loaded_ ? "not signed in to Steam" : "the session was not read for this work";
-        }
-        if (depot.status == Status::kReady) redist_download_failed_.erase(key);
-        else if (depot.status != Status::kNotCached) redist_download_failed_[key] = std::chrono::steady_clock::now();
-      }
-      if (depot.status == Status::kReady) {
-        const auto result = rt::InstallMfcFromProgram(depot.file, mfc, architecture, files.prefix, config_.unix_time());
+      bool downloaded = false;
+      const auto file = SharedRedistFile(shared->depot, architecture == "x64" ? shared->x64_program : shared->x86_program,
+                                         kPlayDownloadingMfc, &downloaded, &steam_not_downloaded, &steam_why);
+      if (!file.empty()) {
+        const auto result = rt::InstallMfcFromProgram(file, mfc, architecture, files.prefix, config_.unix_time());
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count();
         if (result.result == "already") continue;
         if (result.result == "installed") {
           Log(line + " installed files=" + std::to_string(result.files) + " from=steam " + depot_name +
-              (depot.downloaded ? " downloaded" : " kept") + " ms=" + std::to_string(ms));
+              (downloaded ? " downloaded" : " kept") + " ms=" + std::to_string(ms));
           continue;
         }
         steam_why = depot_name + ": " + result.detail;
-      } else {
-        steam_not_downloaded = true;
-        if (depot.status == Status::kNotCached)
-          steam_why = depot_name + (waits ? " download failed " + seconds_since(failed->second) + " s ago"
-                                    : redist_work_.downloads ? std::string(" not downloaded")
-                                                             : std::string(" waits for Play"));
-        else
-          steam_why = depot_name + " " +
-                      (depot.status == Status::kRefused ? "refused" : depot.status == Status::kUnavailable ? "unavailable" : "failed") +
-                      (depot.detail.empty() ? std::string() : ": " + depot.detail);
       }
     }
     // Microsoft's pinned download, where Playden has one.

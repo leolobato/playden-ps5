@@ -606,6 +606,7 @@ inline constexpr const char* kPlayUpdatingForLayout = "Updating this game for Pl
 inline constexpr const char* kPlayInstallingPhysx = "Installing PhysX…";
 inline constexpr const char* kPlayInstallingComponent = "Installing a component…";
 inline constexpr const char* kPlayDownloadingMfc = "Downloading Microsoft's MFC for this game…";
+inline constexpr const char* kPlayDownloadingPhysx = "Downloading PhysX for this game…";
 inline constexpr const char* kPlayDownloadingSteamClient = "Downloading Steam's client for online play…";
 inline constexpr const char* kPlaySteamClientNotDownloaded =
     "Steam's client could not be downloaded, so the game starts offline. Play again to retry.";
@@ -1012,6 +1013,12 @@ class RuntimeHost {
   std::string RecipeFilesStep(const GameFiles& files);
   std::string DotnetHeapStep(const GameFiles& files);
   void MfcStep(const GameFiles& files);  // an upgrade: never stops the start
+  // A file of a depot of Steam's shared redistributables (config_.shared_redist): the kept copy, else, for work the
+  // player started, a download with the session the worker read before its hold (progress_text on the game's page
+  // meanwhile), not tried again within redist_retry_wait of a failed one. Empty when there is none: *why says why, and
+  // *not_downloaded whether that was the download (not the file).
+  std::string SharedRedistFile(std::uint32_t depot, const std::string& name, const char* progress_text, bool* downloaded,
+                               bool* not_downloaded, std::string* why);
   // Steam features = Online with the Steam host: Valve's client files in place (downloaded at Play), and no saved
   // sign-in of the client's unless the game keeps its sign-in for the Home screen. Never stops the start.
   void SteamClientStep(const GameFiles& files);

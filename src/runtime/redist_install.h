@@ -73,6 +73,26 @@ bool RedistIsPhysx(const std::string& name);
 // written so far of its total, on the calling thread. name is the entry's, which comes from the game's files.
 using RedistProgress = std::function<void(const std::string& name, std::size_t done, std::size_t total)>;
 
+// NVIDIA's PhysX System Software from Steam's shared depots (app 228980), for a game whose program still lacks the
+// engine it was built for (MissingPhysxEngine) once its own packages are in.
+struct SteamPhysx {
+  std::uint32_t depot = 0;
+  std::string package;               // its file name in the depot
+  std::vector<std::string> engines;  // "2.8.1"
+};
+// 9.14.0702 (229033: engines 2.7.1, 2.7.3 to 2.7.6, 2.8.0, 2.8.1, 2.8.3, under NVIDIA Corporation\PhysX\Engine).
+// Its cabinet's sectors don't follow one another, so it is installed from a mapped copy on disk (InstallPlan). Not
+// 9.12.1031 (229031), whose cabinet Playden can't read ("members overlap"), nor the legacy 8.09.04 (229030), which
+// points PhysX's loader at AGEIA's folder instead and so hides the engines a game's own package put in NVIDIA's.
+std::vector<SteamPhysx> SteamPhysxPackages();
+// The package for an engine version (empty: the program doesn't say), or nullopt when none has it.
+std::optional<SteamPhysx> SteamPhysxFor(const std::string& version);
+
+// Installs the PhysX package at path (an .msi, or a setup program that carries one) into the stopped bottle, once:
+// .playden-redist lists its SHA-256 afterwards. The file is mapped, not read into the heap. name is the outcome's.
+RedistOutcome InstallPhysxPackage(const std::string& path, const std::string& name, const std::string& prefix_dir,
+                                  std::int64_t unix_time, const RedistProgress& progress = {});
+
 // Finds install scripts at the top of game_root and in its redistributable folders
 // (_CommonRedist, Redist, Support, __Installer…, up to four folders deep), and installs their
 // Windows Installer packages into the stopped bottle at prefix_dir, including a package a setup

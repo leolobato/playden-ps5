@@ -1552,6 +1552,75 @@ void TestSteamVcRedists() {
   std::filesystem::remove_all(base);
 }
 
+// PhysX from Steam's shared depots: the package for the engine a game needs, installed from the depot's file (an
+// .msi, or a setup program carrying one), once per bottle.
+void TestSteamPhysx() {
+  CHECK(SteamPhysxFor("2.8.1") && SteamPhysxFor("2.8.1")->depot == 229033 && SteamPhysxFor("2.7.1")->depot == 229033);
+  CHECK(SteamPhysxFor("2.8.3")->package == "PhysX-9.14.0702-SystemSoftware.msi");
+  // A program that doesn't say: the package all the same. An engine no Steam package has: none.
+  CHECK(SteamPhysxFor("") && SteamPhysxFor("")->depot == 229033);
+  CHECK(!SteamPhysxFor("2.6.4") && !SteamPhysxFor("2.7.2") && !SteamPhysxFor("2.8.4"));
+  char pattern[] = "/tmp/playden-steam-physx-XXXXXX";
+  CHECK(::mkdtemp(pattern));
+  const auto base = std::filesystem::canonical(pattern);
+  const auto depot = base / "229033/_CommonRedist/PhysX/9.14.0702";
+  WriteText(depot / "PhysX-9.14.0702-SystemSoftware.msi", SamplePackage());
+  const auto prefix = MakeBottle(base / "prefix");
+  std::string reported;
+  auto outcome = InstallPhysxPackage((depot / "PhysX-9.14.0702-SystemSoftware.msi").string(), "PhysX", prefix.string(),
+                                     1700000000, [&](const std::string& name, std::size_t, std::size_t) { reported = name; });
+  if (outcome.result != "installed") std::fprintf(stderr, "physx: %s\n", outcome.detail.c_str());
+  CHECK(outcome.result == "installed" && outcome.files == 3 && outcome.name == "PhysX" && reported == "PhysX");
+  CHECK(outcome.detail == "PhysX-9.14.0702-SystemSoftware.msi");
+  CHECK(ReadText(prefix / "drive_c/Program Files (x86)/Vendor Runtime/Common/Loader.dll") == "0123456789");
+  CHECK(ReadText(prefix / ".playden-redist").find(" PhysX-9.14.0702-SystemSoftware.msi\n") != std::string::npos);
+  CHECK(InstallPhysxPackage((depot / "PhysX-9.14.0702-SystemSoftware.msi").string(), "PhysX", prefix.string(), 1700000100)
+            .result == "already");
+  // A setup program carrying the package (8.09.04's): its package.
+  const auto legacy = base / "229030/PhysX_8.09.04_SystemSoftware.exe";
+  WriteText(legacy, "MZ" + std::string(4096, '\x90') + SamplePackage());
+  const auto second = MakeBottle(base / "second");
+  outcome = InstallPhysxPackage(legacy.string(), "PhysX", second.string(), 1700000000);
+  CHECK(outcome.result == "installed" && outcome.files == 3);
+  // Nothing to install: failed, nothing recorded.
+  const auto broken = base / "broken.exe";
+  WriteText(broken, "MZ" + std::string(4096, '\x90'));
+  const auto third = MakeBottle(base / "third");
+  outcome = InstallPhysxPackage(broken.string(), "PhysX", third.string(), 1700000000);
+  CHECK(outcome.result == "failed" && !std::filesystem::exists(third / ".playden-redist"));
+  CHECK(InstallPhysxPackage((base / "missing.msi").string(), "PhysX", third.string(), 1).result == "failed");
+  std::filesystem::remove_all(base);
+}
+
+// Steam's own PhysX packages, when PLAYDEN_TEST_STEAM_REDIST names a folder holding depots of app 228980: each installs
+// the engines SteamPhysxPackages lists, where PhysX's loader looks for them.
+void TestSteamPhysxPackages() {
+  const char* folder = std::getenv("PLAYDEN_TEST_STEAM_REDIST");
+  if (!folder || !*folder) return;
+  char pattern[] = "/tmp/playden-steam-physx-real-XXXXXX";
+  CHECK(::mkdtemp(pattern));
+  const auto base = std::filesystem::canonical(pattern);
+  for (const auto& package : SteamPhysxPackages()) {
+    const auto path = FindRedistProgram((std::filesystem::path(folder) / std::to_string(package.depot)).string(), package.package);
+    CHECK(!path.empty());
+    if (path.empty()) continue;
+    const auto prefix = MakeBottle(base / std::to_string(package.depot));
+    // Its 56 MB cabinet's sectors don't follow one another: copied to disk and mapped, not into the heap.
+    const heap::Watch watch;
+    const auto outcome = InstallPhysxPackage(path, "PhysX", prefix.string(), 1700000000);
+    std::fprintf(stderr, "steam physx depot=%u: %s %s files=%zu heap=%zu\n", package.depot, outcome.result.c_str(),
+                 outcome.detail.c_str(), outcome.files, watch.Above());
+    CHECK(outcome.result == "installed");
+    CHECK(watch.Above() < (20u << 20));
+    CHECK(!std::filesystem::exists(prefix / (".playden-cabinet-" + std::to_string(::getpid()))));
+    for (const auto& engine : package.engines) {
+      if (!BottleHasPhysxEngine(prefix.string(), engine)) std::fprintf(stderr, "  engine %s missing\n", engine.c_str());
+      CHECK(BottleHasPhysxEngine(prefix.string(), engine));
+    }
+  }
+  std::filesystem::remove_all(base);
+}
+
 void TestMfcScanRecord() {
   char pattern[] = "/tmp/playden-mfc-scan-XXXXXX";
   CHECK(::mkdtemp(pattern));
@@ -1734,6 +1803,8 @@ int main() {
   TestCustomActionFolders();
   TestMfcFromProgram();
   TestSteamVcRedists();
+  TestSteamPhysx();
+  TestSteamPhysxPackages();
   TestMfcScanRecord();
   TestMicrosoftVcRedist();
   return 0;
