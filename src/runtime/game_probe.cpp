@@ -372,8 +372,9 @@ std::optional<std::string> Find(const std::vector<std::pair<std::string, bool>>&
   return std::nullopt;
 }
 
-// Unreal's own tools beside the game in <Project>/Binaries/Win64: never the game.
-constexpr const char* kUnrealToolWords[] = {"crashreport", "cefsubprocess", "epicwebhelper", "-cmd.exe"};
+// Unreal's own tools beside the game in <Project>/Binaries/Win64: never the game. Its build tools neither (#934).
+constexpr const char* kUnrealToolWords[] = {"crashreport", "cefsubprocess", "epicwebhelper", "-cmd.exe",
+                                            "unreallightmass", "swarmagent", "shadercompileworker"};
 
 bool UnrealTool(const std::string& lower) {
   return std::any_of(std::begin(kInstallerWords), std::end(kInstallerWords),
@@ -776,6 +777,7 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
       if (name.rfind("qt5webkit", 0) == 0 || name.rfind("qt5webengine", 0) == 0 || name.rfind("qt6webengine", 0) == 0)
         probe.web_view = true;
   AddImports(program, &probe.apis);
+  probe.imports_graphics = !probe.apis.empty();
   for (const auto& [name, directory] : here)
     if (!directory && EndsWith(Lower(name), ".dll")) AddImports(ReadPe((root / folder / name).string()), &probe.apis);
   std::string marked_engine;
@@ -910,7 +912,9 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
     // Unreal 4 draws on DXVK. Unreal 5 projects are often Direct3D 12 only ("Unable to launch with RHI 'DirectX
     // 11'"), so they get vkd3d-proton, which turns -dx11 into -dx12 (game_settings.cpp).
     out.graphics = "dxvk";
-    out.arguments = "-dx11";
+    // Not for an Unreal 3 program built with C++/CLI that imports Direct3D itself (A Story About My Uncle's
+    // ASAMU-Win32-Shipping.exe, #934): with -dx11 it starts UE3ShaderCompileWorker.exe, which the console can't, and quits.
+    out.arguments = probe.dotnet && probe.imports_graphics ? "" : "-dx11";
     if (probe.unreal5 && runtime.vkd3d_proton) out.d3d12 = "vkd3d-proton";
   } else if (probe.engine == "source") {
     out.graphics = "dxvk";

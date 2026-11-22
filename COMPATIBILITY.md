@@ -1,6 +1,6 @@
 # Compatibility
 
-Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-21.
+Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-22.
 
 > [!NOTE]
 > Games were checked on runtime kit **0.10**, the first stable kit, unless the Kit column names a newer one.
@@ -33,7 +33,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [8-Bit Commando](https://store.steampowered.com/app/287860) | ✅ Works | 0.31 | — | Default settings. (player reports, firmware 13.60) | 1 |
 | [A Plague Tale: Requiem](https://store.steampowered.com/app/1182900) | ✅ Works | 0.18 | — | Default settings, DualSense. ([#495](https://github.com/leolobato/playden-ps5/pull/495), firmware 12.40) |
 | [A Short Hike](https://store.steampowered.com/app/1055540) | ✅ Works | 0.10 | Unity (Mono) · D3D11 · 32-bit | Title screen, Continue loads the save, and the hiker walks. Crashed on older kits. |
-| [A Story About My Uncle](https://store.steampowered.com/app/278360) | ✅ Works | 0.12 | UE3 · D3D9 · DXVK · 32-bit | USB: set Program to Steam Launch entry (Binaries/Win32/ASAMU-Win32-Shipping.exe); automatic UnrealLightmass.exe selection is wrong. Intro and opening house render cleanly; controller movement, camera look and zoom verified. Grappling, platforming and later areas untested. |
+| [A Story About My Uncle](https://store.steampowered.com/app/278360) | ✅ Works | 0.35 | UE3 · D3D9 · DXVK · 32-bit | Default settings. A Playden version that starts UnrealLightmass.exe ([#934](https://github.com/leolobato/playden-ps5/issues/934)): set Program to Steam's Launch entry. |
 | [A Virus Named TOM](https://store.steampowered.com/app/207650) | ✅ Works | 0.13 | — | Default settings. Reaches the menu; gameplay not tested. ([#627](https://github.com/leolobato/playden-ps5/issues/627), firmware 12.20) | 1 |
 | [Absolute Drift](https://store.steampowered.com/app/320140) | ✅ Works | 0.14 | — | Default settings, DualSense. ([#388](https://github.com/leolobato/playden-ps5/issues/388), firmware 13.60) | 1 |
 | [ABZÛ](https://store.steampowered.com/app/384190) | ✅ Works | 0.25 | — | With changed Game settings; see the reports. (player reports, firmware 13.40) | 1 |

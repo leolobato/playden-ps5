@@ -765,6 +765,14 @@ int main() {
     CHECK(probe.engine == "unreal" &&
           probe.unreal_program == "WindowsNoEditor/TS2Prototype/Binaries/Win64/WondersOfSodor.exe");
     CHECK(UnrealGameProgram(root.string(), "WindowsNoEditor/WondersOfSodor.exe") == probe.unreal_program);
+    {  // ...and past Unreal's build tools (Lightmass, #934), with a root program named like neither.
+      const auto tools = fresh();
+      WritePe(tools / "Play.exe", {true, {"KERNEL32.dll"}});
+      fs::create_directories(tools / "Engine/Binaries/Win64");
+      WritePe(tools / "TS2Prototype/Binaries/Win64/Sodor.exe", {true, {"d3d11.dll"}});
+      WritePe(tools / "TS2Prototype/Binaries/Win64/UnrealLightmass.exe", {true, {"KERNEL32.dll", "d3d11.dll"}});
+      CHECK(ProbeGame(tools.string(), "Play.exe").unreal_program == "TS2Prototype/Binaries/Win64/Sodor.exe");
+    }
     GameRecipe recipe;
     std::string reason;
     CHECK(GenerateGameRecipe(9002, "Sodor", {{"", "", "WindowsNoEditor/WondersOfSodor.exe", "", ""}}, root.string(),
@@ -1341,6 +1349,83 @@ int main() {
       CHECK(celeste.defaults_revision == 2 && celeste.graphics == "opengl" && celeste.arguments.empty() &&
             celeste.launch_entries.size() == 1 && celeste.launch_entries[0].executable == "Celeste.exe");
       CHECK(!RefreshRecipeDefaults(bl2.string(), mono, &celeste));
+    }
+    {  // ENSLAVED (#934): an Unreal 3 program built with C++/CLI is .NET and imports Direct3D itself. It is the game, not a
+       // .NET launcher, and Unreal's Lightmass beside it (larger, naming Direct3D) is never started in its place.
+      const auto enslaved = fresh();
+      fs::create_directories(enslaved / "Engine");
+      WritePe(enslaved / "Binaries/Win32/Enslaved.exe", {false, {"mscoree.dll", "KERNEL32.dll", "d3d9.dll"}, true});
+      WritePe(enslaved / "Binaries/Win32/UnrealLightmass.exe",
+              {false, {"KERNEL32.dll", "d3d9.dll"}, false, false, "", 0x40000});
+      WritePe(enslaved / "Binaries/Win32/SwarmAgent.exe", {false, {"mscoree.dll"}, true, false, "", 0x40000});
+      WritePe(enslaved / "Binaries/Win32/Render.dll", {false, {"KERNEL32.dll", "d3d9.dll"}});
+      KitCapabilities mono;
+      mono.wine_mono = true;
+      CHECK(ProbeGame(enslaved.string(), "Binaries/Win32/Enslaved.exe").imports_graphics);
+      CHECK(!ProbeGame(enslaved.string(), "Binaries/Win32/SwarmAgent.exe").imports_graphics);
+      GameRecipeDiagnostics swap;
+      CHECK(GenerateGameRecipe(245280, "ENSLAVED", {{"", "", "Binaries/Win32/Enslaved.exe", "", ""}}, enslaved.string(),
+                               &recipe, &reason, mono, {}, nullptr, &swap));
+      CHECK(recipe.launch_entries.size() == 1 && recipe.launch_entries[0].executable == "Binaries/Win32/Enslaved.exe" &&
+            recipe.graphics == "dxvk" && recipe.architecture == "pe32" && recipe.arguments.empty());
+      CHECK(swap.steam_default.empty() && swap.steam_default_skipped_because.empty());
+      const auto fresh_setup = recipe;
+
+      // A real .NET launcher in front of it starts the game, not the larger Lightmass.
+      WritePe(enslaved / "Binaries/Win32/Launcher.exe", {false, {"mscoree.dll"}, true});
+      CHECK(GenerateGameRecipe(245280, "ENSLAVED", {{"", "", "Binaries/Win32/Launcher.exe", "", ""}}, enslaved.string(),
+                               &recipe, &reason, mono, {}, nullptr, &swap));
+      CHECK(swap.steam_default_skipped_because == "dotnet-launcher" && swap.game_instead == "Binaries/Win32/Enslaved.exe");
+      CHECK(recipe.launch_entries.size() == 2 && recipe.launch_entries[0].executable == "Binaries/Win32/Enslaved.exe");
+      // A Steam default that is Lightmass itself starts the game too (Takedown: Red Sabre, #598).
+      CHECK(GenerateGameRecipe(245280, "ENSLAVED", {{"", "", "Binaries/Win32/UnrealLightmass.exe", "", ""}},
+                               enslaved.string(), &recipe, &reason, mono, {}, nullptr, &swap));
+      CHECK(swap.steam_default_skipped_because == "build-tool" && swap.game_instead == "Binaries/Win32/Enslaved.exe");
+
+      // A copy set up while Enslaved.exe counted as a .NET launcher starts Lightmass. At the next Play Steam's program
+      // goes first again, with its id; what the recipe set up for the game stays.
+      auto old = fresh_setup;
+      old.launch_entries = {fresh_setup.launch_entries[0], fresh_setup.launch_entries[0]};
+      old.launch_entries[0].id = "game";
+      old.launch_entries[0].executable = "Binaries/Win32/UnrealLightmass.exe";
+      old.launch_entries[0].label = "UnrealLightmass.exe";
+      old.launch_entries[1].id = "launch-0";
+      old.launch_entries[1].in_install_root = true;
+      old.detected = "d3d9";
+      old.defaults_revision = 0;
+      CHECK(RefreshRecipeDefaults(enslaved.string(), mono, &old));
+      CHECK(old.id == fresh_setup.id && old.launch_entries.size() == 1 && old.launch_entries[0].id == "launch-0" &&
+            old.launch_entries[0].executable == "Binaries/Win32/Enslaved.exe" && old.launch_entries[0].in_install_root &&
+            old.graphics == "dxvk" && old.detected == "d3d9" && old.architecture == "pe32");
+      CHECK(!RefreshRecipeDefaults(enslaved.string(), mono, &old));
+
+      // A Story About My Uncle: Steam's program is an Unreal 3 *-Shipping.exe, taken for Unreal's, built with C++/CLI. It
+      // gets no -dx11, which makes it start a shader compiler and quit. A copy set up with Lightmass first keeps the
+      // arguments it had (none), which a player who picked Steam's program by hand starts the game with.
+      WritePe(enslaved / "Binaries/Win32/ASAMU-Win32-Shipping.exe",
+              {false, {"mscoree.dll", "KERNEL32.dll", "d3d9.dll"}, true});
+      CHECK(GenerateGameRecipe(278360, "Uncle", {{"", "", "Binaries/Win32/ASAMU-Win32-Shipping.exe", "", ""}},
+                               enslaved.string(), &recipe, &reason, mono));
+      CHECK(recipe.launch_entries.size() == 1 && recipe.arguments.empty() && recipe.detected.rfind("unreal", 0) == 0);
+      auto uncle = recipe;
+      uncle.launch_entries = {recipe.launch_entries[0], recipe.launch_entries[0]};
+      uncle.launch_entries[0].id = "game";
+      uncle.launch_entries[0].executable = "Binaries/Win32/UnrealLightmass.exe";
+      uncle.launch_entries[1].id = "launch-1";
+      uncle.arguments.clear();
+      uncle.detected = "d3d9";
+      uncle.defaults_revision = 0;
+      CHECK(RefreshRecipeDefaults(enslaved.string(), mono, &uncle));
+      CHECK(uncle.launch_entries.size() == 1 && uncle.launch_entries[0].id == "launch-1" &&
+            uncle.launch_entries[0].executable == "Binaries/Win32/ASAMU-Win32-Shipping.exe" && uncle.arguments.empty() &&
+            uncle.detected == "d3d9");
+      CHECK(!RefreshRecipeDefaults(enslaved.string(), mono, &uncle));
+      // Lightmass as the player's own pick is kept.
+      auto chosen = fresh_setup;
+      chosen.launch_entries[0].id = kProgramEntryId;
+      chosen.launch_entries[0].executable = "Binaries/Win32/UnrealLightmass.exe";
+      CHECK(!RefreshRecipeDefaults(enslaved.string(), mono, &chosen));
+      CHECK(chosen.launch_entries[0].executable == "Binaries/Win32/UnrealLightmass.exe");
     }
     // A program that draws, or the player's choice, is started as listed.
     CHECK(GenerateGameRecipe(1, "Game", {{"", "", "Tools/Viewer.exe", "", ""}}, root.string(), &recipe, &reason));

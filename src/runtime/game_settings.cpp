@@ -2978,15 +2978,20 @@ namespace {
 // A program that only starts the game: a launcher, updater or settings window (Win32 dialogs
 // the controller can't use) or a .NET launcher. Steam often lists it as the default (#70, #46).
 // A program that draws or has a known engine is the game. A .NET program is the game only when it names XNA itself
-// (Guncraft): its graphics libraries and most engines are found from the folder (UnityPlayer.dll, a DLL that imports
-// Direct3D), which a .NET launcher beside the game shares.
+// (Guncraft) or imports a graphics library itself (a mixed-mode program: Unreal 3's ENSLAVED.exe, #934): its graphics
+// libraries and most engines are found from the folder (UnityPlayer.dll, a DLL that imports Direct3D), which a .NET
+// launcher beside the game shares.
 // Why the program only starts the game, for the log; empty when it is the game.
 std::string WhyStartsTheGameOnly(const std::string& program, const GameProbe& probe) {
   auto name = LowerAscii(program.substr(program.rfind('/') == std::string::npos ? 0 : program.rfind('/') + 1));
   // Redistributable installers and uninstallers are never the game, whatever they import (UE3Redist.exe draws a dialog with D3D9).
   for (const char* word : {"redist", "dxsetup", "uninst"})
     if (name.find(word) != std::string::npos) return "installer";
-  if (probe.dotnet) return probe.engine != "xna" ? "dotnet-launcher" : "";
+  // Nor are the build tools Unreal games ship beside the game: Lightmass names Direct3D and is often the largest
+  // program there (ENSLAVED, #934; Takedown: Red Sabre, #598).
+  for (const char* word : {"unreallightmass", "swarmagent", "shadercompileworker"})
+    if (name.find(word) != std::string::npos) return "build-tool";
+  if (probe.dotnet && !probe.imports_graphics) return probe.engine != "xna" ? "dotnet-launcher" : "";
   if (!probe.apis.empty() || !probe.engine.empty()) return "";
   // A web page in front of the game, which it starts as a child process (Fahrenheit Remastered's Aspyr launcher).
   if (probe.web_view) return "web-view";
@@ -3294,10 +3299,44 @@ bool StartGameProgramFirst(const std::string& install_root, const std::string& o
   *recipe = std::move(checked);
   return true;
 }
+// The program started instead of Steam's is one of Unreal's build tools (UnrealLightmass.exe, picked before they were
+// skipped: ENSLAVED, #934): the programs are chosen again from Steam's entries, which keep their ids and folders, as a
+// new setup chooses them, so Steam's program starts when it is the game. What the recipe set up for the game (graphics,
+// arguments) stays: a player who picked Steam's program by hand already starts it with those, and A Story About My
+// Uncle's Unreal 3 program stops at once with the -dx11 a new setup gives a *-Shipping.exe. False when the first
+// program is anything else, or the setup fails, starts a program of another architecture or a build tool again.
+bool StartWithoutBuildTool(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe) {
+  if (recipe->launch_entries.front().id != "game" ||
+      WhyStartsTheGameOnly(recipe->launch_entries.front().executable, GameProbe{}) != "build-tool")
+    return false;
+  std::vector<LaunchEntry> steam(recipe->launch_entries.begin() + 1, recipe->launch_entries.end());
+  if (steam.empty() || std::any_of(steam.begin(), steam.end(), [](const LaunchEntry& entry) {
+        return entry.id.rfind("launch-", 0) != 0;
+      }))
+    return false;
+  GameRecipe remade;
+  std::string why;
+  if (!GenerateGameRecipe(RecipeGame(*recipe), recipe->app_id, recipe->name, steam, install_root, &remade, &why, kit) ||
+      remade.id != recipe->id)
+    return false;
+  const bool game_first = remade.launch_entries.front().id == "game";
+  if (remade.launch_entries.size() != steam.size() + (game_first ? 1 : 0) ||
+      remade.architecture != recipe->architecture ||
+      WhyStartsTheGameOnly(remade.launch_entries.front().executable, GameProbe{}) == "build-tool")
+    return false;
+  auto healed = *recipe;
+  healed.launch_entries.assign(remade.launch_entries.begin(), remade.launch_entries.begin() + (game_first ? 1 : 0));
+  healed.launch_entries.insert(healed.launch_entries.end(), steam.begin(), steam.end());
+  GameRecipe checked;
+  if (!ParseGameRecipe(SerializeGameRecipe(healed), &checked, &why)) return false;
+  *recipe = std::move(checked);
+  return true;
+}
 }  // namespace
 
 bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe) {
   if (!IsGeneratedRecipeId(recipe->id) || recipe->launch_entries.empty()) return false;
+  if (StartWithoutBuildTool(install_root, kit, recipe)) return true;
   const auto relative = steam::RelativeGamePath(recipe->launch_entries.front().executable);
   auto on_disk = relative ? ResolveGameFile(install_root, *relative) : std::nullopt;
   if (!on_disk) return false;

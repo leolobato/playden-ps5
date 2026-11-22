@@ -26,6 +26,10 @@ struct GameProbe {
   // "d3d11", "dxgi", "d3d12", "opengl", "vulkan", "ddraw".
   std::set<std::string> apis;
   bool dotnet = false;      // a .NET program (needs Wine Mono, which only some kits carry)
+  // The program's own import table names a graphics library (above, the libraries beside it count too). A mixed-mode
+  // program (C++/CLI: Unreal 3's ENSLAVED.exe) is .NET and imports Direct3D itself; a .NET launcher imports only
+  // mscoree.dll.
+  bool imports_graphics = false;
   bool steam_stub = false;  // SteamStub DRM: the entry point is in a ".bind" section
   bool steam_stub_supported = false;  // ...in a variant Playden unpacks (runtime/steam_stub.h)
   std::string steam_stub_detail;      // for logs: the variant, or why it is not unpacked
