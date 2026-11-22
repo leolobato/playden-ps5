@@ -457,6 +457,18 @@ bool ParseRunProcess(std::string_view text, const std::string& install_dir, std:
   return true;
 }
 
+bool InstallScriptName(std::string_view name) {
+  const auto lower = Lower(name);
+  if (lower.size() <= 4 || lower.compare(lower.size() - 4, 4, ".vdf") != 0) return false;
+  if (lower.rfind("installscript", 0) == 0) return true;
+  constexpr std::string_view kAppScript = "_install.vdf";
+  if (lower.size() <= kAppScript.size() || lower.compare(lower.size() - kAppScript.size(), kAppScript.size(), kAppScript) != 0)
+    return false;
+  const auto digits = lower.size() - kAppScript.size();
+  return std::all_of(lower.begin(), lower.begin() + static_cast<std::ptrdiff_t>(digits),
+                     [](char value) { return value >= '0' && value <= '9'; });
+}
+
 bool ReadInstallScript(const std::string& path, std::string* text) {
   text->clear();
   return ReadScript(path, text);
@@ -469,10 +481,8 @@ InstallScriptResult ApplyInstallScripts(const std::string& game_root, const std:
   std::vector<std::filesystem::path> scripts;
   std::error_code error;
   for (std::filesystem::directory_iterator it(game_root, error), end; !error && it != end; it.increment(error)) {
-    const auto name = Lower(it->path().filename().string());
     std::error_code type_error;
-    if (name.rfind("installscript", 0) == 0 && name.size() > 4 && name.substr(name.size() - 4) == ".vdf" &&
-        it->is_regular_file(type_error) && !it->is_symlink(type_error))
+    if (InstallScriptName(it->path().filename().string()) && it->is_regular_file(type_error) && !it->is_symlink(type_error))
       scripts.push_back(it->path());
   }
   std::sort(scripts.begin(), scripts.end());

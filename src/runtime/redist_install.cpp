@@ -118,11 +118,6 @@ class MappedFile {
   std::size_t size_ = 0;
 };
 
-bool ScriptName(const std::string& name) {
-  const auto lower = Lower(name);
-  return lower.rfind("installscript", 0) == 0 && lower.size() > 4 && lower.compare(lower.size() - 4, 4, ".vdf") == 0;
-}
-
 void FindScripts(const std::filesystem::path& folder, const std::string& relative, int depth,
                  std::vector<std::string>* scripts) {
   std::error_code error;
@@ -136,7 +131,7 @@ void FindScripts(const std::filesystem::path& folder, const std::string& relativ
   for (const auto& [name, directory] : children) {
     if (scripts->size() >= kMaxScripts) return;
     const auto path = relative.empty() ? name : relative + "/" + name;
-    if (!directory && ScriptName(name) && depth > 0) scripts->push_back(path);
+    if (!directory && InstallScriptName(name) && depth > 0) scripts->push_back(path);
     else if (directory && depth < kMaxDepth && (depth > 0 || RedistFolder(name)))
       FindScripts(folder / name, path, depth + 1, scripts);
   }
@@ -1464,7 +1459,7 @@ RedistInstallResult InstallRedistributables(const std::string& game_root, const 
     std::vector<std::string> top;
     for (std::filesystem::directory_iterator it(game_root, error), end; !error && it != end; it.increment(error)) {
       std::error_code type_error;
-      if (ScriptName(it->path().filename().string()) && it->is_regular_file(type_error) && !it->is_symlink(type_error))
+      if (InstallScriptName(it->path().filename().string()) && it->is_regular_file(type_error) && !it->is_symlink(type_error))
         top.push_back(it->path().filename().string());
     }
     std::sort(top.begin(), top.end());

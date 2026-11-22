@@ -49,8 +49,12 @@ std::string RegistryString(std::string_view text);
 // of each, so the last value set wins, and a hive never gets the same value twice.
 void SetRegistryValue(std::vector<RegistryValue>* list, RegistryValue value);
 
-// Applies the Registry sections of the install scripts at the top of game_root (file names
-// starting with "installscript" and ending ".vdf", any case) to the stopped bottle at
+// Whether a file is named as one of Steam's install scripts (any case): "installscript*.vdf", or
+// "<app id>_install.vdf" (Singularity's 42670_install.vdf). A game's appinfo names its script, in either form.
+bool InstallScriptName(std::string_view name);
+
+// Applies the Registry sections of the install scripts at the top of game_root (InstallScriptName) to the stopped
+// bottle at
 // prefix_dir, backing each hive up first. A later script's value replaces an earlier one's of
 // the same key and name. An unchanged hive is not written. found lists the scripts read; a
 // script that cannot be read or parsed is skipped and named in skipped; dropped names the values

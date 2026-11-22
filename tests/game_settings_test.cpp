@@ -2251,6 +2251,19 @@ int main(int argc, char** argv) {
     CHECK(replaced.find("\"Installed Path\"=\"Z:\\\\data\\\\games\\\\22380\\\\\"") == std::string::npos);
     CHECK(replaced.find("\"installed path\"=\"Z:\\\\data\\\\games\\\\22380\\\\Data\"") != std::string::npos ||
           replaced.find("\"Installed Path\"=\"Z:\\\\data\\\\games\\\\22380\\\\Data\"") != std::string::npos);
+    // A script named after its app (Singularity's 42670_install.vdf) is one too; another .vdf is not.
+    std::ofstream(game / "42670_install.vdf")
+        << "\"InstallScript\" { \"Registry\" { \"HKEY_LOCAL_MACHINE\\\\SOFTWARE\\\\Activision\\\\Singularity\" "
+           "{ \"string\" { \"InstallPath\" \"%INSTALLDIR%\" } } } }";
+    std::ofstream(game / "steam_install.vdf")
+        << "\"InstallScript\" { \"Registry\" { \"HKEY_LOCAL_MACHINE\\\\SOFTWARE\\\\Other\" "
+           "{ \"string\" { \"Path\" \"x\" } } } }";
+    applied = ApplyInstallScripts(game.string(), "Z:\\data\\games\\22380", "", bottle.string(), 1791800000);
+    CHECK(applied.ok && applied.found.size() == 4 && applied.found[0] == "42670_install.vdf" && applied.values == 5);
+    const auto named = ReadText(bottle / "system.reg");
+    CHECK(named.find("\n[Software\\\\Wow6432Node\\\\Activision\\\\Singularity] 1791800000\n"
+                     "\"InstallPath\"=\"Z:\\\\data\\\\games\\\\22380\"\n") != std::string::npos);
+    CHECK(named.find("SOFTWARE\\\\Other") == std::string::npos);
     std::filesystem::remove_all(script_root);
   }
 

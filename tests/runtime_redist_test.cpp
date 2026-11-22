@@ -384,6 +384,11 @@ void TestPath() {
 }
 
 void TestScripts() {
+  // Steam's install script names: installscript*.vdf, or <app id>_install.vdf (Singularity's).
+  CHECK(InstallScriptName("installscript.vdf") && InstallScriptName("InstallScript_2.VDF"));
+  CHECK(InstallScriptName("42670_install.vdf") && InstallScriptName("42670_Install.vdf"));
+  CHECK(!InstallScriptName("_install.vdf") && !InstallScriptName("steam_install.vdf") && !InstallScriptName("42670_install.txt"));
+  CHECK(!InstallScriptName("4267a_install.vdf") && !InstallScriptName("installscript") && !InstallScriptName("appmanifest_42670.acf"));
   const std::string script =
       "\"InstallScript\"\n{\n\t\"Run Process\"\n\t{\n\t\t\"PhysX\"\n\t\t{\n"
       "\t\t\t\"HasRunKey\"\t\t\"HKEY_LOCAL_MACHINE\\\\Software\\\\Valve\\\\Steam\\\\Apps\\\\696180\"\n"
@@ -894,6 +899,18 @@ void TestFoundPhysx() {
   prefix = fresh_prefix("scripted-prefix");
   result = InstallRedistributables(scripted.string(), "Z:\\games\\3", prefix.string(), 1700000100, true);
   CHECK(result.outcomes.size() == 1 && result.outcomes[0].detail == "_CommonRedist/Chosen.msi" && !result.physx_searched);
+
+  // A script at the top named after its app (Singularity's 42670_install.vdf) is read as well.
+  const auto named = base / "named";
+  WriteText(named / "42670_install.vdf",
+            "\"InstallScript\" { \"Run Process\" { \"PhysX Version\" { \"process 1\" \"msiexec\" "
+            "\"command 1\" \"/i \\\"%INSTALLDIR%\\\\redist\\\\Chosen.msi\\\" /quiet\" } } }");
+  WriteText(named / "redist/Chosen.msi", SamplePackage());
+  WriteText(named / "_Redist/PhysX-Other.msi", "broken");
+  prefix = fresh_prefix("named-prefix");
+  result = InstallRedistributables(named.string(), "Z:\\games\\42670", prefix.string(), 1700000100, true);
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].script == "42670_install.vdf" &&
+        result.outcomes[0].detail == "redist/Chosen.msi" && result.outcomes[0].result == "installed" && !result.physx_searched);
 
   // Which version a game was built for, and whether a bottle has it.
   {
