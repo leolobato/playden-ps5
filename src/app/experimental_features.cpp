@@ -35,6 +35,7 @@ ExperimentalFeatures ParseExperimentalFeatures(std::string_view text, Experiment
     if (line == "online-steam") features.online_steam = true;
     else if (line == "gog-store") features.gog_store = true;
     else if (line == "publisher-pack-download") features.publisher_pack_download = true;
+    else if (line == "nightly-updates") features.nightly_updates = true;
     else if (unknown) unknown->emplace_back(line);
   }
   return features;

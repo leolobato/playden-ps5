@@ -2,6 +2,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <utility>
+#include <vector>
 using namespace playden::update;
 #define CHECK(value) do { if (!(value)) { std::fprintf(stderr, "line %d: %s\n", __LINE__, #value); std::exit(1); } } while(false)
 
@@ -109,6 +111,53 @@ int main() {
   CHECK(KitVersionFromArtifact("f729534-kit-0.13-dev.20261023.1")->development);
   CHECK(!KitVersionFromArtifact("bceed2d-kit-h-r1") && !KitVersionFromArtifact("f729534") &&
         !KitVersionFromArtifact("0.12"));
+  // builds.playden.club's nightly builds list.
+  const auto entry = [](const std::string& field, const std::string& value) {
+    std::string json = R"({"version":"0.12.0-nightly.20261121.1","base":"0.12.0-beta.3","title_id":"FAKE77031",)"
+        R"("min_from":"0.11.0","notes":"Rockstar games\r\nand kit 0.34","app":{"path":"builds/playden-ps5-0.12.0-nightly-20261121.1.zip",)"
+        R"("size":59969280,"sha256":")" + kSha + R"(","prefix":"FAKE77031/"},"kit":{"kit_id":"playden-kit","revision":"0.34",)"
+        R"("manifest_sha256":")" + kSha + R"(","path":"kits/71212f4780e8/playden-kit-0.34.zip","size":450325714,)"
+        R"("sha256":")" + kSha + R"(","prefix":"playden-kit-0.34/playden-kit/"}})";
+    if (!field.empty()) {
+      const auto at = json.find("\"" + field + "\":");
+      CHECK(at != std::string::npos);
+      const auto start = at + field.size() + 3;
+      const auto end = json[start] == '"'   ? json.find('"', start + 1) + 1
+                       : json[start] == '{' ? json.find('}', start) + 1
+                                            : json.find_first_of(",}", start);
+      json.replace(start, end - start, value);
+    }
+    return json;
+  };
+  const auto feed = [](const std::string& entries) { return R"({"format":1,"nightlies":[)" + entries + "]}"; };
+  const auto nightlies = ParseNightlyFeed(feed(entry("", "")), &error);
+  CHECK(nightlies && nightlies->size() == 1);
+  const auto& build = nightlies->front();
+  CHECK(build.version.ToString() == "0.12.0-nightly.20261121.1" && build.base.ToString() == "0.12.0-beta.3");
+  CHECK(build.min_from.ToString() == "0.11.0" && build.title_id == "FAKE77031" && build.notes == "Rockstar games\nand kit 0.34");
+  CHECK(build.app.Name() == "playden-ps5-0.12.0-nightly-20261121.1.zip" && build.app.size == 59969280);
+  CHECK(build.app.prefix == "FAKE77031/" && build.app.sha256 == kSha);
+  CHECK(build.kit.kit_id == "playden-kit" && build.kit.revision == "0.34" && build.kit.asset == "playden-kit-0.34.zip");
+  CHECK(build.kit.prefix == "playden-kit-0.34/playden-kit/" && build.kit_file.path == "kits/71212f4780e8/playden-kit-0.34.zip");
+  // Builds that aren't complete and safe are left out; the rest stay.
+  for (const auto& [field, value] : std::vector<std::pair<std::string, std::string>>{
+           {"version", R"("0.12.0-beta.4")"}, {"base", R"("0.12.0-nightly.20261120.1")"}, {"base", "1"},
+           {"min_from", R"("x")"}, {"title_id", R"("../x")"}, {"path", R"("../builds/x.zip")"},
+           {"path", R"("/builds/x.zip")"}, {"path", R"("builds//x.zip")"}, {"path", R"("https://evil.example/x.zip")"},
+           {"sha256", R"("abc")"}, {"prefix", R"("FAKE77031")"}, {"size", "0"}, {"manifest_sha256", R"("x")"},
+           {"kit_id", R"(".kit")"}, {"kit", "null"}})
+  {
+    const auto parsed = ParseNightlyFeed(feed(entry(field, value) + "," + entry("", "")), &error);
+    if (!parsed || parsed->size() != 1) std::fprintf(stderr, "%s: %s\n", field.c_str(), value.c_str());
+    CHECK(parsed && parsed->size() == 1);
+  }
+  CHECK(!ParseNightlyFeed(R"({"format":2,"nightlies":[]})", &error));
+  CHECK(!ParseNightlyFeed(R"({"format":1})", &error) && !ParseNightlyFeed("[]", &error));
+  CHECK(ParseNightlyFeed(feed(""), &error)->empty());
+  // The GitHub parsers keep refusing nightlies.
+  CHECK(!ParseUpdateManifest(Manifest(R"({"version":"0.3.0-nightly.20261121.1","title_id":"FAKE77031","min_from":"0.2.0","asset":"a.zip","prefix":"FAKE77031/"})"), &error));
+  CHECK(SafeRelativePath("builds/a.zip") && SafeRelativePath("a.zip") && !SafeRelativePath("") &&
+        !SafeRelativePath("a/") && !SafeRelativePath("a/../b") && !SafeRelativePath(std::string(257, 'a')));
   std::puts("ok");
   return 0;
 }

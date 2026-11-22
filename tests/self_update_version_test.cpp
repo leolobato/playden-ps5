@@ -2,6 +2,7 @@
 #include "playden_build_commit.h"
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 using namespace playden::update;
 #define CHECK(value) do { if (!(value)) { std::fprintf(stderr, "line %d: %s\n", __LINE__, #value); std::exit(1); } } while(false)
 int main() {
@@ -59,5 +60,22 @@ int main() {
                           "0.8.0-nightly.20261000.1", "0.8.0-nightly.020261027.1", "0.8.0-nightly.20261027.1.1",
                           "0.8.0-beta.1-nightly.20261027.1", "0.8.0-nightly.20261027.1-beta.1"})
     CHECK(!ParseVersion(bad));
+  // The update track: a nightly sits right after the release it was built on.
+  const auto v = [](const char* text) { return *ParseVersion(text); };
+  const std::optional<Version> none;
+  const std::optional<Version> beta3 = v("0.12.0-beta.3"), beta4 = v("0.12.0-beta.4");
+  const auto n1 = v("0.12.0-nightly.20261121.1"), n2 = v("0.12.0-nightly.20261123.1"), n3 = v("0.12.0-nightly.20261122.1");
+  CHECK(TrackOlder(v("0.12.0-beta.3"), none, n1, beta3));    // after its base
+  CHECK(TrackOlder(n1, beta3, v("0.12.0-beta.4"), none));    // before a newer release
+  CHECK(!TrackOlder(n1, beta3, v("0.12.0-beta.3"), none) && !TrackOlder(v("0.12.0-beta.4"), none, n1, beta3));
+  CHECK(TrackOlder(v("0.12.0-beta.4"), none, n2, beta4) && TrackOlder(n2, beta4, v("0.12.0"), none));
+  CHECK(TrackOlder(n1, beta3, n2, beta4));                   // a newer base first
+  CHECK(TrackOlder(n2, beta3, n3, beta4) && !TrackOlder(n3, beta4, n2, beta3));  // whatever the date
+  CHECK(TrackOlder(n3, beta4, n2, beta4) && !TrackOlder(n2, beta4, n3, beta4));  // then date and number
+  CHECK(!TrackOlder(n2, beta4, n2, beta4));
+  // Without a base, or with one its version doesn't sort before, a nightly sits at its own version.
+  CHECK(TrackOlder(n1, none, v("0.12.0-beta.1"), none) && TrackOlder(v("0.11.0"), none, n1, none));
+  CHECK(TrackOlder(n1, v("0.11.0"), v("0.12.0-beta.1"), none) && TrackOlder(v("0.11.1"), none, n1, v("0.11.0")));
+  CHECK(TrackOlder(v("0.11.0"), none, v("0.12.0"), none) && !TrackOlder(v("0.12.0"), beta3, v("0.11.0"), none));
   return 0;
 }

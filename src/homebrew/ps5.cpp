@@ -328,6 +328,7 @@ int main() {
         if (features.gog_store) playden::app::AppendLogLine(log_root, "launch.log", "experimental feature gog-store on");
         if (features.publisher_pack_download)
             playden::app::AppendLogLine(log_root, "launch.log", "experimental feature publisher-pack-download on");
+        if (features.nightly_updates) playden::app::AppendLogLine(log_root, "launch.log", "experimental feature nightly-updates on");
         for (const auto& name : unknown)
             playden::app::AppendLogLine(log_root, "launch.log", "experimental feature unknown: " + name.substr(0, 64));
     }
@@ -576,13 +577,15 @@ int main() {
         update_config.current = playden::update::CurrentVersion();
         update_config.nightly_base = playden::update::NightlyBase();
         update_config.include_betas = preferences.Load().preferences.beta_updates;
+        // nightly-updates: the beta track takes nightlies from builds.playden.club too.
+        if (features.nightly_updates) update_config.nightly_site = "https://builds.playden.club/";
         update_config.fetch = [&update_http](const playden::steam::HttpRequest& request, const std::atomic<bool>& cancel) {
             return update_http.Perform(request, cancel);
         };
         update_config.hash_file = [](const std::string& path) { return playden::runtime::HashArtifactFile(path); };
         // Which kit a folder holds. A newer kit may use a schema or contract this build can't judge;
-        // its bytes are vouched for by GitHub's digest and the per-file checks, and the new Playden
-        // admits it at startup. Only a kit whose files don't match its own manifest is refused.
+        // its bytes are vouched for by the zip's SHA-256 (GitHub's digest, or the nightly builds list) and the
+        // per-file checks, and the new Playden admits it at startup against the pin it carries. Only a kit whose files don't match its own manifest is refused.
         update_config.verify_kit = [](const std::string& root) -> std::optional<std::string> {
             namespace rt = playden::runtime;
             const auto result = rt::VerifyInstalledKit(root, rt::DevelopmentKitAdmission());

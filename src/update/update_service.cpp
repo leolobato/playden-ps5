@@ -211,7 +211,8 @@ std::string UpdateService::StagedFields() const {
   const auto snapshot = Snapshot();
   return ",\"version\":" + Quote(staged_version_.ToString()) + ",\"from\":" + Quote(config_.current.ToString()) +
          ",\"stage\":" + Quote(staged_folder_) + ",\"kit\":" + Quote(staged_kit_) + ",\"kit_id\":" +
-         Quote(staged_kit_id_) + ",\"notes\":" + Quote(snapshot.notes) + ",\"notes_url\":" + Quote(snapshot.notes_url);
+         Quote(staged_kit_id_) + ",\"notes\":" + Quote(snapshot.notes) + ",\"notes_url\":" + Quote(snapshot.notes_url) +
+         (staged_base_ ? ",\"base\":" + Quote(staged_base_->ToString()) : std::string());
 }
 
 bool UpdateService::PrepareWorkRoot() {
@@ -484,12 +485,14 @@ void UpdateService::Start() {
   }
   if (phase == "staged") {
     const auto version = ParseVersion(field("version"));
+    const auto base = version && version->nightly() ? ParseVersion(field("base")) : std::nullopt;
     const std::string stage = field("stage");
     const std::string kit = field("kit");
     const bool kit_present = kit.empty() || (config_.verify_kit && config_.verify_kit(kit));
-    if (version && UpdateFloor() < *version && !stage.empty() && Exists(stage + "/eboot.bin") && kit_present) {
+    if (version && NewerThanRunning(*version, base) && !stage.empty() && Exists(stage + "/eboot.bin") && kit_present) {
       staged_folder_ = stage;
       staged_version_ = *version;
+      staged_base_ = base;
       staged_kit_ = kit;
       staged_kit_id_ = field("kit_id");
       Log("update " + version->ToString() + " is staged at " + stage + (kit.empty() ? "" : " with kit " + kit));
@@ -611,6 +614,51 @@ void UpdateService::Install() {
   });
 }
 
+bool UpdateService::NewerThanRunning(const Version& version, const std::optional<Version>& base) const {
+  return TrackOlder(config_.current, config_.nightly_base, version, base);
+}
+
+DownloadOptions UpdateService::DownloadsFor(const std::string& url, const std::string& part) {
+  auto options = Downloads(part);
+  // A nightly's files come from the nightly site and nowhere else, redirects included.
+  if (!config_.nightly_site.empty() && url.compare(0, config_.nightly_site.size(), config_.nightly_site) == 0)
+    options.allowed_url_prefix = config_.nightly_site;
+  return options;
+}
+
+std::optional<std::vector<NightlyBuild>> UpdateService::FetchNightlies(std::string* error) {
+  const std::string local = config_.local_release_dir.empty() ? std::string()
+                                                               : config_.local_release_dir + "/" + kNightlyFeedFile;
+  std::optional<std::string> body;
+  if (!local.empty() && Exists(local)) {
+    Log(std::string("reading the nightly builds from ") + local);
+    std::string text;
+    if (!ReadSmallFile(local, &text, 2 << 20)) {
+      *error = std::string("cannot read ") + kNightlyFeedFile;
+      return std::nullopt;
+    }
+    body = std::move(text);
+  } else {
+    auto options = DownloadsFor(config_.nightly_site, "");
+    options.max_attempts = 2;
+    body = FetchSmall(config_.nightly_site + kNightlyFeedFile, 2 << 20, options, "application/json", error);
+    if (!body) return std::nullopt;
+  }
+  return ParseNightlyFeed(*body, error);
+}
+
+Release UpdateService::NightlyRelease(const NightlyBuild& build) const {
+  Release release;
+  release.tag = build.version.ToString();
+  release.page = config_.nightly_page;
+  release.version = build.version;
+  release.prerelease = true;
+  release.assets.push_back({build.app.Name(), config_.nightly_site + build.app.path, build.app.size, build.app.sha256});
+  release.assets.push_back(
+      {build.kit_file.Name(), config_.nightly_site + build.kit_file.path, build.kit_file.size, build.kit_file.sha256});
+  return release;
+}
+
 const Version& UpdateService::UpdateFloor() const {
   const auto& base = config_.nightly_base;
   return config_.current.nightly() && base && !base->nightly() && config_.current < *base ? *base : config_.current;
@@ -649,10 +697,34 @@ void UpdateService::DoCheck(bool user_asked) {
     if (!release) return Fail("The latest release on GitHub could not be read.", error);
     if (release->draft || release->prerelease || release->version.beta) release.reset();
   }
-  if (!release || !(UpdateFloor() < release->version)) {
+  // The nightly track: the newest nightly build, when it is newer than the newest release. A list that can't be
+  // read leaves the releases on GitHub.
+  std::optional<NightlyBuild> nightly;
+  if (include_betas && !config_.nightly_site.empty()) {
+    std::string nightly_error;
+    if (const auto nightlies = FetchNightlies(&nightly_error)) {
+      for (const auto& candidate : *nightlies)
+        if (candidate.title_id == config_.title_id &&
+            (!nightly || TrackOlder(nightly->version, nightly->base, candidate.version, candidate.base)))
+          nightly = candidate;
+    } else {
+      Log("nightly builds not read: " + nightly_error);
+    }
+    if (nightly && release && !TrackOlder(release->version, std::nullopt, nightly->version, nightly->base))
+      nightly.reset();
+  }
+  std::optional<UpdateManifest> nightly_manifest;
+  if (nightly) {
+    release = NightlyRelease(*nightly);
+    nightly_manifest = UpdateManifest{nightly->version, nightly->title_id, nightly->min_from,
+                                      nightly->app.Name(), nightly->app.prefix, nightly->kit, nightly->notes};
+  }
+  const std::optional<Version> base = nightly ? std::optional<Version>(nightly->base) : std::nullopt;
+  if (!release || !NewerThanRunning(release->version, base)) {
     Log("up to date: running " + config_.current.ToString());
     release_.reset();
     manifest_.reset();
+    release_base_.reset();
     kit_zip_.reset();
     Set([&](UpdateSnapshot& s) {
       s.phase = UpdatePhase::kUpToDate;
@@ -660,13 +732,16 @@ void UpdateService::DoCheck(bool user_asked) {
     });
     return;
   }
-  const auto* asset = release->Find(kUpdateManifestAsset);
-  if (!asset) return Fail("Release " + release->tag + " has no update information. Install it by hand.", "no asset");
-  const auto manifest_text = local ? read_local(kUpdateManifestAsset)
-                                   : FetchSmall(asset->url, 256 << 10, options, "application/octet-stream", &error);
-  if (!manifest_text) return Fail("Playden could not read the update information.", error);
-  const auto manifest = ParseUpdateManifest(*manifest_text, &error);
-  if (!manifest) return Fail("The update information of " + release->tag + " is not valid.", error);
+  std::optional<UpdateManifest> manifest = nightly_manifest;
+  if (!manifest) {
+    const auto* asset = release->Find(kUpdateManifestAsset);
+    if (!asset) return Fail("Release " + release->tag + " has no update information. Install it by hand.", "no asset");
+    const auto manifest_text = local ? read_local(kUpdateManifestAsset)
+                                     : FetchSmall(asset->url, 256 << 10, options, "application/octet-stream", &error);
+    if (!manifest_text) return Fail("Playden could not read the update information.", error);
+    manifest = ParseUpdateManifest(*manifest_text, &error);
+    if (!manifest) return Fail("The update information of " + release->tag + " is not valid.", error);
+  }
   if (manifest->app_version != release->version || manifest->title_id != config_.title_id)
     return Fail("The update information does not match release " + release->tag + ".", "version or title");
   if (UpdateFloor() < manifest->min_from)
@@ -677,7 +752,7 @@ void UpdateService::DoCheck(bool user_asked) {
   // A release whose kit did not change may leave the kit zip out; it is needed only when the
   // console has no copy of that kit, and then an older release has the same zip.
   const bool kit_needed = ReadyKit(manifest->kit).empty();
-  if (kit_needed && !kit) {
+  if (kit_needed && !kit && !nightly) {
     if (!releases) {
       std::string ignored;
       releases = FetchReleases(&ignored);
@@ -696,6 +771,7 @@ void UpdateService::DoCheck(bool user_asked) {
     return Fail("Release " + release->tag + " has no checksums. Install it by hand.", "digest");
   release_ = *release;
   manifest_ = *manifest;
+  release_base_ = base;
   if (kit_needed) kit_zip_ = *kit;
   else kit_zip_.reset();
   Log("update " + release->tag + " available: app " + std::to_string(app->size) + " bytes, kit " +
@@ -738,6 +814,7 @@ void UpdateService::DoInstall() {
   }
   if (!StageApp(release, manifest)) return;
   staged_version_ = release.version;
+  staged_base_ = release_base_;
   // The installed kit already matches: nothing to swap for it.
   staged_kit_ = kit_folder == config_.kits_root + "/" + manifest.kit.kit_id ? std::string() : kit_folder;
   staged_kit_id_ = manifest.kit.kit_id;
@@ -780,7 +857,8 @@ bool UpdateService::StageKit(const ReleaseAsset& asset, const KitPart& kit, bool
   };
   step(false, asset.size);
   const auto download = local ? DownloadResult{true, false, {}}
-                              : DownloadAsset(asset.url, asset.size, asset.sha256, zip, Downloads(kit_only ? "kit-only" : "kit"));
+                              : DownloadAsset(asset.url, asset.size, asset.sha256, zip,
+                                              DownloadsFor(asset.url, kit_only ? "kit-only" : "kit"));
   if (!download.ok) {
     if (download.cancelled) {
       cancelled();
@@ -975,7 +1053,47 @@ void UpdateService::DoCheckKit() {
     Log("kit check: " + why);
     Set([](UpdateSnapshot& s) { s.kit.phase = KitInstallPhase::kUnavailable; });
   };
+  // Only a missing or older kit is replaced: one as new or newer (a development kit, or the same version
+  // built here) stays. A kit whose version can't be read is older than 0.10, or unreadable.
+  const auto keep = [&](const KitPart& kit) {
+    if (!installed_sha) return false;
+    const auto installed_version = InstalledKitVersion(installed);
+    const auto offered_version = ParseKitVersion(kit.revision);
+    if (!installed_version || !offered_version || *installed_version < *offered_version) return false;
+    Log("kit check: the installed kit is not older than " + kit.revision + ", kept");
+    Set([](UpdateSnapshot& s) { s.kit = {}; s.kit.phase = KitInstallPhase::kNotNeeded; });
+    return true;
+  };
+  const auto offer = [&](const ReleaseAsset& zip, const KitPart& kit, const std::string& from) {
+    const bool staged = !ReadyKit(kit).empty();
+    kit_asset_ = zip;
+    kit_part_ = kit;
+    Log("kit " + kit.asset + " available from " + from + ": " +
+        (staged ? std::string("already on the console") : std::to_string(zip.size) + " bytes"));
+    Set([&](UpdateSnapshot& s) {
+      s.kit.phase = KitInstallPhase::kAvailable;
+      s.kit.replaces = installed_sha.has_value();
+      s.kit.version = from;
+      s.kit.download_bytes = staged ? 0 : zip.size;
+    });
+  };
   std::string error;
+  // A nightly takes its own kit from the nightly site when the list names this build with the kit it trusts;
+  // otherwise, and when the list can't be read, it looks on GitHub as below.
+  if (config_.current.nightly() && !config_.nightly_site.empty()) {
+    const auto nightlies = FetchNightlies(&error);
+    if (!nightlies) Log("kit check: nightly builds not read: " + error);
+    for (const auto& build : nightlies ? *nightlies : std::vector<NightlyBuild>{}) {
+      if (build.version != config_.current || build.title_id != config_.title_id) continue;
+      if (build.kit.kit_id == config_.kit_id && build.kit.manifest_sha256 == config_.kit_manifest_sha256) {
+        if (keep(build.kit)) return;
+        return offer(NightlyRelease(build).assets[1], build.kit, build.version.ToString());
+      }
+      Log("kit check: the nightly builds list names kit " + build.kit.kit_id + " " + build.kit.manifest_sha256 +
+          " for this build");
+      break;
+    }
+  }
   const auto releases = FetchReleases(&error);
   if (!releases) return FailKit("Playden could not reach GitHub to download its runtime kit.", error);
   // The running version's release names its kit. A nightly has no release: its base, or the newest release
@@ -1007,17 +1125,7 @@ void UpdateService::DoCheckKit() {
   if (!manifest) return FailKit("The runtime kit information of " + own->tag + " is not valid.", error);
   if (manifest->kit.kit_id != config_.kit_id || manifest->kit.manifest_sha256 != config_.kit_manifest_sha256)
     return unavailable("release " + own->tag + " names kit " + manifest->kit.kit_id + " " + manifest->kit.manifest_sha256);
-  // Only a missing or older kit is replaced: one as new or newer (a development kit, or the same version
-  // built here) stays. A kit whose version can't be read is older than 0.10, or unreadable.
-  if (installed_sha) {
-    const auto installed_version = InstalledKitVersion(installed);
-    const auto offered_version = ParseKitVersion(manifest->kit.revision);
-    if (installed_version && offered_version && !(*installed_version < *offered_version)) {
-      Log("kit check: the installed kit is not older than " + manifest->kit.revision + ", kept");
-      Set([](UpdateSnapshot& s) { s.kit = {}; s.kit.phase = KitInstallPhase::kNotNeeded; });
-      return;
-    }
-  }
+  if (keep(manifest->kit)) return;
   // A release whose kit did not change may leave the kit zip out: an older release has the same zip.
   const Release* source = own;
   const ReleaseAsset* zip = own->Find(manifest->kit.asset);
@@ -1028,17 +1136,7 @@ void UpdateService::DoCheckKit() {
   }
   if (!zip) return unavailable("no release has " + manifest->kit.asset);
   if (zip->sha256.empty()) return FailKit("The runtime kit on GitHub has no checksum. Install it by hand.", source->tag);
-  const bool staged = !ReadyKit(manifest->kit).empty();
-  kit_asset_ = *zip;
-  kit_part_ = manifest->kit;
-  Log("kit " + manifest->kit.asset + " available from " + source->tag + ": " +
-      (staged ? std::string("already on the console") : std::to_string(zip->size) + " bytes"));
-  Set([&](UpdateSnapshot& s) {
-    s.kit.phase = KitInstallPhase::kAvailable;
-    s.kit.replaces = installed_sha.has_value();
-    s.kit.version = source->version.ToString();
-    s.kit.download_bytes = staged ? 0 : zip->size;
-  });
+  offer(*zip, manifest->kit, source->version.ToString());
 }
 
 void UpdateService::DoInstallKit() {
@@ -1096,7 +1194,7 @@ bool UpdateService::StageApp(const Release& release, const UpdateManifest& manif
     s.total = asset->size;
   });
   const auto download = local ? DownloadResult{true, false, {}}
-                              : DownloadAsset(asset->url, asset->size, asset->sha256, zip, Downloads("app"));
+                              : DownloadAsset(asset->url, asset->size, asset->sha256, zip, DownloadsFor(asset->url, "app"));
   if (!download.ok) {
     if (download.cancelled) {
       Set([](UpdateSnapshot& s) { s.phase = UpdatePhase::kAvailable; s.part.clear(); });

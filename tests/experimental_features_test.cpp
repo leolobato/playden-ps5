@@ -74,6 +74,16 @@ int main() {
     CHECK(ParseExperimentalFeatures("", DefaultExperimentalFeatures(true)).publisher_pack_download);
   }
 
+  // Nightly updates: off in every build, nightlies included, until its line turns it on.
+  CHECK(!DefaultExperimentalFeatures(false).nightly_updates && !DefaultExperimentalFeatures(true).nightly_updates);
+  {
+    std::vector<std::string> unknown;
+    const auto nightly = ParseExperimentalFeatures("nightly-updates\nnightly\n", DefaultExperimentalFeatures(true), &unknown);
+    CHECK(nightly.nightly_updates && nightly.publisher_pack_download);
+    CHECK((unknown == std::vector<std::string>{"nightly"}));
+    CHECK(!ParseExperimentalFeatures("# nightly-updates\n").nightly_updates);
+  }
+
   // A line only turns a feature on: a default that is on stays on with any file.
   ExperimentalFeatures on;
   on.online_steam = true;

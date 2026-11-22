@@ -67,6 +67,27 @@ std::optional<Version> ParseVersion(std::string_view text) {
   return version;
 }
 
+namespace {
+
+// The release a nightly is placed after, or the build's own version.
+const Version& TrackAnchor(const Version& version, const std::optional<Version>& base) {
+  return version.nightly() && base && !base->nightly() && version < *base ? *base : version;
+}
+
+}  // namespace
+
+bool TrackOlder(const Version& a, const std::optional<Version>& a_base, const Version& b,
+                const std::optional<Version>& b_base) {
+  const Version& anchor_a = TrackAnchor(a, a_base);
+  const Version& anchor_b = TrackAnchor(b, b_base);
+  if (anchor_a != anchor_b) return anchor_a < anchor_b;
+  // The same release: it comes before the nightlies built on it, and those go by their date and number.
+  const auto number = [](const Version& version, const Version& anchor) -> unsigned long long {
+    return &version == &anchor ? 0 : version.nightly_date * 1000ull + version.nightly_build;
+  };
+  return number(a, anchor_a) < number(b, anchor_b);
+}
+
 Version CurrentVersion() {
   static const Version version = ParseVersion(PLAYDEN_VERSION).value_or(Version{});
   return version;

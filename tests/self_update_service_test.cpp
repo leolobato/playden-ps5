@@ -236,6 +236,35 @@ struct Pack {
     };
   }
 };
+
+// The nightly builds list on a builds site: each nightly's app zip and the kit zip, with their SHA-256s.
+const std::string kSite = "https://builds.example/";
+const std::string kKitPath = "kits/cccccccccccc/playden-kit-h-r9.zip";
+std::string Nightly(Server& server, const std::string& version, const std::string& base,
+                    const std::string& min_from = "0.2.0", const std::string& kit_sha = kKitSha) {
+  const std::string app = AppZip(version, "00.003.000");
+  const std::string kit = KitZip();
+  const std::string app_path = "builds/playden-ps5-" + version + ".zip";
+  server.files[kSite + app_path] = app;
+  server.files[kSite + kKitPath] = kit;
+  return R"({"version":")" + version + R"(","base":")" + base + R"(","title_id":"FAKE77031","min_from":")" + min_from +
+         R"(","notes":"Nightly things.","app":{"path":")" + app_path + R"(","size":)" + std::to_string(app.size()) +
+         R"(,"sha256":")" + FakeSha(app) + R"(","prefix":"FAKE77031/"},"kit":{"kit_id":"kitid","revision":"r9",)" +
+         R"("manifest_sha256":")" + kit_sha + R"(","path":")" + kKitPath + R"(","size":)" + std::to_string(kit.size()) +
+         R"(,"sha256":")" + FakeSha(kit) + R"(","prefix":"playden-kit-h-r9/kitid/"}})";
+}
+void Feed(Server& server, const std::vector<std::string>& nightlies) {
+  std::string list;
+  for (const auto& entry : nightlies) list += (list.empty() ? "" : ",") + entry;
+  server.files[kSite + "updates.json"] = R"({"format":1,"nightlies":[)" + list + "]}";
+}
+// A beta release on the fake GitHub, listed in releases.
+std::string Beta(Server& server, const std::string& tag) {
+  Publish(server, tag, "0.2.0", "00.003.000");
+  auto beta = server.latest;
+  beta.replace(beta.find("\"prerelease\":false"), 18, "\"prerelease\":true");
+  return beta;
+}
 }  // namespace
 
 int main() {
@@ -583,6 +612,195 @@ int main() {
     UpdateService based(config);
     based.Start(); Wait(based);
     CHECK(based.Snapshot().phase != UpdatePhase::kStaged);
+  }
+  // The nightly track (nightly-updates): with betas on, the newest of stable, beta and nightly is offered. A nightly
+  // sits right after the release it was built on, and its files come from the builds site only.
+  {
+    Fixture fixture;
+    fixture.root = zip_fixture::TempFolder("nightly-updates");
+    Installed(fixture.root);
+    const auto beta1 = Beta(fixture.server, "v0.3.0-beta.1");
+    const auto beta2 = Beta(fixture.server, "v0.3.0-beta.2");
+    fixture.server.releases = "[" + beta2 + "," + beta1 + "]";
+    fixture.server.latest = R"({"tag_name":"v0.2.0","assets":[]})";
+    Feed(fixture.server, {Nightly(fixture.server, "0.3.0-nightly.20261121.1", "0.3.0-beta.1"),
+                          Nightly(fixture.server, "0.3.0-nightly.20261123.1", "0.3.0-beta.2"),
+                          Nightly(fixture.server, "0.3.0-nightly.20261122.1", "0.3.0-beta.2")});
+    auto config = fixture.Config(*ParseVersion("0.3.0-beta.2"));
+    config.nightly_page = kSite;
+    config.nightly_site = kSite;
+    config.include_betas = true;
+    // Betas off: the list isn't read, whatever the feature says.
+    auto stable_only = config;
+    stable_only.include_betas = false;
+    const int before_off = fixture.server.requests;
+    UpdateService off(stable_only);
+    off.Check(true); Wait(off);
+    CHECK(off.Snapshot().phase == UpdatePhase::kUpToDate && fixture.server.requests == before_off + 1);
+    // Feature off: GitHub only.
+    auto no_feature = config;
+    no_feature.nightly_site.clear();
+    UpdateService github_only(no_feature);
+    github_only.Check(true); Wait(github_only);
+    CHECK(github_only.Snapshot().phase == UpdatePhase::kUpToDate);
+    // On: the newest nightly on beta.2, not the one on beta.1 nor list order; notes link to the builds page.
+    UpdateService service(config);
+    service.Start();
+    service.Check(true); Wait(service);
+    auto snapshot = service.Snapshot();
+    CHECK(snapshot.phase == UpdatePhase::kAvailable && snapshot.available.ToString() == "0.3.0-nightly.20261123.1");
+    CHECK(snapshot.notes == "Nightly things." && snapshot.notes_url == kSite && snapshot.kit_needed);
+    service.Install(); Wait(service);
+    CHECK(service.Snapshot().phase == UpdatePhase::kStaged);
+    CHECK(Read(fixture.root + "/playden/kits/.next-kitid-r9/manifest.json") == kKitSha);
+    service.Shutdown();
+    // A restart keeps the staged nightly: it is newer than beta.2 because of its base.
+    {
+      UpdateService restarted(config);
+      restarted.Start(); Wait(restarted);
+      CHECK(restarted.Snapshot().phase == UpdatePhase::kStaged &&
+            restarted.Snapshot().available.ToString() == "0.3.0-nightly.20261123.1");
+      restarted.RequestRestart();
+      restarted.Shutdown();
+      CHECK(restarted.ApplyAtQuit());
+    }
+    CHECK(Read(fixture.root + "/homebrew/FAKE77031/eboot.bin") == "eboot 0.3.0-nightly.20261123.1");
+    CHECK(Read(fixture.root + "/playden/kits/kitid/manifest.json") == kKitSha);
+    // The nightly starts: confirmed, and up to date while GitHub still lists beta.2 and the list still lists it.
+    {
+      auto swapped = config;
+      swapped.current = *ParseVersion("0.3.0-nightly.20261123.1");
+      swapped.nightly_base = *ParseVersion("0.3.0-beta.2");
+      UpdateService confirmed(swapped);
+      confirmed.Start();
+      CHECK(confirmed.Snapshot().finished_message == "Playden was updated to 0.3.0-nightly.20261123.1.");
+      confirmed.Check(true); Wait(confirmed);
+      CHECK(confirmed.Snapshot().phase == UpdatePhase::kUpToDate);
+      confirmed.Shutdown();
+    }
+    RemoveTree(fixture.root + "/playden/self-update");
+    // A beta newer than every nightly's base wins.
+    const auto beta3 = Beta(fixture.server, "v0.3.0-beta.3");
+    fixture.server.releases = "[" + beta3 + "," + beta2 + "]";
+    UpdateService newer_beta(config);
+    newer_beta.Check(true); Wait(newer_beta);
+    CHECK(newer_beta.Snapshot().available.ToString() == "0.3.0-beta.3");
+    newer_beta.Shutdown();
+    fixture.server.releases = "[" + beta2 + "]";
+    // A list that can't be read leaves GitHub's answer.
+    const auto feed = fixture.server.files[kSite + "updates.json"];
+    fixture.server.files[kSite + "updates.json"] = "not json";
+    UpdateService broken(config);
+    broken.Check(true); Wait(broken);
+    CHECK(broken.Snapshot().phase == UpdatePhase::kUpToDate);
+    broken.Shutdown();
+    fixture.server.files[kSite + "updates.json"] = feed;
+    // The running nightly: a later one on the same base is offered, the same one is no update.
+    auto nightly_config = config;
+    nightly_config.current = *ParseVersion("0.3.0-nightly.20261122.1");
+    nightly_config.nightly_base = *ParseVersion("0.3.0-beta.2");
+    UpdateService running(nightly_config);
+    running.Check(true); Wait(running);
+    CHECK(running.Snapshot().available.ToString() == "0.3.0-nightly.20261123.1");
+    running.Shutdown();
+    nightly_config.current = *ParseVersion("0.3.0-nightly.20261123.1");
+    UpdateService newest(nightly_config);
+    newest.Check(true); Wait(newest);
+    CHECK(newest.Snapshot().phase == UpdatePhase::kUpToDate);
+    newest.Shutdown();
+    // Bytes that don't match the list's SHA-256 are refused.
+    auto& served = fixture.server.files[kSite + "builds/playden-ps5-0.3.0-nightly.20261123.1.zip"];
+    served[served.size() / 2] ^= 1;
+    UpdateService tampered(config);
+    tampered.Install(); Wait(tampered);
+    CHECK(tampered.Snapshot().phase == UpdatePhase::kFailed);
+    CHECK(!Exists(fixture.root + "/playden/self-update/stage/0.3.0-nightly.20261123.1"));
+    tampered.Shutdown();
+    // A nightly that can't update from this version says so.
+    Feed(fixture.server, {Nightly(fixture.server, "0.3.0-nightly.20261124.1", "0.3.0-beta.2", "0.3.0")});
+    UpdateService too_old(config);
+    too_old.Check(true); Wait(too_old);
+    CHECK(too_old.Snapshot().phase == UpdatePhase::kFailed);
+    too_old.Shutdown();
+    // A redirect off the builds site is never followed.
+    Feed(fixture.server, {Nightly(fixture.server, "0.3.0-nightly.20261124.2", "0.3.0-beta.2")});
+    auto redirected = config;
+    std::vector<std::string> asked;
+    redirected.fetch = [&](const HttpRequest& request, const std::atomic<bool>&) {
+      asked.push_back(request.url);
+      if (request.url.find("/builds/") != std::string::npos) {
+        HttpResponse response;
+        response.status_code = 302;
+        response.headers.push_back({"Location", "https://github.com/o/r/releases/download/v0.3.0/x.zip"});
+        return response;
+      }
+      return fixture.server(request);
+    };
+    UpdateService elsewhere(redirected);
+    elsewhere.Install(); Wait(elsewhere);
+    CHECK(elsewhere.Snapshot().phase == UpdatePhase::kFailed);
+    for (const auto& url : asked) CHECK(url.find("github.com/o/r/releases/download") == std::string::npos);
+    elsewhere.Shutdown();
+    RemoveTree(fixture.root);
+  }
+  // Console testing: updates.json and the zips it names, by file name, in the local folder; nothing from the site.
+  {
+    Fixture fixture;
+    fixture.root = zip_fixture::TempFolder("nightly-local");
+    Installed(fixture.root);
+    fixture.server.releases = "[]";
+    const std::string local = fixture.root + "/local";
+    Server site;
+    const auto entry = Nightly(site, "0.3.0-nightly.20261123.1", "0.2.0");
+    Put(local + "/updates.json", R"({"format":1,"nightlies":[)" + entry + "]}");
+    Put(local + "/playden-ps5-0.3.0-nightly.20261123.1.zip", site.files[kSite + "builds/playden-ps5-0.3.0-nightly.20261123.1.zip"]);
+    Put(local + "/playden-kit-h-r9.zip", site.files[kSite + kKitPath]);
+    auto config = fixture.Config({0, 2, 0});
+    config.nightly_site = kSite;
+    config.include_betas = true;
+    config.local_release_dir = local;
+    std::vector<std::string> asked;
+    config.fetch = [&](const HttpRequest& request, const std::atomic<bool>&) {
+      asked.push_back(request.url);
+      return fixture.server(request);
+    };
+    UpdateService service(config);
+    service.Check(true); Wait(service);
+    CHECK(service.Snapshot().available.ToString() == "0.3.0-nightly.20261123.1");
+    service.Install(); Wait(service);
+    CHECK(service.Snapshot().phase == UpdatePhase::kStaged);
+    for (const auto& url : asked) CHECK(url.rfind(kSite, 0) != 0);
+    service.Shutdown();
+    RemoveTree(fixture.root);
+  }
+  // A running nightly takes its own kit from the builds site when the list names it with the kit it trusts.
+  {
+    KitOnly test("kit-nightly-site", "");
+    test.fixture.server.releases = "[]";
+    Feed(test.fixture.server, {Nightly(test.fixture.server, "0.4.0-nightly.20261122.1", "0.3.0")});
+    auto config = test.Config();
+    config.current = *ParseVersion("0.4.0-nightly.20261122.1");
+    config.nightly_site = kSite;
+    UpdateService service(config);
+    service.CheckKit(); Wait(service);
+    CHECK(service.Snapshot().kit.phase == KitInstallPhase::kAvailable &&
+          service.Snapshot().kit.version == "0.4.0-nightly.20261122.1");
+    service.InstallKit(); Wait(service);
+    CHECK(service.Snapshot().kit.phase == KitInstallPhase::kInstalled);
+    CHECK(Read(test.kits + "/kitid/manifest.json") == kKitSha);
+    service.Shutdown();
+    // The list naming another kit for this build: not used, and GitHub has none.
+    KitOnly other("kit-nightly-site-other", "");
+    other.fixture.server.releases = "[]";
+    Feed(other.fixture.server, {Nightly(other.fixture.server, "0.4.0-nightly.20261122.1", "0.3.0", "0.2.0",
+                                        std::string(64, 'd'))});
+    auto other_config = other.Config();
+    other_config.current = *ParseVersion("0.4.0-nightly.20261122.1");
+    other_config.nightly_site = kSite;
+    UpdateService refused(other_config);
+    refused.CheckKit(); Wait(refused);
+    CHECK(refused.Snapshot().kit.phase == KitInstallPhase::kUnavailable);
+    refused.Shutdown();
   }
   // Opting out during a download and cancelling must not leave a beta installable.
   {

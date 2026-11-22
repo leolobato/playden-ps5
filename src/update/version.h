@@ -38,6 +38,12 @@ struct Version {
   }
 };
 
+// Whether a comes before b on the update track, which offers whatever is newest: stable, beta or nightly. A nightly
+// built on a release its own version sorts before (its base, NightlyBase) sits right after that release: after it and
+// the nightlies before it on the same base, before every newer release. Any other build sits at its own version.
+bool TrackOlder(const Version& a, const std::optional<Version>& a_base, const Version& b,
+                const std::optional<Version>& b_base);
+
 // Three dot-separated numbers, with an optional leading "v". Each part is 1-6 digits (param.json
 // pads them with zeros). Optional suffix: -beta.N, N is 1-999999 with no leading zero; or
 // -nightly.YYYYMMDD.N, N is 1-999 with no leading zero.

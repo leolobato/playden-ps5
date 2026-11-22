@@ -42,6 +42,10 @@ struct UpdateConfig {
   // A nightly's base release (NightlyBase): it already holds that release, so that one and older are no update.
   std::optional<Version> nightly_base;
   bool include_betas = false;
+  // Feature nightly-updates: with betas on, the nightly builds listed at <nightly_site>updates.json are offered too,
+  // and a nightly takes its own kit from there when the console lacks it. The site ("https://builds.playden.club/")
+  // is the only place their files are downloaded from. Empty: GitHub releases only.
+  std::string nightly_site;
   Fetch fetch;
   std::function<std::optional<std::string>(const std::string& path)> hash_file;
   // The verified kit's manifest SHA-256, or nullopt when the folder is not a complete kit.
@@ -54,7 +58,8 @@ struct UpdateConfig {
   std::function<void(int attempt)> wait_before_retry;
   std::size_t worker_stack_bytes = 1 << 20;
   // Console testing: when this folder holds release.json, the check reads the release from it and
-  // takes playden-update.json and the release's zips from it too, instead of from GitHub.
+  // takes playden-update.json and the release's zips from it too, instead of from GitHub. Likewise
+  // updates.json and the zips it names for the nightly builds.
   std::string local_release_dir;
   // The publisher pack's archive (runtime/publisher_pack_install.h): CheckPack downloads it when ready() says the
   // pinned one is not in place, and install() puts it there. No url: no pack download (feature
@@ -243,6 +248,14 @@ class UpdateService {
   void DoPack();
   void FailPack(const std::string& message, const std::string& detail);
   std::optional<std::vector<Release>> FetchReleases(std::string* error);
+  // The nightly builds list (config.nightly_site), or the local test copy.
+  std::optional<std::vector<NightlyBuild>> FetchNightlies(std::string* error);
+  // A nightly as a release with its manifest, so the update and the kit install treat it like one.
+  Release NightlyRelease(const NightlyBuild& build) const;
+  // Whether a build is newer than the running one on the update track (TrackOlder).
+  bool NewerThanRunning(const Version& version, const std::optional<Version>& base) const;
+  // Downloads(part), limited to the nightly site when url is on it.
+  DownloadOptions DownloadsFor(const std::string& url, const std::string& part);
   bool StageApp(const Release& release, const UpdateManifest& manifest);
   void Fail(const std::string& message, const std::string& detail);
   void Set(const std::function<void(UpdateSnapshot&)>& change);
@@ -262,6 +275,8 @@ class UpdateService {
   std::shared_ptr<Shared> shared_;
   std::optional<Release> release_;
   std::optional<UpdateManifest> manifest_;
+  // release_'s base when it is a nightly from the nightly site.
+  std::optional<Version> release_base_;
   // The kit zip release_ needs (the console has no copy of its kit): its own, or an older release's
   // with the same name when release_ left the zip out.
   std::optional<ReleaseAsset> kit_zip_;
@@ -269,6 +284,7 @@ class UpdateService {
   // folder with its kit id (empty when the installed kit is already the release's).
   std::string staged_folder_;
   Version staged_version_;
+  std::optional<Version> staged_base_;
   std::string staged_kit_;
   std::string staged_kit_id_;
   // What CheckKit found: the kit zip (from the running version's release or an older one with the same zip).

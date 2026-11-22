@@ -1,5 +1,5 @@
 #pragma once
-// release.h - GitHub release metadata and Playden's update manifest (playden-update.json).
+// release.h - GitHub release metadata, Playden's update manifest (playden-update.json) and the nightly builds list.
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: MIT
 #include <cstdint>
@@ -82,6 +82,37 @@ struct UpdateManifest {
 
 // playden-update.json, format 1. Names, folders and prefixes are checked for safety.
 std::optional<UpdateManifest> ParseUpdateManifest(std::string_view json, std::string* error);
+
+// builds.playden.club's list of nightly builds (updates.json, made by publish-build.py from builds.json), read when
+// the nightly-updates feature and beta updates are on. A file's path is relative to the site: Playden puts the
+// site's own address in front, and only downloads from there.
+inline constexpr const char* kNightlyFeedFile = "updates.json";
+
+struct NightlyFile {
+  std::string path;    // "builds/playden-ps5-0.12.0-nightly-20261121.1.zip"
+  std::uint64_t size = 0;
+  std::string sha256;
+  std::string prefix;  // folder inside the zip
+  std::string Name() const { return path.substr(path.rfind('/') + 1); }
+};
+
+struct NightlyBuild {
+  Version version;  // always a nightly
+  Version base;     // the release it was built on, never a nightly
+  std::string title_id;
+  Version min_from;
+  std::string notes;  // short plain text
+  NightlyFile app;
+  KitPart kit;        // asset is kit_file's name
+  NightlyFile kit_file;
+};
+
+// updates.json, format 1: {"format":1,"nightlies":[...]}. Builds that aren't complete and safe are left out: a
+// version that isn't a nightly, a base that is one, an unsafe path or prefix, a missing SHA-256 or no kit.
+std::optional<std::vector<NightlyBuild>> ParseNightlyFeed(std::string_view json, std::string* error);
+
+// "folder/file.zip": SafeFolderName parts joined by "/", at most 256 characters.
+bool SafeRelativePath(std::string_view path);
 
 bool SafeFolderName(std::string_view name);
 bool IsSha256(std::string_view text);

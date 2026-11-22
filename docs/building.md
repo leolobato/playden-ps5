@@ -82,6 +82,13 @@ The `publisher-pack-download` feature (on in every build since 0.12.0-beta.4, th
 pins from `https://builds.playden.club/packs/<version>/` and install it in `/data/playden/publisher/<version>/` when it
 isn't there, as a Queue item; the archive must match the pin in `src/runtime/publisher_pack.cpp`. Without it, the pack
 is installed with `tools/console_publisher_upload.py` or the builds page's Install button.
+The `nightly-updates` line (off in every build until the line turns it on) adds the nightly builds to Settings › Beta
+updates: Playden reads `https://builds.playden.club/updates.json` (written by the builds site's `publish-build.py`) next
+to GitHub's releases and offers whichever is newest. A nightly counts as newer than the release it was built on and older
+than any later one (`update::TrackOlder`). Its app and kit zips are downloaded only from builds.playden.club and checked
+against the list's sizes and SHA-256s; the nightly carries its own kit pin, as a release does. A running nightly also
+downloads its own kit from there when the console lacks it. For a console test, `updates.json` and its zips can go in
+`dev/update-local/` like a release.
 
 `FAKE77031` is allocated to Playden. Do not use it for another application.
 

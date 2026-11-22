@@ -243,4 +243,80 @@ std::optional<UpdateManifest> ParseUpdateManifest(std::string_view json, std::st
   return manifest;
 }
 
+bool SafeRelativePath(std::string_view path) {
+  if (path.empty() || path.size() > 256) return false;
+  while (true) {
+    const auto slash = path.find('/');
+    if (!SafeFolderName(path.substr(0, slash))) return false;
+    if (slash == std::string_view::npos) return true;
+    path.remove_prefix(slash + 1);
+  }
+}
+
+namespace {
+
+bool ReadNightlyFile(const Json& object, NightlyFile* file) {
+  const auto* path = Text(object, "path");
+  const auto* sha = Text(object, "sha256");
+  const auto* prefix = Text(object, "prefix");
+  const auto* size = object.Find("size");
+  if (!path || !sha || !prefix || !size || !size->AsUint64() || !*size->AsUint64()) return false;
+  if (!SafeRelativePath(*path) || !IsSha256(*sha) || !SafePrefix(*prefix)) return false;
+  *file = {*path, *size->AsUint64(), *sha, *prefix};
+  return true;
+}
+
+std::optional<NightlyBuild> NightlyFrom(const Json& item) {
+  if (!item.is_object()) return std::nullopt;
+  NightlyBuild build;
+  const auto* version = Text(item, "version");
+  const auto* base = Text(item, "base");
+  const auto* title = Text(item, "title_id");
+  const auto* min_from = Text(item, "min_from");
+  const auto* app = item.Find("app");
+  const auto* kit = item.Find("kit");
+  if (!version || !base || !title || !min_from || !app || !app->is_object() || !kit || !kit->is_object())
+    return std::nullopt;
+  const auto parsed = ParseVersion(*version);
+  const auto parsed_base = ParseVersion(*base);
+  const auto parsed_min = ParseVersion(*min_from);
+  if (!parsed || !parsed->nightly() || !parsed_base || parsed_base->nightly() || !parsed_min || !SafeFolderName(*title))
+    return std::nullopt;
+  build.version = *parsed;
+  build.base = *parsed_base;
+  build.min_from = *parsed_min;
+  build.title_id = *title;
+  if (!ReadNightlyFile(*app, &build.app) || !ReadNightlyFile(*kit, &build.kit_file)) return std::nullopt;
+  const auto* kit_id = Text(*kit, "kit_id");
+  const auto* revision = Text(*kit, "revision");
+  const auto* manifest = Text(*kit, "manifest_sha256");
+  if (!kit_id || !revision || !manifest || !SafeFolderName(*kit_id) || !SafeFolderName(*revision) ||
+      !IsSha256(*manifest))
+    return std::nullopt;
+  build.kit = {*kit_id, *revision, *manifest, build.kit_file.Name(), build.kit_file.prefix};
+  if (const auto* notes = Text(item, "notes")) build.notes = Summary(*notes);
+  return build;
+}
+
+}  // namespace
+
+std::optional<std::vector<NightlyBuild>> ParseNightlyFeed(std::string_view json, std::string* error) {
+  const auto doc = ParseObject(json, error);
+  if (!doc) return std::nullopt;
+  const auto* format = doc->Find("format");
+  if (!format || format->AsUint64() != 1u) {
+    if (error) *error = "unsupported nightly list format";
+    return std::nullopt;
+  }
+  const auto* list = doc->Find("nightlies");
+  if (!list || !list->is_array()) {
+    if (error) *error = "nightly list has no nightlies";
+    return std::nullopt;
+  }
+  std::vector<NightlyBuild> builds;
+  for (const auto& item : list->array())
+    if (auto build = NightlyFrom(item)) builds.push_back(std::move(*build));
+  return builds;
+}
+
 }  // namespace playden::update
