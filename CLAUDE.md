@@ -60,6 +60,11 @@ The title shell then starts Wine.
   strict parser the title uses. prospero-win profiles are strict INI; `profiles.lst` holds at most 16 entries.
 - All writes under Playden's data roots go through `platform::ManagedDirectory`, which enforces ownership and mode
   policies and rejects symlinks in every path component.
+- Playden's data is open on purpose (#868): FTP and other LAN tools run as root, which has no permission bypass on
+  `/data`, so owner-only modes only lock the player out. New data uses `DirectoryPolicy::kOpenTree` (folders 0777),
+  game bottles are opened too, and a player's hand edits are intentional. Check integrity only when Playden writes
+  (install, update, Repair, title creation); never refuse to start or play because modes were opened up or files
+  changed. Sign-ins and credential files, and Playden's publication files and registry hives, stay 0600.
 
 On the console (0.6+): user data `/data/playden/user/`, logs `/data/playden/logs/`, bottles `/data/playden/games/`,
 game files `/data/playden-games/`, kits `/data/playden/kits/`, the app `/data/homebrew/FAKE77031`.
