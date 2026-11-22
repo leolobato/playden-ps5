@@ -1082,7 +1082,7 @@ Development builds carry the version they lead to, such as `0.12-dev.20261020.1`
 | 0.10 | First stable kit. Windows video and audio decoding through GStreamer and FFmpeg, so games play their movies and compressed audio (Fallout 4, Bulletstorm, Metal Wolf Chaos XD). Source games (Portal 2, Team Fortress 2, Black Mesa) no longer hang at start-up with the controller. Call of Juarez Gunslinger's audio no longer freezes the game. A game that crashes now quits instead of freezing. |
 | Earlier | Test kits before the first stable release, named by letter and revision (D to H r9). Kit 0.10 follows H r9: games set up on H r6 or later need nothing, and games set up earlier need Recreate bottle. |
 
-To see which kit your console has, run the [log script](tools/collect_logs.py): it prints the kit version.
+To see which kit your console has, look at Settings › System › About, or the Logs tab of Playden's web page (Settings › Web access).
 
 ## Notes for all games
 

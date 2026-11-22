@@ -524,15 +524,15 @@ question off; votes and **Share feedback…** still work.
 **By hand**, for anything Playden can't send:
 
 1. If the game did not work, start Playden once more, so it copies the game's log.
-2. Collect the logs from your computer:
+2. With Playden open, open its web page on a phone or computer on the same network (Settings › Web access shows
+   the address and a QR code). In the **Logs** tab, pick the game and choose **Download report (.zip)**. The zip holds
+   Playden's logs, the game's log and a `summary.md` with your Playden, firmware and kit versions. Your Steam account
+   name, SteamIDs, family group ID, PS5 user ID and home network addresses are removed, but the logs can still name
+   your games and file paths, so look through them before you share.
 
-   ```sh
-   python3 tools/collect_logs.py --host <PS5 IP>
-   ```
-
-   It lists the games that have a log, the most recently run first, and asks which one to collect. The script
-   reads only Playden's logs (`/data/playden/logs`), never your Steam sign-in. It hides your Steam account name,
-   SteamIDs, family group ID, PS5 user ID and home network addresses, and writes a zip with a summary of your firmware and kit versions.
+   If Playden doesn't open, or you prefer a script, run `python3 tools/collect_logs.py --host <PS5 IP>` from your
+   computer instead (Python 3, no packages). It needs an FTP server on the PS5 on port 2120, such as zftpd, and
+   writes the same kind of zip.
 3. [Open a game test report](../../issues/new?template=test-report.yml) and attach the zip. See a
    [sample report](docs/sample-test-report.md) for what to fill in.
 

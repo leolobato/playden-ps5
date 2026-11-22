@@ -9,11 +9,11 @@ body:
         a missing payload (kstuff, ShadowMountPlus, elfldr) or a kit copied by hand. For questions and help with setup,
         ask on [Discord](https://discord.gg/wd8UjExpPA) or [r/Playden_PS5](https://www.reddit.com/r/Playden_PS5/).
 
-        If Playden starts, collect the logs from your computer and attach the zip below:
-
-        ```sh
-        python3 tools/collect_logs.py --host <PS5 IP>
-        ```
+        If Playden starts, collect the logs and attach the zip below.
+        On a phone or computer on the same network, open Playden's web page (Settings > Web access shows the
+        address and a QR code). In the **Logs** tab, choose **Download report (.zip)**.
+        Without the web page, run `python3 tools/collect_logs.py --host <PS5 IP>` from your computer
+        (it needs an FTP server on the PS5 on port 2120, such as zftpd).
   - type: dropdown
     id: step
     attributes:
@@ -75,4 +75,4 @@ body:
     id: logs
     attributes:
       label: Logs and screenshots
-      description: Drag the zip from `collect_logs.py` here if Playden starts, and a photo of the screen if it helps.
+      description: Drag the report zip (from the web page or `collect_logs.py`) here if Playden starts, and a photo of the screen if it helps.

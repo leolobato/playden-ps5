@@ -11,13 +11,13 @@ body:
         installing, updating or starting Playden in an
         [install or update problem](https://github.com/leolobato/playden-ps5/issues/new?template=install-problem.yml).
 
-        Collect the logs **after you start Playden once more**, from your computer:
+        Collect the logs **after you start Playden once more**, while it is open.
+        On a phone or computer on the same network, open Playden's web page (Settings > Web access shows the
+        address and a QR code). In the **Logs** tab, pick the game and choose **Download report (.zip)**.
+        Without the web page, run `python3 tools/collect_logs.py --host <PS5 IP>` from your computer
+        (it needs an FTP server on the PS5 on port 2120, such as zftpd).
 
-        ```sh
-        python3 tools/collect_logs.py --host <PS5 IP>
-        ```
-
-        Paste the table it prints into **Versions** and attach the zip below.
+        Paste the table from the zip's `summary.md` (or the one the script prints) into **Versions** and attach the zip below.
   - type: dropdown
     id: area
     attributes:
@@ -55,7 +55,7 @@ body:
     id: versions
     attributes:
       label: Versions
-      description: Paste the table from `collect_logs.py`. Without it, give the firmware, the Playden version (Settings > System > About) and the kit.
+      description: Paste the table from the report's `summary.md` or `collect_logs.py`. Without it, give the firmware, the Playden version (Settings > System > About) and the kit.
       placeholder: |
         | Field | Value |
         | --- | --- |
@@ -69,8 +69,8 @@ body:
     attributes:
       label: Logs and screenshots
       description: |
-        Drag the zip from `collect_logs.py` here, and a photo or screenshot of the screen if it helps.
-        The script hides your Steam account name, but look through the logs before you post them.
+        Drag the report zip (from the web page or `collect_logs.py`) here, and a photo or screenshot of the screen if it helps.
+        Your Steam account name is removed, but look through the logs before you post them.
   - type: checkboxes
     id: checks
     attributes:

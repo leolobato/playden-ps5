@@ -35,19 +35,23 @@ To build Playden, run its tests or put it on a console, see [docs/building.md](d
 2. Play the game from Playden or from its tile on the Home screen.
 3. If the game did not work, start Playden once more. When it starts, Playden copies the game's newest log to
    `/data/playden/logs/title-<TITLE>.log`.
-4. Collect the logs on your computer (Python 3, no packages needed). The PS5 must run an FTP server on port 2120,
-   such as zftpd:
+4. Collect the logs. With Playden open, open its web page on a phone or computer on the same network (Settings ›
+   Web access shows the address and a QR code). In the **Logs** tab, pick the game and choose **Download report
+   (.zip)**. You get `playden-logs-<time>.zip`, with a `summary.md` table of your Playden, firmware and kit
+   versions. It replaces your Steam account name, SteamIDs, family group ID, PS5 user ID and home network addresses
+   in the logs, and never includes your Steam sign-in.
+
+   Without the web page, run the script from your computer (Python 3, no packages needed). The PS5 must run an FTP
+   server on port 2120, such as zftpd:
 
    ```sh
    python3 tools/collect_logs.py --host <PS5 IP>
    ```
 
-   The script lists the games that have a log, the most recently run first, and asks which one to collect. It
-   writes `playden-logs-<time>.zip` and prints a table with your firmware, Playden package and kit. It reads only
-   Playden's `logs/` folder, the games' names and the kit manifest, never your Steam sign-in, and it replaces your
-   Steam account name, SteamIDs, family group ID, PS5 user ID and home network addresses in the logs. Use `--all-titles` to collect every game.
-5. [Open a test report](../../issues/new?template=test-report.yml), paste the table and attach the zip. The
-   [sample report](docs/sample-test-report.md) shows what to fill in.
+   It lists the games that have a log, the most recently run first, asks which one to collect, prints the same
+   table and writes the same kind of zip. Use `--all-titles` to collect every game.
+5. [Open a test report](../../issues/new?template=test-report.yml), paste the table from `summary.md` (or the
+   script) and attach the zip. The [sample report](docs/sample-test-report.md) shows what to fill in.
 
 ## One pull request, one change
 
