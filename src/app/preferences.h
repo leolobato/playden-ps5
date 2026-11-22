@@ -38,6 +38,9 @@ struct Preferences {
   // "Stay signed in" on the sign-in screen. Off, Steam's sign-in token stays in memory only and is never
   // saved on the PS5, so every Playden start asks for a sign-in. On (the default) keeps it in session.v1.
   bool steam_stay_signed_in = true;
+  // Playden updates: beta_updates on takes betas too (Settings › Beta updates, or Updates › Beta). nightly_updates
+  // with beta_updates on is the Nightly track (version 17, nightly-updates only): nightly builds too. Without the
+  // nightly-updates feature a saved Nightly counts as Beta, and is kept for when the feature is back.
   bool beta_updates = false;
   // The Steam CDN host to try first for new or resumed downloads. Empty uses Steam's server order (Automatic).
   std::string download_server;
@@ -73,6 +76,7 @@ struct Preferences {
   // Whether an Online game's start shows the Steam account it signed in as (version 16, online-steam only; on in older
   // files). Settings › Accounts › Steam sign-in notice.
   bool steam_online_notice = true;
+  bool nightly_updates = false;  // see beta_updates
 };
 
 enum class PreferencesLoadStatus {

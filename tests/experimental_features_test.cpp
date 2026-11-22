@@ -74,11 +74,11 @@ int main() {
     CHECK(ParseExperimentalFeatures("", DefaultExperimentalFeatures(true)).publisher_pack_download);
   }
 
-  // Nightly updates: off in every build, nightlies included, until its line turns it on.
-  CHECK(!DefaultExperimentalFeatures(false).nightly_updates && !DefaultExperimentalFeatures(true).nightly_updates);
+  // Nightly updates: on in nightlies and dev builds, off in releases until its line turns it on.
+  CHECK(!DefaultExperimentalFeatures(false).nightly_updates && DefaultExperimentalFeatures(true).nightly_updates);
   {
     std::vector<std::string> unknown;
-    const auto nightly = ParseExperimentalFeatures("nightly-updates\nnightly\n", DefaultExperimentalFeatures(true), &unknown);
+    const auto nightly = ParseExperimentalFeatures("nightly-updates\nnightly\n", DefaultExperimentalFeatures(false), &unknown);
     CHECK(nightly.nightly_updates && nightly.publisher_pack_download);
     CHECK((unknown == std::vector<std::string>{"nightly"}));
     CHECK(!ParseExperimentalFeatures("# nightly-updates\n").nightly_updates);

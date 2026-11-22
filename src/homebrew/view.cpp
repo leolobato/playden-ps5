@@ -4701,7 +4701,7 @@ class Render::Impl
         static const std::map<std::string, std::string> names = {
             {"choice-picker", "Game settings"}, {"preset-picker", "Game settings"}, {"button-mapping", "Game settings"}, {"controller-panel", "Game settings"}, {"hold-templates", "Touchpad hold"},
             {"game-settings", "Playden"}, {"game-settings-list", "Game settings"}, {"game-maintenance", "Playden"}, {"kept-data", "Settings"}, {"leftover-titles", "Settings"},
-            {"download-server", "Settings"},
+            {"download-server", "Settings"}, {"update-track", "Settings"},
             {"import-games", "Library"}, {"import-programs", "Import games"}, {"steam-programs", "Setup"}, {"import-choice", "Import games"},
             {"import-storage", "Import games"}, {"move-storage", "Move game"}, {"share-recipe", "Game settings"}, {"vote-recipe", "Community recipes"}, {"feedback", "Feedback"}, {"share-as", "Community"},
             {"job-actions", "Downloads"}, {"prep-actions", "Preparation"}, {"storage-details", "Storage"}, {"context", "Game"}, {"compatibility", "Game"}, {"compat-notes", "Game"}, {"collections", "Game"}, {"collections-manage", "Library"},
@@ -4851,7 +4851,7 @@ class Render::Impl
                           view.surface == "game-maintenance" ||
                           view.surface == "controller" || view.surface == "logs" ||
                           view.surface == "storage" || view.surface == "move-storage" || view.surface == "install" || view.surface == "update" || view.surface == "kept-data" || view.surface == "leftover-titles" ||
-                          view.surface == "download-server" ||
+                          view.surface == "download-server" || view.surface == "update-track" ||
                           view.surface == "import-games" ||
                           view.surface == "import-programs" || view.surface == "steam-programs" ||
                           view.surface == "setup-programs" || view.surface == "share-recipe" || view.surface == "vote-recipe" ||
@@ -5426,7 +5426,7 @@ class Render::Impl
         // The Share and vote sheets lay out like Game settings: a line under each name, the value on the right.
         const bool settings_sheet = view.surface == "game-settings" || view.surface == "game-settings-list" ||
                                     view.surface == "choice-picker" ||
-                                    view.surface == "download-server" ||
+                                    view.surface == "download-server" || view.surface == "update-track" ||
                                     view.surface == "preset-picker" || view.surface == "button-mapping" ||
                                     view.surface == "controller-panel" || view.surface == "hold-templates" ||
                                     view.surface == "game-maintenance" || view.surface == "share-recipe" ||

@@ -2396,6 +2396,81 @@ void live_publisher_pack(const std::filesystem::path& base) {
           "pack: Cancel download asks to stop");
 }
 
+// nightly-updates: the Updates picker replaces the Beta updates switch; each choice is saved and checks again.
+void live_update_track(const std::filesystem::path& base) {
+    using namespace playden::homebrew;
+    std::filesystem::create_directories(base);
+    auto model = make_live(base);
+    model.SetNightlyUpdatesEnabled(true);
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    check(model.UpdateLibrary({{}, false, {}, false, true, 100}), "track: library delivered");
+    LiveSelfUpdate update;
+    update.current = "0.12.0-nightly.20261122.1";
+    model.UpdateSelfUpdate(update);
+    for (int i = 0; i < 6 && model.state().navigation.route != Route::Settings; ++i) model.action("r1");
+    check(settings_page_with(model, "settings-update-track"), "track: the Updates row shows");
+    check(!find_row(model, "settings-beta-updates"), "track: no Beta updates switch beside it");
+    check(find_row(model, "settings-update-track")->value == "Stable", "track: Stable by default");
+    check(find_row(model, "settings-nightly-wait") &&
+              find_row(model, "settings-nightly-wait")->subtitle == "Playden moves to the next stable version when it is out.",
+          "track: a nightly on Stable waits for the next stable version");
+    activate(model, "settings-update-track");
+    check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().id == "update-track" &&
+              model.state().navigation.modals.back().action_keys ==
+                  std::vector<std::string>{"update-track-stable", "update-track-beta", "update-track-nightly", "cancel"},
+          "track: the picker lists Stable, Beta and Nightly");
+    const auto* nightly = find_row(model, "update-track-nightly");
+    check(nightly && nightly->kind == RowKind::Choice && nightly->title == "Nightly" &&
+              nightly->subtitle.find("builds.playden.club") != std::string::npos && !nightly->selected &&
+              find_row(model, "update-track-stable")->selected,
+          "track: each choice says what it offers, the one in use ticked");
+    check(model.action("focus:update-track-nightly") && model.action("cross") && model.state().navigation.modals.empty(),
+          "track: choosing Nightly closes the picker");
+    check(model.TakeSelfUpdateRequests() == std::vector<std::string>{"track-nightly"}, "track: Nightly switches and checks");
+    auto saved = model.ExportPreferences();
+    check(saved.beta_updates && saved.nightly_updates, "track: Nightly exported for persistence");
+    check(find_row(model, "settings-update-track")->value == "Nightly" && !find_row(model, "settings-nightly-wait"),
+          "track: the row shows Nightly");
+    activate(model, "settings-update-track");
+    check(model.action("focus:update-track-beta") && model.action("cross") &&
+              model.TakeSelfUpdateRequests() == std::vector<std::string>{"track-beta"},
+          "track: Beta switches and checks");
+    saved = model.ExportPreferences();
+    check(saved.beta_updates && !saved.nightly_updates, "track: Beta exported as today's beta opt-in");
+    check(find_row(model, "settings-nightly-wait") &&
+              find_row(model, "settings-nightly-wait")->subtitle == "Playden moves to the next beta or stable version when it is out.",
+          "track: a nightly moved to Beta waits for a newer beta");
+    // The same choice again still checks.
+    activate(model, "settings-update-track");
+    check(model.action("focus:update-track-beta") && model.action("cross") &&
+              model.TakeSelfUpdateRequests() == std::vector<std::string>{"track-beta"},
+          "track: picking the track in use checks again");
+    // The feature going away closes an open picker, and the switch comes back.
+    activate(model, "settings-update-track");
+    model.SetNightlyUpdatesEnabled(false);
+    check(model.state().navigation.modals.empty() && find_row(model, "settings-beta-updates") &&
+              find_row(model, "settings-beta-updates")->selected && !find_row(model, "settings-update-track"),
+          "track: without the feature the picker closes and Beta updates shows on");
+
+    // Without the feature a saved Nightly shows as Beta updates on, and is kept until the switch changes.
+    auto plain = make_live(base / "plain");
+    playden::PreferencesLoadResult loaded;
+    loaded.preferences.beta_updates = true;
+    loaded.preferences.nightly_updates = true;
+    check(plain.ApplyPreferences(plain.BeginPreferencesLoad(), loaded), "track: saved Nightly loads");
+    plain.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    check(plain.UpdateLibrary({{}, false, {}, false, true, 100}), "track: plain library delivered");
+    for (int i = 0; i < 6 && plain.state().navigation.route != Route::Settings; ++i) plain.action("r1");
+    check(settings_page_with(plain, "settings-beta-updates") && find_row(plain, "settings-beta-updates")->selected &&
+              !find_row(plain, "settings-update-track"),
+          "track: without nightly-updates a saved Nightly shows Beta updates on");
+    check(plain.ExportPreferences().nightly_updates, "track: the saved Nightly is kept for when the feature is back");
+    activate(plain, "settings-beta-updates");
+    check(plain.TakeSelfUpdateRequests() == std::vector<std::string>{"betas-off"} &&
+              !plain.ExportPreferences().beta_updates && !plain.ExportPreferences().nightly_updates,
+          "track: turning Beta updates off leaves Stable");
+}
+
 // Playden's own update: the prompts, the Downloads job, the Settings row and the requests.
 void live_self_update(const std::filesystem::path& base) {
     using namespace playden::homebrew;
@@ -5037,6 +5112,7 @@ int main() {
     failed_signout_preserves_account_until_external_clear(base);
     account_commands_dispatch_refresh_and_switch_barriers(base);
     live_self_update(base);
+    live_update_track(base / "update-track");
     live_kit_install(base / "kit");
     live_publisher_pack(base / "pack");
     live_update_check(base / "update-check");

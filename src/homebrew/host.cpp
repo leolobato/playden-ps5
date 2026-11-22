@@ -438,6 +438,8 @@ int main(int argc, char** argv) {
         options->simulation ? std::filesystem::path(PLAYDEN_HOMEBREW_FIXTURES_DIR)
                             : std::filesystem::path{},
         options->simulation ? options->profile : std::filesystem::path{}, mode);
+    // nightly-updates: the Updates picker in Settings, as on the console (the host has no update service).
+    if (!options->simulation) simulation.SetNightlyUpdatesEnabled(features.nightly_updates);
     {
         std::vector<playden::runtime::SettingsPreset> presets;
         std::vector<playden::runtime::GameRecipe> recipes;

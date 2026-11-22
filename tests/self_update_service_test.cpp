@@ -459,7 +459,7 @@ int main() {
         "{\"tag_name\":\"v0.7.0\",\"assets\":[]}]";
     fixture.server.latest = R"({"tag_name":"v0.7.0","assets":[]})";
     auto config = fixture.Config({0, 7, 0});
-    config.include_betas = true;
+    config.track = UpdateTrack::kBeta;
     UpdateService service(config);
     service.Check(true); Wait(service);
     CHECK(service.Snapshot().phase == UpdatePhase::kAvailable);
@@ -470,7 +470,7 @@ int main() {
     service.Check(true); Wait(service);
     CHECK(service.Snapshot().available.ToString() == "0.7.1");
     config.current = *ParseVersion("0.7.1-beta.2");
-    config.include_betas = false;
+    config.track = UpdateTrack::kStable;
     Publish(fixture.server, "v0.7.0", "0.7.0", "00.007.000");
     UpdateService stable(config);
     stable.Check(true); Wait(stable);
@@ -480,13 +480,13 @@ int main() {
     CHECK(stable.Snapshot().phase == UpdatePhase::kUpToDate);
     Publish(fixture.server, "v0.7.1-beta.3", "0.7.1-beta.2", "00.007.001");
     fixture.server.releases = "[" + fixture.server.latest + "]";
-    stable.SetIncludeBetas(true);
+    stable.SetTrack(UpdateTrack::kBeta);
     stable.Check(true); Wait(stable);
     CHECK(stable.Snapshot().available.ToString() == "0.7.1-beta.3");
     stable.Install(); Wait(stable);
     CHECK(stable.Snapshot().phase == UpdatePhase::kStaged);
     // The local override uses the same opt-in rule and needs no GitHub request.
-    config.include_betas = true;
+    config.track = UpdateTrack::kBeta;
     config.local_release_dir = fixture.root + "/local";
     auto local_release = fixture.server.latest;
     local_release.replace(local_release.find("\"prerelease\":false"), 18, "\"prerelease\":true");
@@ -522,12 +522,12 @@ int main() {
     auto beta = fixture.server.latest;
     beta.replace(beta.find("\"prerelease\":false"), 18, "\"prerelease\":true");
     fixture.server.releases = "[" + beta + "]";
-    config.include_betas = true;
+    config.track = UpdateTrack::kBeta;
     UpdateService betas(config);
     betas.Check(true); Wait(betas);
     CHECK(betas.Snapshot().phase == UpdatePhase::kAvailable && betas.Snapshot().available.ToString() == "0.7.1-beta.1");
     Publish(fixture.server, "v0.7.1", "0.7.0", "00.007.001");
-    config.include_betas = false;
+    config.track = UpdateTrack::kStable;
     UpdateService stable(config);
     stable.Check(true); Wait(stable);
     CHECK(stable.Snapshot().phase == UpdatePhase::kAvailable && stable.Snapshot().available.ToString() == "0.7.1");
@@ -545,7 +545,7 @@ int main() {
     };
     auto config = fixture.Config(*ParseVersion("0.7.1-nightly.20261027.1"));
     config.nightly_base = *ParseVersion("0.7.1-beta.1");
-    config.include_betas = true;
+    config.track = UpdateTrack::kBeta;
     const auto beta1 = beta_named("v0.7.1-beta.1");
     fixture.server.releases = "[" + beta1 + "]";
     UpdateService same(config);
@@ -557,28 +557,28 @@ int main() {
     newer.Check(true); Wait(newer);
     CHECK(newer.Snapshot().phase == UpdatePhase::kAvailable && newer.Snapshot().available.ToString() == "0.7.1-beta.2");
     Publish(fixture.server, "v0.7.1", "0.7.0", "00.007.001");
-    config.include_betas = false;
+    config.track = UpdateTrack::kStable;
     UpdateService stable(config);
     stable.Check(true); Wait(stable);
     CHECK(stable.Snapshot().phase == UpdatePhase::kAvailable && stable.Snapshot().available.ToString() == "0.7.1");
     // A base older than the nightly's own version changes nothing, and neither does one on a non-nightly build.
     auto older_base = fixture.Config(*ParseVersion("0.7.1-nightly.20261027.1"));
     older_base.nightly_base = *ParseVersion("0.7.0");
-    older_base.include_betas = true;
+    older_base.track = UpdateTrack::kBeta;
     fixture.server.releases = "[" + beta_named("v0.7.1-beta.1") + "]";
     UpdateService older(older_base);
     older.Check(true); Wait(older);
     CHECK(older.Snapshot().phase == UpdatePhase::kAvailable && older.Snapshot().available.ToString() == "0.7.1-beta.1");
     auto not_nightly = fixture.Config(*ParseVersion("0.7.0"));
     not_nightly.nightly_base = *ParseVersion("0.7.1-beta.1");
-    not_nightly.include_betas = true;
+    not_nightly.track = UpdateTrack::kBeta;
     UpdateService plain(not_nightly);
     plain.Check(true); Wait(plain);
     CHECK(plain.Snapshot().phase == UpdatePhase::kAvailable && plain.Snapshot().available.ToString() == "0.7.1-beta.1");
     // A release that updates only from the base accepts the nightly built on it, and no other nightly.
     Publish(fixture.server, "v0.7.1-beta.2", "0.7.1-beta.1", "00.007.001");
     fixture.server.releases = "[" + fixture.server.latest + "]";
-    config.include_betas = true;
+    config.track = UpdateTrack::kBeta;
     UpdateService from_base(config);
     from_base.Check(true); Wait(from_base);
     CHECK(from_base.Snapshot().phase == UpdatePhase::kAvailable);
@@ -595,7 +595,7 @@ int main() {
     Publish(fixture.server, "v0.7.1-beta.1", "0.7.0", "00.007.001");
     fixture.server.releases = "[" + fixture.server.latest + "]";
     auto config = fixture.Config(*ParseVersion("0.7.1-nightly.20261027.1"));
-    config.include_betas = true;
+    config.track = UpdateTrack::kBeta;
     {
       UpdateService service(config);
       service.Start();
@@ -629,10 +629,10 @@ int main() {
     auto config = fixture.Config(*ParseVersion("0.3.0-beta.2"));
     config.nightly_page = kSite;
     config.nightly_site = kSite;
-    config.include_betas = true;
+    config.track = UpdateTrack::kNightly;
     // Betas off: the list isn't read, whatever the feature says.
     auto stable_only = config;
-    stable_only.include_betas = false;
+    stable_only.track = UpdateTrack::kStable;
     const int before_off = fixture.server.requests;
     UpdateService off(stable_only);
     off.Check(true); Wait(off);
@@ -643,6 +643,112 @@ int main() {
     UpdateService github_only(no_feature);
     github_only.Check(true); Wait(github_only);
     CHECK(github_only.Snapshot().phase == UpdatePhase::kUpToDate);
+    // The beta track with the feature on: betas only, the list isn't read.
+    {
+      auto beta_track = config;
+      beta_track.track = UpdateTrack::kBeta;
+      std::vector<std::string> asked;
+      beta_track.fetch = [&](const HttpRequest& request, const std::atomic<bool>&) {
+        asked.push_back(request.url);
+        return fixture.server(request);
+      };
+      UpdateService betas(beta_track);
+      betas.Check(true); Wait(betas);
+      CHECK(betas.Snapshot().phase == UpdatePhase::kUpToDate);
+      for (const auto& url : asked) CHECK(url.rfind(kSite, 0) != 0);
+      // A running nightly that moves down to Beta or Stable is offered neither a newer nightly nor the beta it was
+      // built on: nothing until a newer build on that track is out.
+      beta_track.current = *ParseVersion("0.3.0-nightly.20261122.1");
+      beta_track.nightly_base = *ParseVersion("0.3.0-beta.2");
+      for (const auto track : {UpdateTrack::kBeta, UpdateTrack::kStable}) {
+        beta_track.track = track;
+        UpdateService down(beta_track);
+        down.Check(true); Wait(down);
+        CHECK(down.Snapshot().phase == UpdatePhase::kUpToDate);
+      }
+      for (const auto& url : asked) CHECK(url.rfind(kSite, 0) != 0);
+      // The nightly track offers the newer nightly; moving to Beta before Install drops it.
+      beta_track.track = UpdateTrack::kNightly;
+      UpdateService moved(beta_track);
+      moved.Check(true); Wait(moved);
+      CHECK(moved.Snapshot().phase == UpdatePhase::kAvailable &&
+            moved.Snapshot().available.ToString() == "0.3.0-nightly.20261123.1");
+      CHECK(moved.SetTrack(UpdateTrack::kBeta) && !moved.SetTrack(UpdateTrack::kBeta));
+      moved.Install(); Wait(moved);
+      CHECK(moved.Snapshot().phase == UpdatePhase::kUpToDate);
+      CHECK(!Exists(fixture.root + "/playden/self-update/stage/0.3.0-nightly.20261123.1"));
+      moved.Shutdown();
+      // Beta chosen while a Nightly check reads the list: the check starts over on Beta and offers nothing.
+      {
+        auto racing = beta_track;
+        UpdateService* running = nullptr;
+        racing.fetch = [&](const HttpRequest& request, const std::atomic<bool>&) {
+          if (request.url == std::string(kSite) + "updates.json") running->SetTrack(UpdateTrack::kBeta);
+          return fixture.server(request);
+        };
+        UpdateService service(racing);
+        running = &service;
+        service.Check(true); Wait(service);
+        CHECK(service.Snapshot().phase == UpdatePhase::kUpToDate);
+        service.Shutdown();
+      }
+      // Beta chosen during the nightly's download stops it (no Cancel from the player)...
+      {
+        auto racing = beta_track;
+        UpdateService* running = nullptr;
+        bool switched = false;
+        int zips_after = 0;  // app zips asked for after the switch
+        racing.fetch = [&](const HttpRequest& request, const std::atomic<bool>&) {
+          if (request.url.find(".zip") != std::string::npos) {
+            if (switched) zips_after += request.url.find("playden-ps5-") != std::string::npos;
+            else {
+              switched = true;
+              CHECK(running->SetTrack(UpdateTrack::kBeta));
+            }
+          }
+          return fixture.server(request);
+        };
+        UpdateService service(racing);
+        running = &service;
+        service.Check(true); Wait(service);
+        service.Install(); Wait(service);
+        CHECK(switched && service.Snapshot().phase != UpdatePhase::kStaged);
+        CHECK(zips_after == 0);  // the cancel stops at the runtime kit: the app is never downloaded
+        CHECK(!Exists(fixture.root + "/playden/self-update/stage/0.3.0-nightly.20261123.1"));
+        service.Shutdown();
+      }
+      // ...and one chosen before the download shows (here, while free space is checked) is not staged either.
+      {
+        auto racing = beta_track;
+        UpdateService* running = nullptr;
+        racing.free_bytes = [&](const std::string&) -> std::optional<std::uint64_t> {
+          running->SetTrack(UpdateTrack::kBeta);
+          return std::nullopt;
+        };
+        UpdateService service(racing);
+        running = &service;
+        service.Check(true); Wait(service);
+        CHECK(service.Snapshot().available.ToString() == "0.3.0-nightly.20261123.1");
+        service.Install(); Wait(service);
+        CHECK(service.Snapshot().phase == UpdatePhase::kAvailable);
+        CHECK(!Exists(fixture.root + "/playden/self-update/stage/0.3.0-nightly.20261123.1"));
+        service.Install(); Wait(service);
+        CHECK(service.Snapshot().phase == UpdatePhase::kUpToDate);
+        service.Shutdown();
+      }
+      // The nightly's runtime kit may be staged already; the next install reuses it. Later checks expect none.
+      RemoveTree(fixture.root + "/playden/kits/.next-kitid-r9");
+      // A newer beta than the nightly's base is offered on Beta.
+      const auto beta3 = Beta(fixture.server, "v0.3.0-beta.3");
+      fixture.server.releases = "[" + beta3 + "," + beta2 + "," + beta1 + "]";
+      beta_track.track = UpdateTrack::kBeta;
+      UpdateService next_beta(beta_track);
+      next_beta.Check(true); Wait(next_beta);
+      CHECK(next_beta.Snapshot().phase == UpdatePhase::kAvailable &&
+            next_beta.Snapshot().available.ToString() == "0.3.0-beta.3");
+      next_beta.Shutdown();
+      fixture.server.releases = "[" + beta2 + "," + beta1 + "]";
+    }
     // On: the newest nightly on beta.2, not the one on beta.1 nor list order; notes link to the builds page.
     UpdateService service(config);
     service.Start();
@@ -663,6 +769,44 @@ int main() {
       restarted.RequestRestart();
       restarted.Shutdown();
       CHECK(restarted.ApplyAtQuit());
+    }
+    // (Above the nightly was applied. Below, a staged nightly off the Nightly track, at a check and at a start.)
+    {
+      Installed(fixture.root);
+      UpdateService staging(config);
+      staging.Check(true); Wait(staging);
+      staging.Install(); Wait(staging);
+      CHECK(staging.Snapshot().phase == UpdatePhase::kStaged);
+      // Beta chosen: the check that follows removes the staged nightly and finds nothing on Beta.
+      CHECK(staging.SetTrack(UpdateTrack::kBeta));
+      staging.Check(true); Wait(staging);
+      CHECK(staging.Snapshot().phase == UpdatePhase::kUpToDate);
+      CHECK(!Exists(fixture.root + "/playden/self-update/stage/0.3.0-nightly.20261123.1"));
+      staging.Shutdown();
+      // Staged again on Nightly, then started on Beta: removed at the start.
+      UpdateService again(config);
+      again.Check(true); Wait(again);
+      again.Install(); Wait(again);
+      CHECK(again.Snapshot().phase == UpdatePhase::kStaged);
+      again.Shutdown();
+      auto beta_start = config;
+      beta_start.track = UpdateTrack::kBeta;
+      UpdateService started(beta_start);
+      started.Start(); Wait(started);
+      CHECK(started.Snapshot().phase != UpdatePhase::kStaged);
+      CHECK(!Exists(fixture.root + "/playden/self-update/stage/0.3.0-nightly.20261123.1"));
+      started.Shutdown();
+      // Staged on Nightly and started on Nightly: kept, and applied as before.
+      UpdateService third(config);
+      third.Check(true); Wait(third);
+      third.Install(); Wait(third);
+      third.Shutdown();
+      UpdateService kept(config);
+      kept.Start(); Wait(kept);
+      CHECK(kept.Snapshot().phase == UpdatePhase::kStaged);
+      kept.RequestRestart();
+      kept.Shutdown();
+      CHECK(kept.ApplyAtQuit());
     }
     CHECK(Read(fixture.root + "/homebrew/FAKE77031/eboot.bin") == "eboot 0.3.0-nightly.20261123.1");
     CHECK(Read(fixture.root + "/playden/kits/kitid/manifest.json") == kKitSha);
@@ -757,7 +901,7 @@ int main() {
     Put(local + "/playden-kit-h-r9.zip", site.files[kSite + kKitPath]);
     auto config = fixture.Config({0, 2, 0});
     config.nightly_site = kSite;
-    config.include_betas = true;
+    config.track = UpdateTrack::kNightly;
     config.local_release_dir = local;
     std::vector<std::string> asked;
     config.fetch = [&](const HttpRequest& request, const std::atomic<bool>&) {
@@ -811,13 +955,13 @@ int main() {
     fixture.server.releases = "[" + fixture.server.latest + "]";
     fixture.server.latest = R"({"tag_name":"v0.7.0","assets":[]})";
     auto config = fixture.Config({0, 7, 0});
-    config.include_betas = true;
+    config.track = UpdateTrack::kBeta;
     UpdateService* running = nullptr;
     bool cancelled = false;
     config.fetch = [&](const HttpRequest& request, const std::atomic<bool>&) {
       if (!cancelled && request.url.find(".zip") != std::string::npos) {
         cancelled = true;
-        running->SetIncludeBetas(false);
+        running->SetTrack(UpdateTrack::kStable);
         running->Check(true);
         running->Cancel();
       }

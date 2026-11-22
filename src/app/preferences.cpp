@@ -28,13 +28,15 @@ std::string ToString(const Bytes& bytes) {
 // name or account; older files: their name when they kept one, else none) and whether Playden asks how a game ran
 // (ask_after_games; older files: unless recipe votes were off), version 15 whether the account appears invisible to
 // Steam friends (online in older files), version 16 whether an Online game's start shows the Steam account it signed
-// in as (on in older files).
+// in as (on in older files). Version 17 adds nightly_updates, and is written only when it is on (the Nightly track):
+// Stable and Beta keep writing version 16, which Playden builds from before the Updates picker still read.
 constexpr const char* kKeys[] = {"reduce_motion", "title_store_suffix", "cloud_saves_auto",
                                           "steam_sign_in_password", "downloads_slow_network", "steam_stay_signed_in",
                                           "beta_updates", "download_server", "web_access", "content_language",
                                           "hide_run_once_help", "hide_launcher_help", "runtime_prompt_kit",
                                           "recipe_votes", "sharing_explained", "share_name", "reports_explained",
-                                          "share_as", "ask_after_games", "steam_invisible", "steam_online_notice"};
+                                          "share_as", "ask_after_games", "steam_invisible", "steam_online_notice",
+                                          "nightly_updates"};
 
 bool ParseFlag(const std::string& value, bool* flag) {
   if (value != "0" && value != "1") return false;
@@ -55,7 +57,7 @@ bool ParseKeyed(const std::string& serialized, int version, Preferences* prefere
   if (serialized.compare(0, header.size(), header) != 0 || serialized.back() != '\n') return false;
   std::vector<std::string> values;
   std::size_t start = header.size();
-  // Version 11 added two fields, version 13 three and version 14 three; the others (15 and 16 too) one each from
+  // Version 11 added two fields, version 13 three and version 14 three; the others (15 to 17 too) one each from
   // version 8's eight.
   const std::size_t count = static_cast<std::size_t>(version >= 14 ? version + 5 - missing
                                                      : version >= 13 ? version + 3 : version >= 11 ? version + 1 : version);
@@ -110,6 +112,7 @@ bool ParseKeyed(const std::string& serialized, int version, Preferences* prefere
   }
   if (version >= 15 && !ParseFlag(values[19], &parsed.steam_invisible)) return false;
   if (version >= 16 && !ParseFlag(values[20], &parsed.steam_online_notice)) return false;
+  if (version >= 17 && !ParseFlag(values[21], &parsed.nightly_updates)) return false;
   *preferences = std::move(parsed);
   return true;
 }
@@ -152,7 +155,7 @@ PreferencesLoadResult PreferencesStore::Load() const {
                 (kept ? std::string(", kept as ") + kDamagedPreferencesPath : std::string()) + "; defaults restored"};
   }
   Preferences keyed;
-  if (ParseKeyed(serialized, 16, &keyed) || ParseKeyed(serialized, 15, &keyed) || ParseKeyed(serialized, 14, &keyed) || ParseKeyed(serialized, 14, &keyed, 1) || ParseKeyed(serialized, 14, &keyed, 2) || ParseKeyed(serialized, 13, &keyed) || ParseKeyed(serialized, 12, &keyed) || ParseKeyed(serialized, 11, &keyed) || ParseKeyed(serialized, 10, &keyed) || ParseKeyed(serialized, 9, &keyed) || ParseKeyed(serialized, 8, &keyed))
+  if (ParseKeyed(serialized, 17, &keyed) || ParseKeyed(serialized, 16, &keyed) || ParseKeyed(serialized, 15, &keyed) || ParseKeyed(serialized, 14, &keyed) || ParseKeyed(serialized, 14, &keyed, 1) || ParseKeyed(serialized, 14, &keyed, 2) || ParseKeyed(serialized, 13, &keyed) || ParseKeyed(serialized, 12, &keyed) || ParseKeyed(serialized, 11, &keyed) || ParseKeyed(serialized, 10, &keyed) || ParseKeyed(serialized, 9, &keyed) || ParseKeyed(serialized, 8, &keyed))
     return PreferencesLoadResult{std::move(keyed), PreferencesLoadStatus::kLoaded, std::string()};
   bool beta_updates = false;
   if (serialized.rfind("version=7\n", 0) == 0) {
@@ -258,7 +261,9 @@ Result<void> PreferencesStore::Save(const Preferences& preferences) const {
   const std::string name = IsShareName(preferences.share_name) ? preferences.share_name : std::string();
   const char* votes = preferences.recipe_votes == RecipeVotesPreference::kOn ? "1"
                     : preferences.recipe_votes == RecipeVotesPreference::kOff ? "2" : "0";
-  const std::string text = std::string("version=16\nreduce_motion=") + (preferences.reduce_motion ? "1" : "0") +
+  // The Nightly track is the only one version 16 can't say: see kKeys.
+  const bool nightly = preferences.beta_updates && preferences.nightly_updates;
+  const std::string text = std::string(nightly ? "version=17" : "version=16") + "\nreduce_motion=" + (preferences.reduce_motion ? "1" : "0") +
                            "\ntitle_store_suffix=" + (preferences.title_store_suffix ? "1" : "0") +
                            "\ncloud_saves_auto=" + (preferences.cloud_saves_auto ? "1" : "0") +
                            "\nsteam_sign_in_password=" + (preferences.steam_sign_in_password ? "1" : "0") +
@@ -280,7 +285,8 @@ Result<void> PreferencesStore::Save(const Preferences& preferences) const {
                                             : preferences.share_as == ShareAs::kName ? "name" : "none") +
                            "\nask_after_games=" + (preferences.ask_after_games ? "1" : "0") +
                            "\nsteam_invisible=" + (preferences.steam_invisible ? "1" : "0") +
-                           "\nsteam_online_notice=" + (preferences.steam_online_notice ? "1" : "0") + "\n";
+                           "\nsteam_online_notice=" + (preferences.steam_online_notice ? "1" : "0") +
+                           (nightly ? "\nnightly_updates=1" : "") + "\n";
   return storage_.WriteAtomic(kPreferencesPath, Bytes(text.begin(), text.end()));
 }
 

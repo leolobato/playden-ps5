@@ -577,8 +577,14 @@ int main() {
         update_config.layout_journal = "/data/playden/runtime-state/layout-0.6.json";
         update_config.current = playden::update::CurrentVersion();
         update_config.nightly_base = playden::update::NightlyBase();
-        update_config.include_betas = preferences.Load().preferences.beta_updates;
-        // nightly-updates: the beta track takes nightlies from builds.playden.club too.
+        // The saved track. Nightly needs nightly-updates; without it a saved Nightly is Beta (and stays saved).
+        const auto saved_track = preferences.Load().preferences;
+        update_config.track = !saved_track.beta_updates ? playden::update::UpdateTrack::kStable
+                              : saved_track.nightly_updates && features.nightly_updates ? playden::update::UpdateTrack::kNightly
+                                                                                         : playden::update::UpdateTrack::kBeta;
+        // nightly-updates: the Updates picker in Settings, and the nightly builds site (the Nightly track's builds,
+        // and a running nightly's own runtime kit on any track).
+        simulation.SetNightlyUpdatesEnabled(features.nightly_updates);
         if (features.nightly_updates) update_config.nightly_site = "https://builds.playden.club/";
         update_config.fetch = [&update_http](const playden::steam::HttpRequest& request, const std::atomic<bool>& cancel) {
             return update_http.Perform(request, cancel);

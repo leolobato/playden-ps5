@@ -131,7 +131,7 @@ const char* PackInstallPhaseName(PackInstallPhase phase) {
   return "?";
 }
 
-UpdateService::UpdateService(UpdateConfig config) : config_(std::move(config)), include_betas_(config_.include_betas), shared_(std::make_shared<Shared>()) {
+UpdateService::UpdateService(UpdateConfig config) : config_(std::move(config)), track_(config_.track), shared_(std::make_shared<Shared>()) {
   if (!config_.as_root) config_.as_root = [](const std::function<bool()>& work) { return work(); };
   if (!config_.now) config_.now = [] { return static_cast<std::int64_t>(time(nullptr)); };
   shared_->snapshot.current = config_.current;
@@ -489,7 +489,9 @@ void UpdateService::Start() {
     const std::string stage = field("stage");
     const std::string kit = field("kit");
     const bool kit_present = kit.empty() || (config_.verify_kit && config_.verify_kit(kit));
-    if (version && NewerThanRunning(*version, base) && !stage.empty() && Exists(stage + "/eboot.bin") && kit_present) {
+    // A staged nightly is kept only on the Nightly track.
+    const bool on_track = version && (!version->nightly() || track_.load() == UpdateTrack::kNightly);
+    if (version && on_track && NewerThanRunning(*version, base) && !stage.empty() && Exists(stage + "/eboot.bin") && kit_present) {
       staged_folder_ = stage;
       staged_version_ = *version;
       staged_base_ = base;
@@ -589,22 +591,54 @@ void UpdateService::ConfirmApplied(const std::string& text) {
   FindPrevious();
 }
 
-bool UpdateService::SetIncludeBetas(bool enabled) { return include_betas_.exchange(enabled) != enabled; }
+bool UpdateService::OnTrack(const Version& version) const {
+  const auto track = track_.load();
+  if (version.nightly()) return track == UpdateTrack::kNightly;
+  return !version.beta || track != UpdateTrack::kStable;
+}
+
+bool UpdateService::SetTrack(UpdateTrack track) {
+  if (track_.exchange(track) == track) return false;
+  // A download the new track doesn't offer stops; the check that follows looks on the new track.
+  {
+    std::lock_guard<std::mutex> lock(shared_->mutex);
+    const auto& s = shared_->snapshot;
+    if ((s.phase == UpdatePhase::kDownloading || s.phase == UpdatePhase::kUnpacking) && !OnTrack(s.available))
+      shared_->cancel = true;
+  }
+  return true;
+}
 
 void UpdateService::Check(bool user_asked) {
   {
     std::lock_guard<std::mutex> lock(shared_->mutex);
     const auto phase = shared_->snapshot.phase;
-    if (phase == UpdatePhase::kDownloading || phase == UpdatePhase::kUnpacking || phase == UpdatePhase::kStaged)
+    if (phase == UpdatePhase::kDownloading || phase == UpdatePhase::kUnpacking) return;
+    // A staged nightly stays only on the Nightly track; anything else staged stays as it was.
+    if (phase == UpdatePhase::kStaged && (!shared_->snapshot.available.nightly() || track_.load() == UpdateTrack::kNightly))
       return;
   }
-  Run([this, user_asked] { DoCheck(user_asked); });
+  Run([this, user_asked] {
+    if (Snapshot().phase == UpdatePhase::kStaged) {
+      if (!staged_version_.nightly() || track_.load() == UpdateTrack::kNightly) return;
+      Log("staged nightly " + staged_version_.ToString() + " removed: the update track is not Nightly");
+      RemoveOwnedTree(staged_folder_);
+      if (!staged_kit_.empty()) RemoveOwnedTree(staged_kit_);
+      unlink(StatePath().c_str());
+      staged_folder_.clear();
+      staged_kit_.clear();
+    }
+    DoCheck(user_asked);
+  });
 }
 
 void UpdateService::Install() {
   Run([this] {
     // A track change can arrive while a download is being cancelled or a check is queued.
-    if (release_ && (release_->prerelease || release_->version.beta) && !include_betas_.load()) {
+    // A nightly is held only on the nightly track, a beta on the beta track or above.
+    const auto track = track_.load();
+    if (release_ && ((release_->version.nightly() && track != UpdateTrack::kNightly) ||
+                     ((release_->prerelease || release_->version.beta) && track == UpdateTrack::kStable))) {
       DoCheck(false);
       return;
     }
@@ -681,7 +715,8 @@ void UpdateService::DoCheck(bool user_asked) {
     return std::nullopt;
   };
   if (local) Log("reading the release from " + config_.local_release_dir);
-  const bool include_betas = include_betas_.load();
+  const auto track = track_.load();
+  const bool include_betas = track != UpdateTrack::kStable;
   std::optional<Release> release;
   std::optional<std::vector<Release>> releases;  // every release, when read: betas, or a kit zip left out
   if (include_betas) {
@@ -700,7 +735,7 @@ void UpdateService::DoCheck(bool user_asked) {
   // The nightly track: the newest nightly build, when it is newer than the newest release. A list that can't be
   // read leaves the releases on GitHub.
   std::optional<NightlyBuild> nightly;
-  if (include_betas && !config_.nightly_site.empty()) {
+  if (track == UpdateTrack::kNightly && !config_.nightly_site.empty()) {
     std::string nightly_error;
     if (const auto nightlies = FetchNightlies(&nightly_error)) {
       for (const auto& candidate : *nightlies)
@@ -769,6 +804,8 @@ void UpdateService::DoCheck(bool user_asked) {
   if (!app || (kit_needed && !kit)) return Fail("Release " + release->tag + " is missing a download.", "asset");
   if (app->sha256.empty() || (kit_needed && kit->sha256.empty()))
     return Fail("Release " + release->tag + " has no checksums. Install it by hand.", "digest");
+  // The track changed while this check ran: what it found may not be on the new track.
+  if (track_.load() != track) return DoCheck(user_asked);
   release_ = *release;
   manifest_ = *manifest;
   release_base_ = base;
@@ -813,6 +850,14 @@ void UpdateService::DoInstall() {
     kit_folder = ReadyKit(manifest.kit);
   }
   if (!StageApp(release, manifest)) return;
+  // The track changed during the download and no longer offers this version: not staged.
+  if (!OnTrack(release.version)) {
+    Log("update " + release.version.ToString() + " not staged: the update track changed");
+    RemoveOwnedTree(staged_folder_);
+    staged_folder_.clear();
+    Set([](UpdateSnapshot& s) { s.phase = UpdatePhase::kAvailable; s.part.clear(); });
+    return;
+  }
   staged_version_ = release.version;
   staged_base_ = release_base_;
   // The installed kit already matches: nothing to swap for it.

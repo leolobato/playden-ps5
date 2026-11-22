@@ -968,6 +968,7 @@ std::string action_label(const std::string& key) {
         {"feedback-logs", "Include logs"}, {"feedback-recipe", "Also share these settings as a recipe"},
         {"heading-result", "Result"}, {"feedback-result-partial", "Partial"}, {"feedback-result-broken", "Broken"}, {"feedback-change-settings", "Change settings"}, {"feedback-send", "Send report"},
         {"feedback-send-confirm", "Send"}, {"share-feedback", "Share feedback…"},
+        {"update-track-stable", "Stable"}, {"update-track-beta", "Beta"}, {"update-track-nightly", "Nightly"},
         {"share-as", "Shared as"}, {"share-as-none", "No name"}, {"share-as-name", "Your name"},
         {"share-as-name-edit", "Change your name…"}, {"share-as-account", "Playden account"},
         {"heading-reason", "What went wrong"}, {"heading-report", "Report"}, {"heading-recipe", "Recipe"},
@@ -5670,6 +5671,15 @@ bool Simulation::download_server_test_allowed() const {
 }
 
 // The modal action for the stored choice; a server that is not listed falls back to Steam default.
+std::string Simulation::update_track() const {
+    if (!state_.beta_updates) return "stable";
+    return state_.nightly_updates && nightly_updates_enabled_ ? "nightly" : "beta";
+}
+
+std::string Simulation::update_track_title(const std::string& track) {
+    return track == "nightly" ? "Nightly" : track == "beta" ? "Beta" : "Stable";
+}
+
 std::string Simulation::download_server_choice_key() const {
     if (state_.download_server == kFastestDownloadServer) return "download-server-fastest";
     for (std::size_t index = 0; index < download_servers_.servers.size(); ++index)
@@ -5760,7 +5770,7 @@ playden::Preferences Simulation::ExportPreferences() const {
             state_.web_access, state_.content_language, state_.hide_run_once_help, state_.hide_launcher_help,
             state_.runtime_prompt_kit, state_.recipe_votes, state_.sharing_explained, state_.share_name,
             state_.reports_explained, state_.share_as, state_.ask_after_games, state_.steam_invisible,
-            state_.steam_online_notice};
+            state_.steam_online_notice, state_.nightly_updates};
 }
 
 void Simulation::apply_organization_snapshot(const playden::OrganizationSnapshot& snapshot) {
@@ -5990,6 +6000,7 @@ bool Simulation::ApplyPreferences(PersistenceLoadToken token,
         state_.cloud_saves_auto = loaded.preferences.cloud_saves_auto;
         state_.sign_in_password = loaded.preferences.steam_sign_in_password;
         state_.beta_updates = loaded.preferences.beta_updates;
+        state_.nightly_updates = loaded.preferences.nightly_updates;
         state_.downloads_slow_network = loaded.preferences.downloads_slow_network;
         state_.download_server = loaded.preferences.download_server;
         state_.web_access = loaded.preferences.web_access;
@@ -6394,6 +6405,7 @@ bool Simulation::record_live_persistence() {
                                       after_preferences.download_server != captured_preferences_.download_server ||
                                       after_preferences.web_access != captured_preferences_.web_access ||
                                       after_preferences.beta_updates != captured_preferences_.beta_updates ||
+                                      after_preferences.nightly_updates != captured_preferences_.nightly_updates ||
                                       after_preferences.content_language != captured_preferences_.content_language ||
                                       after_preferences.hide_run_once_help != captured_preferences_.hide_run_once_help ||
                                       after_preferences.hide_launcher_help != captured_preferences_.hide_launcher_help ||
@@ -6429,6 +6441,7 @@ bool Simulation::record_live_persistence() {
                 state_.cloud_saves_auto = captured_preferences_.cloud_saves_auto;
                 state_.sign_in_password = captured_preferences_.steam_sign_in_password;
                 state_.beta_updates = captured_preferences_.beta_updates;
+                state_.nightly_updates = captured_preferences_.nightly_updates;
                 state_.downloads_slow_network = captured_preferences_.downloads_slow_network;
                 state_.download_server = captured_preferences_.download_server;
                 state_.web_access = captured_preferences_.web_access;
@@ -7072,6 +7085,17 @@ bool Simulation::scenario(const std::string& name) {
         state_.navigation.focus_key = "settings-web-access";
         state_.web_access = true;
         state_.jobs.clear();
+    } else if (name == "update-track") {
+        // Settings › Playden updates with nightly-updates on: the Updates picker on Nightly, on a nightly build.
+        update_track_fixture_ = true;
+        nightly_updates_enabled_ = true;
+        state_.beta_updates = true;
+        state_.nightly_updates = true;
+        state_.account().authentication = AuthState::SignedIn;
+        state_.jobs.clear();
+        state_.navigation.modals.clear();
+        state_.navigation.route = Route::Settings;
+        state_.navigation.focus_key = "settings-update-track";
     } else if (name == "download-servers") {
         download_server_fixture_ = true;
         download_servers_ = {};
@@ -8611,6 +8635,8 @@ void Simulation::rebuild_view() {
                              "title removes its Home tile and keeps its saves here. Installing a game again brings its saves back.";
         if (modal.id == "download-server")
             view_.subtitle = "Applies to downloads that start or resume from now.";
+        if (modal.id == "update-track")
+            view_.subtitle = "Choosing an earlier track keeps this version of Playden until that track has a newer one.";
         if (modal.id == "content-language")
             view_.subtitle = "New downloads are in this language when the game has it, otherwise in English or the game's "
                              "first language. Games already installed keep the language they were downloaded in.";
@@ -8822,6 +8848,17 @@ void Simulation::rebuild_view() {
                     }
                 }
                 continue;
+            }
+            // The Updates picker: the three tracks, each with what it offers, the one in use ticked.
+            if (modal.id == "update-track" && action_key.rfind("update-track-", 0) == 0) {
+                const auto track = action_key.substr(13);
+                item.kind = RowKind::Choice;
+                item.title = update_track_title(track);
+                item.selected = track == update_track();
+                if (item.selected) item.value = "In use";
+                item.subtitle = track == "stable" ? "Released versions of Playden only."
+                              : track == "beta"   ? "Test versions before they are released, too. They can have new bugs."
+                                                  : "Test builds from builds.playden.club, and betas. The least tested.";
             }
             // The game-language picker: every language Steam has, with the one in use ticked.
             if (modal.id == "content-language" && action_key.rfind("content-language-", 0) == 0) {
@@ -10335,6 +10372,7 @@ void Simulation::rebuild_view() {
         else if (modal.id == "feedback")
             view_.legends = {"Cross Select", feedback_ && (feedback_->from_failure || feedback_->step != "ask") ? "Circle Back" : "Circle Not now"};
         else if (modal.id == "share-as") view_.legends = {"Cross Choose", "Circle Close"};
+        else if (modal.id == "update-track") view_.legends = {"Cross Choose", "Circle Back"};
         else if (modal.id == "import-storage") view_.legends = {"Cross Import here", "Circle Back"};
         else if (modal.id == "gog-sign-in") view_.legends = {"Cross Select", "Circle Back"};
         else if (modal.id == "move-storage") view_.legends = {move_picker_game_.valid() ? "Cross Move here" : "Cross Choose", "Circle Back"};
@@ -11650,13 +11688,29 @@ void Simulation::rebuild_view() {
                 item.subtitle = update.phase == "up-to-date" ? "No newer update for version " + update.current
                                                               : "Version " + update.current;
             }
-            auto& beta = add("settings-beta-updates", RowKind::Toggle, "Beta updates", "toggle-beta-updates");
-            beta.selected = state_.beta_updates;
-            beta.subtitle = "Get test versions before they are released. They can have new bugs.";
+            if (!nightly_updates_enabled_) {
+                auto& beta = add("settings-beta-updates", RowKind::Toggle, "Beta updates", "toggle-beta-updates");
+                beta.selected = state_.beta_updates;
+                beta.subtitle = "Get test versions before they are released. They can have new bugs.";
+            }
         }
-        if (live() && !state_.beta_updates && state_.self_update.current.find("-beta.") != std::string::npos) {
+        // nightly-updates: the track picker replaces the Beta updates switch.
+        if ((live() || update_track_fixture_) && nightly_updates_enabled_) {
+            auto& track = add("settings-update-track", RowKind::Action, "Updates", "update-track-picker");
+            track.value = update_track_title(update_track());
+            track.subtitle = "Which versions of Playden are offered as Playden updates.";
+        }
+        const std::string running = live() ? state_.self_update.current : std::string(update_track_fixture_ ? "0.12.0-nightly.20261122.1" : "");
+        if (live() && !state_.beta_updates && running.find("-beta.") != std::string::npos) {
             auto& note = add("settings-beta-wait", RowKind::Status, "You have a beta", "");
             note.subtitle = "Playden moves to the next stable version when it is out.";
+            note.enabled = false;
+        }
+        // A nightly off the Nightly track keeps running until its track has a newer version: nothing goes back.
+        if ((live() || update_track_fixture_) && update_track() != "nightly" && running.find("-nightly.") != std::string::npos) {
+            auto& note = add("settings-nightly-wait", RowKind::Status, "You have a nightly build", "");
+            note.subtitle = update_track() == "beta" ? "Playden moves to the next beta or stable version when it is out."
+                                                     : "Playden moves to the next stable version when it is out.";
             note.enabled = false;
         }
         if (live() && !state_.self_update.current_notes_url.empty()) {
@@ -15324,7 +15378,23 @@ void Simulation::activate() {
     else if (action_name == "about-back") close_modal();
     else if (live() && action_name == "toggle-beta-updates") {
         state_.beta_updates = !state_.beta_updates;
+        state_.nightly_updates = false;  // the switch says Beta or Stable
         self_update_requests_.push_back(state_.beta_updates ? "betas-on" : "betas-off");
+    }
+    else if ((live() || update_track_fixture_) && nightly_updates_enabled_ && action_name == "update-track-picker") {
+        const std::vector<std::string> actions = {"update-track-stable", "update-track-beta", "update-track-nightly", "cancel"};
+        const auto track = update_track();
+        const int focus = track == "nightly" ? 2 : track == "beta" ? 1 : 0;
+        open_modal({"update-track", "Updates", state_.navigation.focus_key, actions, focus, false});
+    }
+    else if ((live() || update_track_fixture_) && nightly_updates_enabled_ && action_name.rfind("update-track-", 0) == 0) {
+        const auto track = action_name.substr(13);
+        if (track != "stable" && track != "beta" && track != "nightly") return;
+        state_.beta_updates = track != "stable";
+        state_.nightly_updates = track == "nightly";
+        // Picking one checks again, as the Beta updates switch does.
+        if (live()) self_update_requests_.push_back("track-" + track);
+        close_modal();
     }
     else if (live() && action_name == "self-update") {
         const auto& phase = state_.self_update.phase;
@@ -15416,7 +15486,7 @@ void Simulation::activate() {
     }
     else if (kOfferGoBack && live() && action_name == "self-update-back-confirm") { close_modal(); request_self_update_restart("rollback"); }
     else if (action_name == "scenario-picker") open_modal({"scenarios", "Fixture scenarios", state_.navigation.focus_key,
-        {"scenario-default", "scenario-leftover-titles", "scenario-download-servers", "scenario-first-run", "scenario-signed-out", "scenario-qr-waiting", "scenario-offline", "scenario-empty", "scenario-no-results", "scenario-delayed-art", "scenario-failed-art", "scenario-install-ready", "scenario-install-options", "scenario-update-available", "scenario-dlc-available", "scenario-dlc-manage", "scenario-updating", "scenario-unknown-size", "scenario-insufficient-space", "scenario-storage-disconnect", "scenario-paused", "scenario-download-failed", "scenario-verification-failed", "scenario-restart-recovery", "scenario-save-failure", "scenario-runtime-unavailable", "scenario-launch-failure", "scenario-crash", "scenario-stop-failure", "scenario-controller-disconnected", "scenario-reduced-motion", "scenario-stress", "scenario-import-empty", "scenario-import-candidates", "scenario-import-programs", "scenario-import-choice", "scenario-import-storage", "scenario-import-drop-choice", "scenario-import-drop-storage", "scenario-import-details", "scenario-import-copying", "scenario-import-library", "scenario-import-recipe", "scenario-gog-signed-out", "scenario-gog-sign-in", "scenario-gog-library", "scenario-library-stores", "scenario-library-steam-collections", "scenario-library-steam-collections-offline", "cancel"}, 0, false});
+        {"scenario-default", "scenario-leftover-titles", "scenario-download-servers", "scenario-update-track", "scenario-first-run", "scenario-signed-out", "scenario-qr-waiting", "scenario-offline", "scenario-empty", "scenario-no-results", "scenario-delayed-art", "scenario-failed-art", "scenario-install-ready", "scenario-install-options", "scenario-update-available", "scenario-dlc-available", "scenario-dlc-manage", "scenario-updating", "scenario-unknown-size", "scenario-insufficient-space", "scenario-storage-disconnect", "scenario-paused", "scenario-download-failed", "scenario-verification-failed", "scenario-restart-recovery", "scenario-save-failure", "scenario-runtime-unavailable", "scenario-launch-failure", "scenario-crash", "scenario-stop-failure", "scenario-controller-disconnected", "scenario-reduced-motion", "scenario-stress", "scenario-import-empty", "scenario-import-candidates", "scenario-import-programs", "scenario-import-choice", "scenario-import-storage", "scenario-import-drop-choice", "scenario-import-drop-storage", "scenario-import-details", "scenario-import-copying", "scenario-import-library", "scenario-import-recipe", "scenario-gog-signed-out", "scenario-gog-sign-in", "scenario-gog-library", "scenario-library-stores", "scenario-library-steam-collections", "scenario-library-steam-collections-offline", "cancel"}, 0, false});
     else if (action_name.rfind("scenario-", 0) == 0) { state_.navigation.modals.clear(); scenario(action_name.substr(9)); }
     else if (action_name == "session-fixture-controls") open_modal({"session-controls", "Session fixture controls", state_.navigation.focus_key,
         {"advance-clock", "inject-stop-failure", "inject-crash", "cancel"}, 0, false});
@@ -17838,6 +17908,14 @@ void Simulation::build_recipe_comparison(GameId id, const CommunityRecipeOffer& 
                     : changes == 0 ? std::string("Nothing changes.")
                     : std::to_string(changes) + (changes == 1 ? " setting changes" : " settings change") + ".";
     view_.comparison = std::move(comparison);
+}
+
+void Simulation::SetNightlyUpdatesEnabled(bool enabled) {
+    if (nightly_updates_enabled_ == enabled) return;
+    nightly_updates_enabled_ = enabled;
+    // The picker closes with the feature: its choices would do nothing.
+    if (!enabled && !state_.navigation.modals.empty() && state_.navigation.modals.back().id == "update-track") close_modal();
+    rebuild_view();
 }
 
 void Simulation::SetGogStoreEnabled(bool enabled) {

@@ -3843,12 +3843,19 @@ void Controller::TickFriends() {
 }
 void Controller::TickSelfUpdate() {
   if (!self_update_) return;
-  // The track starts from the saved preference (ps5.cpp); only the Settings toggle changes it, so a
+  // The track starts from the saved preference (ps5.cpp); only the Settings toggle or picker changes it, so a
   // preference that hasn't loaded yet can't switch tracks at startup.
   for (const auto& request : model_.TakeSelfUpdateRequests()) {
     if (request == "check") self_update_check_pending_ = true;
     else if (request == "betas-on" || request == "betas-off") {
-      self_update_->SetIncludeBetas(request == "betas-on");
+      self_update_->SetTrack(request == "betas-on" ? update::UpdateTrack::kBeta : update::UpdateTrack::kStable);
+      self_update_check_pending_ = true;
+    }
+    // The Updates picker (nightly-updates): picking a track checks again, even the one in use.
+    else if (request == "track-stable" || request == "track-beta" || request == "track-nightly") {
+      self_update_->SetTrack(request == "track-nightly" ? update::UpdateTrack::kNightly
+                             : request == "track-beta"  ? update::UpdateTrack::kBeta
+                                                        : update::UpdateTrack::kStable);
       self_update_check_pending_ = true;
     }
     else if (request == "install") self_update_->Install();

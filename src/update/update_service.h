@@ -18,6 +18,10 @@
 
 namespace playden::update {
 
+// Which builds are offered: stable releases only; stable and beta releases; or those and the nightly builds
+// listed at UpdateConfig::nightly_site, whichever is newest.
+enum class UpdateTrack { kStable, kBeta, kNightly };
+
 struct UpdateConfig {
   std::string latest_release_url;               // https://api.github.com/repos/<owner>/<repo>/releases/latest
   std::string releases_page;                    // https://github.com/<owner>/<repo>/releases (release notes links)
@@ -41,9 +45,9 @@ struct UpdateConfig {
   Version current;
   // A nightly's base release (NightlyBase): it already holds that release, so that one and older are no update.
   std::optional<Version> nightly_base;
-  bool include_betas = false;
-  // Feature nightly-updates: with betas on, the nightly builds listed at <nightly_site>updates.json are offered too,
-  // and a nightly takes its own kit from there when the console lacks it. The site ("https://builds.playden.club/")
+  UpdateTrack track = UpdateTrack::kStable;
+  // Feature nightly-updates: on the nightly track, the nightly builds listed at <nightly_site>updates.json are offered
+  // too, and a running nightly takes its own kit from there when the console lacks it (on any track). The site ("https://builds.playden.club/")
   // is the only place their files are downloaded from. Empty: GitHub releases only.
   std::string nightly_site;
   Fetch fetch;
@@ -181,7 +185,8 @@ class UpdateService {
   // Looks for a newer release in the background. Ignored while the worker is busy.
   void Check(bool user_asked);
   // Thread-safe: the worker reads the current preference at each check.
-  bool SetIncludeBetas(bool enabled);  // returns whether the preference changed
+  // Returns whether the track changed. A download of a version the new track doesn't offer is cancelled.
+  bool SetTrack(UpdateTrack track);
   // Downloads, unpacks and stages the available release in the background.
   void Install();
   void Cancel();
@@ -270,8 +275,10 @@ class UpdateService {
   void RetireRenamedKits();
   void CleanUpLeftovers();
 
+  // Whether the current track offers this version (a nightly only on Nightly, a beta not on Stable).
+  bool OnTrack(const Version& version) const;
   UpdateConfig config_;
-  std::atomic<bool> include_betas_{false};
+  std::atomic<UpdateTrack> track_{UpdateTrack::kStable};
   std::shared_ptr<Shared> shared_;
   std::optional<Release> release_;
   std::optional<UpdateManifest> manifest_;

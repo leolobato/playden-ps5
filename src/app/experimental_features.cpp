@@ -11,9 +11,10 @@ namespace playden::app {
 ExperimentalFeatures DefaultExperimentalFeatures(bool all_on) {
   // Online and GOG are on in every build since 0.12.0-beta.1. 0.11.0, the oldest release a beta updates from and
   // the release a nightly falls back to, reads GOG records and resets games set to Online, so going back stays safe.
-  // The publisher pack download is on in every build since 0.12.0-beta.4.
-  (void)all_on;
+  // The publisher pack download is on in every build since 0.12.0-beta.4. Nightly updates are on in nightlies and
+  // dev builds, so a nightly console can choose the Nightly track; a release needs the line.
   ExperimentalFeatures features;
+  features.nightly_updates = all_on;
   features.online_steam = true;
   features.gog_store = true;
   features.publisher_pack_download = true;

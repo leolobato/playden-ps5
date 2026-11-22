@@ -1241,6 +1241,7 @@ struct State {
     bool title_store_suffix = true;  // PS5 titles named "<game> (Steam)"; on for a new install
     bool cloud_saves_auto = false;    // Cloud saves move before Play, after sessions and at startup (opt-in)
     bool beta_updates = false;
+    bool nightly_updates = false;  // with beta_updates: the Nightly track (Preferences::nightly_updates)
     // The language games are downloaded in, as Steam names its depot languages ("german").
     std::string content_language{playden::steam::kDefaultContentLanguage};
     bool downloads_slow_network = false;  // 8 download pieces at a time instead of 4 (Settings › Downloads)
@@ -1782,6 +1783,9 @@ public:
     // offers Sign in to GOG, and the gog-sign-in dialog shows the phone relay's QR code.
     void SetGogStoreEnabled(bool enabled);
     [[nodiscard]] bool GogStoreEnabled() const noexcept { return gog_store_enabled_; }
+    // Nightly updates (features.txt nightly-updates); off unless set. On: Settings › Playden updates shows the Updates
+    // picker (Stable, Beta, Nightly) instead of the Beta updates switch. Off: a saved Nightly shows and acts as Beta.
+    void SetNightlyUpdatesEnabled(bool enabled);
     // Whether a store's games can be installed in this build (on for every store but GOG unless set). Off: a game's
     // page shows Install disabled with the reason, and no install starts.
     void SetStoreInstalls(Store store, bool enabled);
@@ -1898,6 +1902,9 @@ private:
     void refresh_download_servers(const std::string& focus = {});
     [[nodiscard]] std::string best_tested_download_server() const;
     [[nodiscard]] std::string download_server_choice_key() const;
+    // The Playden update track in use: "stable", "beta" or "nightly" (Nightly only with nightly-updates on).
+    [[nodiscard]] std::string update_track() const;
+    static std::string update_track_title(const std::string& track);
     [[nodiscard]] bool download_server_test_allowed() const;
     std::string self_update_prompted_;   // "available 0.3.0" or "staged 0.3.0": each prompt shows once
     std::string pending_update_prompt_;  // a prompt waiting for the open dialog to close
@@ -2196,6 +2203,8 @@ private:
     std::string my_template_menu_id_;
     bool my_template_renaming_ = false;
     bool gog_store_enabled_ = false;
+    bool nightly_updates_enabled_ = false;
+    bool update_track_fixture_ = false;  // the update-track scenario: the Updates picker without a live update service
     std::map<Store, bool> store_installs_;  // stores set with SetStoreInstalls; the rest use the default
     // The gog-sign-in dialog was opened and its sign-in not yet ended: closing the dialog (or losing it) ends it.
     bool gog_sign_in_open_ = false;

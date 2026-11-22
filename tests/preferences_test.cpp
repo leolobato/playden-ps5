@@ -768,6 +768,59 @@ void ContentLanguagePersistsAndOlderVersionsStayEnglish() {
 
 }  // namespace
 
+void UpdateTrackKeepsVersionSixteenUnlessNightly() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  playden::PreferencesStore store(storage);
+  const auto text = [&] {
+    const auto read = storage.Read("preferences.conf");
+    return read.ok() ? std::string(read.value().begin(), read.value().end()) : std::string();
+  };
+  // Stable and Beta: the version 16 text earlier builds read, with no nightly line.
+  playden::Preferences preferences;
+  for (const bool beta : {false, true}) {
+    preferences.beta_updates = beta;
+    Check(store.Save(preferences).ok(), "stable or beta preferences save");
+    const auto saved = text();
+    Check(saved.rfind("version=16\n", 0) == 0 && saved.find("nightly_updates") == std::string::npos &&
+              saved.find(beta ? "\nbeta_updates=1\n" : "\nbeta_updates=0\n") != std::string::npos,
+          "stable and beta tracks write version 16");
+    const auto loaded = store.Load();
+    Check(loaded.status == playden::PreferencesLoadStatus::kLoaded && loaded.preferences.beta_updates == beta &&
+              !loaded.preferences.nightly_updates,
+          "stable and beta tracks load back");
+  }
+  // Nightly without beta_updates is not a track: written as Stable.
+  preferences.beta_updates = false;
+  preferences.nightly_updates = true;
+  Check(store.Save(preferences).ok() && text().rfind("version=16\n", 0) == 0 && !store.Load().preferences.nightly_updates,
+        "nightly without betas saves as stable");
+  // Nightly: version 17, beta_updates=1 so the line still says betas, and nightly_updates=1 last.
+  preferences.beta_updates = true;
+  preferences.reduce_motion = true;
+  preferences.share_name = "Leo";
+  Check(store.Save(preferences).ok(), "nightly preferences save");
+  const auto saved = text();
+  Check(saved.rfind("version=17\n", 0) == 0 && saved.find("\nbeta_updates=1\n") != std::string::npos &&
+            saved.size() >= 19 && saved.substr(saved.size() - 19) == "\nnightly_updates=1\n",
+        "the nightly track writes version 17");
+  const auto loaded = store.Load();
+  Check(loaded.status == playden::PreferencesLoadStatus::kLoaded && loaded.preferences.beta_updates &&
+            loaded.preferences.nightly_updates && loaded.preferences.reduce_motion && loaded.preferences.share_name == "Leo",
+        "the nightly track loads back with the other preferences");
+  // Version 16 text with the nightly line, or version 17 without it, is not a file Playden writes.
+  auto sixteen = saved;
+  sixteen.replace(0, 10, "version=16");
+  auto missing = saved.substr(0, saved.size() - 18);
+  auto bad = saved;
+  bad.replace(bad.size() - 2, 1, "2");
+  for (const auto& written : {sixteen, missing, bad}) {
+    Check(storage.WriteAtomic("preferences.conf", playden::Bytes(written.begin(), written.end())).ok(),
+          "nightly fixture is written");
+    Check(store.Load().status == playden::PreferencesLoadStatus::kDefaultCorrupt, "a malformed nightly line is corrupt");
+  }
+}
+
 int main() {
   PreferencesPrepareIndependentRoot();
   StorageRejectsPathsOutsideItsRoot();
@@ -789,6 +842,7 @@ int main() {
   VersionEightRejectsTruncatedOrMalformedFiles();
   ContentLanguagePersistsAndOlderVersionsStayEnglish();
   CommunityPreferencesPersistAndVersionSixStillLoads();
+  UpdateTrackKeepsVersionSixteenUnlessNightly();
 
   if (failures != 0) {
     std::fprintf(stderr, "%d preference test assertion(s) failed\n", failures);

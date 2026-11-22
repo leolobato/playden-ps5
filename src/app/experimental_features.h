@@ -31,14 +31,15 @@ struct ExperimentalFeatures {
   // from builds.playden.club when the pinned one is not in place. On by default in every build since 0.12.0-beta.4;
   // the line is still accepted.
   bool publisher_pack_download = false;
-  // Line nightly-updates: with Beta updates on, Playden also offers the nightly builds listed on builds.playden.club
-  // (update::UpdateConfig::nightly_site), whichever of stable, beta and nightly is newest, and a nightly downloads its
-  // own runtime kit from there. Off in every build until the line turns it on.
+  // Line nightly-updates: Settings › Beta updates becomes the Updates picker (Stable, Beta, Nightly). On Nightly,
+  // Playden also offers the nightly builds listed on builds.playden.club (update::UpdateConfig::nightly_site),
+  // whichever of stable, beta and nightly is newest; a running nightly downloads its own runtime kit from there on any
+  // track. On by default in nightlies and local dev builds; releases need the line.
   bool nightly_updates = false;
 };
 
 // What a build has on before features.txt. Online, GOG and the publisher pack download are on in every build; all_on
-// (nightlies and local dev builds) turns on nothing more today.
+// (nightlies and local dev builds) turns on nightly updates too.
 ExperimentalFeatures DefaultExperimentalFeatures(bool all_on);
 // defaults with the features text names turned on. unknown: each line that names no feature, as written.
 ExperimentalFeatures ParseExperimentalFeatures(std::string_view text, ExperimentalFeatures defaults = {},

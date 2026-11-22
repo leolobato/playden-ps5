@@ -2720,6 +2720,28 @@ static void t18_imported_game_page(const std::filesystem::path& fixtures, const 
 }
 
 
+void synthetic_update_track(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    using playden::homebrew::Simulation;
+    Simulation simulation(fixtures, profile);
+    const auto row = [&simulation](const std::string& key) -> const playden::homebrew::ViewRow* {
+        for (const auto& item : simulation.view().rows) if (item.key == key) return &item;
+        return nullptr;
+    };
+    check(!row("settings-update-track"), "the Updates row needs the scenario");
+    check(simulation.scenario("update-track"), "the update-track scenario exists");
+    check(row("settings-update-track") && row("settings-update-track")->value == "Nightly" &&
+              simulation.state().navigation.focus_key == "settings-update-track" && !row("settings-beta-updates"),
+          "the scenario shows the Updates row on Nightly, focused");
+    check(simulation.action("cross") && !simulation.state().navigation.modals.empty() &&
+              simulation.state().navigation.modals.back().id == "update-track" && row("update-track-nightly") &&
+              row("update-track-nightly")->selected,
+          "the Updates picker opens on Nightly");
+    check(simulation.action("focus:update-track-beta") && simulation.action("cross") &&
+              simulation.state().navigation.modals.empty() && row("settings-update-track")->value == "Beta" &&
+              row("settings-nightly-wait"),
+          "choosing Beta on a nightly says it waits for a newer beta");
+}
+
 void synthetic_download_servers(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
     using playden::homebrew::Simulation;
     Simulation simulation(fixtures, profile);
@@ -5871,6 +5893,7 @@ int main(int argc, char** argv) {
     auto clean = [&] { std::error_code error; std::filesystem::remove(profile, error); };
     clean();
     synthetic_download_servers(fixtures, profile);
+    synthetic_update_track(fixtures, profile);
     clean();
     leftover_titles_simulation_uses_controller_navigation(fixtures, profile);
     fixture_game_menus(fixtures, profile);
