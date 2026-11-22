@@ -563,13 +563,58 @@ std::vector<VcRedist> MicrosoftVcRedists() {
   };
 }
 
-bool MfcFileName(std::string_view name) {
+std::vector<SteamVcRedist> SteamVcRedists() {
+  return {
+      {"80", 228981, "vcredist_x86.exe", "vcredist_x64.exe"},
+      {"90", 228982, "vcredist_x86.exe", "vcredist_x64.exe"},
+      {"100", 228983, "vcredist_x86.exe", "vcredist_x64.exe"},
+      {"110", 228984, "vcredist_x86.exe", "vcredist_x64.exe"},
+      {"120", 228985, "vcredist_x86.exe", "vcredist_x64.exe"},
+      // 2022, the newest: MFC 14 keeps one name from 2015 on, and a newer build serves programs built for an older one.
+      {"140", 228989, "VC_redist.x86.exe", "VC_redist.x64.exe"},
+  };
+}
+
+std::optional<SteamVcRedist> SteamVcRedistFor(const std::string& mfc) {
+  for (auto& redist : SteamVcRedists())
+    if (redist.mfc == mfc) return redist;
+  return std::nullopt;
+}
+
+namespace {
+
+std::string FindIn(const std::filesystem::path& folder, const std::string& lower, int depth) {
+  std::error_code error;
+  std::vector<std::filesystem::path> folders;
+  for (std::filesystem::directory_iterator it(folder, error), end; !error && it != end; it.increment(error)) {
+    const auto status = it->symlink_status(error);
+    if (error) break;
+    if (std::filesystem::is_regular_file(status) && Lower(it->path().filename().string()) == lower) return it->path().string();
+    if (std::filesystem::is_directory(status)) folders.push_back(it->path());
+  }
+  if (depth <= 0) return {};
+  std::sort(folders.begin(), folders.end());
+  for (const auto& child : folders)
+    if (auto found = FindIn(child, lower, depth - 1); !found.empty()) return found;
+  return {};
+}
+
+}  // namespace
+
+std::string FindRedistProgram(const std::string& folder, const std::string& name) {
+  if (name.empty()) return {};
+  return FindIn(folder, Lower(name), 4);
+}
+
+bool MfcFileNameOf(std::string_view name, const std::string& mfc) {
   const auto lower = Lower(name);
-  return (lower.rfind("mfc140", 0) == 0 || lower.rfind("mfcm140", 0) == 0) && lower.size() > 4 &&
+  return (lower.rfind("mfc" + mfc, 0) == 0 || lower.rfind("mfcm" + mfc, 0) == 0) && lower.size() > 4 &&
          lower.compare(lower.size() - 4, 4, ".dll") == 0 && lower.find('/') == std::string::npos;
 }
 
-bool Mfc80AssemblyFile(std::string_view target) {
+bool MfcFileName(std::string_view name) { return MfcFileNameOf(name, "140"); }
+
+bool MfcAssemblyFile(std::string_view target, const std::string& mfc, const std::string& architecture) {
   const auto lower = Lower(target);
   constexpr std::string_view kFolder = "windows/winsxs/";
   if (lower.rfind(kFolder, 0) != 0) return false;
@@ -580,13 +625,24 @@ bool Mfc80AssemblyFile(std::string_view target) {
       slash + 1 == rest.size())
     return false;
   const auto folder = rest.substr(0, slash);
-  return folder.rfind("x86_microsoft.vc80.mfc_", 0) == 0 || folder.rfind("x86_microsoft.vc80.mfcloc_", 0) == 0;
+  const std::string base = std::string(architecture == "x64" ? "amd64" : "x86") + "_microsoft.vc" + mfc.substr(0, 1) + "0.mfc";
+  return folder.rfind(base + "_", 0) == 0 || folder.rfind(base + "loc_", 0) == 0;
 }
+
+bool Mfc80AssemblyFile(std::string_view target) { return MfcAssemblyFile(target, "80", "x86"); }
 
 namespace {
 
-// The files of an IExpress setup program (Visual C++ 2005's vcredist_x86.exe): a cabinet in its resources, found by
-// its header and checked by reading it. *package is package_name's member, *beside the cabinet's other members.
+// A member name as a setup program's cabinet holds it, without the ".\" its builder may put in front (Visual C++ 2008
+// and 2010 have ".\vc_red.msi", ".\.\.\.\vc_red.cab").
+std::string CabinetMemberName(std::string name) {
+  while (name.size() > 2 && name[0] == '.' && name[1] == '\\') name.erase(0, 2);
+  return name;
+}
+
+// The files of an IExpress setup program (Visual C++ 2005's vcredist_x86.exe, and 2008's and 2010's setups): a
+// cabinet in its resources, found by its header and checked by reading it. *package is package_name's member,
+// *beside the cabinet's other members.
 bool ReadCabinetSetup(std::string_view program, const std::string& package_name, std::string* package,
                       std::map<std::string, std::string>* beside, std::string* reason) {
   constexpr std::string_view kSignature("MSCF\0\0\0\0", 8);
@@ -598,10 +654,14 @@ bool ReadCabinetSetup(std::string_view program, const std::string& package_name,
     if (size < 36 || size > program.size() - at) continue;
     std::map<std::string, std::string> members;
     std::string ignored;
+    // Only the packages and cabinets: the setup's other members (its own program, a patch, help) are decoded past.
     if (!ExtractCabinet(program.substr(at, size), [&](const std::string& name, std::string& data) {
-          members[name] = std::move(data);
+          members[CabinetMemberName(name)] = std::move(data);
           return true;
-        }, &ignored))
+        }, &ignored, [](const std::string& name) {
+          const auto lower = Lower(name);
+          return lower.size() > 4 && (lower.compare(lower.size() - 4, 4, ".msi") == 0 || lower.compare(lower.size() - 4, 4, ".cab") == 0);
+        }))
       continue;
     for (auto it = members.begin(); it != members.end(); ++it)
       if (Lower(it->first) == wanted) {
@@ -615,14 +675,14 @@ bool ReadCabinetSetup(std::string_view program, const std::string& package_name,
   return false;
 }
 
-// Visual C++ 2005's MFC assemblies from its package into the bottle: their folders under windows\winsxs, and each
-// one's manifest again in winsxs\manifests as <folder>.manifest, the name Wine looks an assembly up by.
-bool InstallMfc80Assemblies(const std::string& package, std::map<std::string, std::string>& beside,
-                            const std::filesystem::path& prefix, std::int64_t unix_time, std::size_t* files,
-                            std::string* reason) {
+// Visual C++ 2005's or 2008's MFC assemblies from its package into the bottle: their folders under windows\winsxs, and
+// each one's manifest again in winsxs\manifests as <folder>.manifest, the name Wine looks an assembly up by.
+bool InstallMfcAssemblies(const std::string& package, std::map<std::string, std::string>& beside, const std::string& mfc,
+                          const std::string& architecture, const std::filesystem::path& prefix, std::int64_t unix_time,
+                          std::size_t* files, std::string* reason) {
   std::vector<std::string> manifests;  // targets
   const auto keep = [&](const MsiFile& file) {
-    if (!Mfc80AssemblyFile(file.target)) return false;
+    if (!MfcAssemblyFile(file.target, mfc, architecture)) return false;
     const auto lower = Lower(file.target);
     if (lower.size() > 9 && lower.compare(lower.size() - 9, 9, ".manifest") == 0) manifests.push_back(file.target);
     return true;
@@ -636,7 +696,7 @@ bool InstallMfc80Assemblies(const std::string& package, std::map<std::string, st
     return false;
   };
   if (!InstallPlan(package, cabinet, prefix, RedistEntry{}, unix_time, keep, files, reason)) return false;
-  // Microsoft.VC80.MFC and Microsoft.VC80.MFCLOC, one manifest each.
+  // Microsoft.VC<n>.MFC and Microsoft.VC<n>.MFCLOC, one manifest each.
   if (manifests.size() != 2) {
     *reason = "the package holds " + std::to_string(manifests.size()) + " MFC assembly manifests, not 2";
     return false;
@@ -669,6 +729,76 @@ bool InstallMfc80Assemblies(const std::string& package, std::map<std::string, st
     ++*files;
   }
   return true;
+}
+
+// The package a version's setup program carries MFC in, for an architecture.
+std::string MfcPackageId(const std::string& mfc, const std::string& architecture) {
+  if (mfc == "80") return "vcredist.msi";
+  if (mfc == "90" || mfc == "100") return "vc_red.msi";
+  return "vcRuntimeAdditional_" + architecture;
+}
+
+// Installs MFC mfc for architecture from a Visual C++ setup program's bytes: package_id's package from its cabinet
+// (2005 to 2010) or its Burn bundle (2012 on). release is called once the packages are copied out, so the caller can
+// drop the program's bytes before the install.
+bool InstallMfcFiles(std::string_view program, const std::string& mfc, const std::string& architecture,
+                     const std::string& package_id, const std::filesystem::path& prefix, std::int64_t unix_time,
+                     const std::function<void()>& release, std::size_t* files, std::string* reason) {
+  if (mfc == "80" || mfc == "90" || mfc == "100") {
+    std::string package;
+    std::map<std::string, std::string> beside;
+    if (!ReadCabinetSetup(program, package_id, &package, &beside, reason)) return false;
+    release();
+    if (mfc != "100") {
+      if (!InstallMfcAssemblies(package, beside, mfc, architecture, prefix, unix_time, files, reason)) {
+        *reason = package_id + ": " + *reason;
+        return false;
+      }
+      return true;
+    }
+    const auto cabinet = [&](const std::string& name, std::string* bytes) {
+      for (auto& [candidate, data] : beside)
+        if (Lower(candidate) == Lower(name)) {
+          *bytes = std::move(data);
+          return true;
+        }
+      return false;
+    };
+    const auto keep = [&](const MsiFile& file) {
+      const auto slash = file.target.rfind('/');
+      return MfcFileNameOf(slash == std::string::npos ? file.target : file.target.substr(slash + 1), mfc);
+    };
+    if (!InstallPlan(package, cabinet, prefix, RedistEntry{}, unix_time, keep, files, reason)) {
+      *reason = package_id + ": " + *reason;
+      return false;
+    }
+    return true;
+  }
+  BurnMsiPackage package;
+  if (!ReadBurnMsiPackage(program, package_id, &package, reason)) return false;
+  // Its packages are copied out; the console's memory is better spent elsewhere.
+  release();
+  const auto beside = [&](const std::string& name, std::string* bytes) {
+    for (auto& [candidate, data] : package.beside)
+      if (Lower(candidate) == Lower(name)) {
+        *bytes = std::move(data);  // each cabinet is read once
+        return true;
+      }
+    return false;
+  };
+  const auto keep = [&](const MsiFile& file) {
+    const auto slash = file.target.rfind('/');
+    return MfcFileNameOf(slash == std::string::npos ? file.target : file.target.substr(slash + 1), mfc);
+  };
+  if (!InstallPlan(package.msi, beside, prefix, RedistEntry{}, unix_time, keep, files, reason)) {
+    *reason = package.msi_name + ": " + *reason;
+    return false;
+  }
+  return true;
+}
+
+std::string SteamMfcRecordName(const std::string& mfc, const std::string& architecture) {
+  return "mfc" + mfc + "-" + architecture;
 }
 
 }  // namespace
@@ -778,38 +908,66 @@ MfcInstallResult InstallMfcRuntime(const VcRedist& redist, const std::string& ca
     out.result = "installed";
     return out;
   };
-  if (redist.mfc == "80") {
-    std::string package;
-    std::map<std::string, std::string> beside;
-    if (!ReadCabinetSetup(bundle_bytes, redist.package_id, &package, &beside, &reason)) return fail(reason);
+  const auto release = [&] {
     bundle_bytes = {};
     mapped.Close();
     bundle = std::string();
-    if (!InstallMfc80Assemblies(package, beside, prefix, unix_time, &out.files, &reason))
-      return fail(redist.package_id + ": " + reason);
-    return record();
-  }
-  BurnMsiPackage package;
-  if (!ReadBurnMsiPackage(bundle_bytes, redist.package_id, &package, &reason)) return fail(reason);
-  // Its packages are copied out; the console's memory is better spent elsewhere.
-  bundle_bytes = {};
-  mapped.Close();
-  bundle = std::string();
-  const auto beside = [&](const std::string& name, std::string* bytes) {
-    for (auto& [candidate, data] : package.beside)
-      if (Lower(candidate) == Lower(name)) {
-        *bytes = std::move(data);  // each cabinet is read once
-        return true;
-      }
-    return false;
   };
-  const auto keep = [](const MsiFile& file) {
-    const auto slash = file.target.rfind('/');
-    return MfcFileName(slash == std::string::npos ? file.target : file.target.substr(slash + 1));
-  };
-  if (!InstallPlan(package.msi, beside, prefix, RedistEntry{}, unix_time, keep, &out.files, &reason))
-    return fail(package.msi_name + ": " + reason);
+  if (!InstallMfcFiles(bundle_bytes, redist.mfc, redist.architecture, redist.package_id, prefix, unix_time, release,
+                       &out.files, &reason))
+    return fail(reason);
   return record();
+}
+
+MfcInstallResult InstallMfcFromProgram(const std::string& program, const std::string& mfc, const std::string& architecture,
+                                       const std::string& prefix_dir, std::int64_t unix_time) {
+  MfcInstallResult out;
+  const auto fail = [&](std::string why) {
+    out.result = "failed";
+    out.detail = std::move(why);
+    return out;
+  };
+  const std::filesystem::path prefix(prefix_dir);
+  struct stat info {};
+  if (::stat(program.c_str(), &info) != 0 || !S_ISREG(info.st_mode) || info.st_size <= 0 ||
+      static_cast<std::uint64_t>(info.st_size) > kMaxPackageBytes)
+    return fail("the setup program is missing or not one Playden can read");
+  MappedFile mapped;
+  std::string read;
+  std::string_view bytes;
+  if (mapped.Open(program, static_cast<std::size_t>(info.st_size))) bytes = mapped.View();
+  else if (ReadFile(program, kMaxPackageBytes, &read)) bytes = read;
+  else return fail("the setup program could not be read");
+  const auto sha256 = HashArtifactBytes(bytes);
+  if (!sha256) return fail("the setup program could not be hashed");
+  if (InstalledPackages(prefix).count(*sha256)) {
+    out.result = "already";
+    return out;
+  }
+  const auto release = [&] {
+    bytes = {};
+    mapped.Close();
+    read = std::string();
+  };
+  std::string reason;
+  if (!InstallMfcFiles(bytes, mfc, architecture, MfcPackageId(mfc, architecture), prefix, unix_time, release, &out.files,
+                       &reason))
+    return fail(reason);
+  if (!RecordPackage(prefix, *sha256, SteamMfcRecordName(mfc, architecture)))
+    return fail("installed, but could not be recorded");
+  out.result = "installed";
+  out.source = "steam";
+  return out;
+}
+
+bool MfcInstalledFrom(const std::string& prefix_dir, const std::string& mfc, const std::string& architecture,
+                      const std::vector<VcRedist>& pinned) {
+  const auto installed = InstalledPackages(prefix_dir);
+  for (const auto& [sha256, name] : installed)
+    if (name == SteamMfcRecordName(mfc, architecture)) return true;
+  for (const auto& redist : pinned)
+    if (redist.mfc == mfc && redist.architecture == architecture && installed.count(redist.sha256)) return true;
+  return false;
 }
 
 bool MfcInstalled(const VcRedist& redist, const std::string& prefix_dir) {
@@ -828,23 +986,25 @@ std::optional<MfcScanRecord> ReadMfcScan(const std::string& prefix_dir) {
     at = end + 1;
     const auto space = line.find(' ');
     const auto key = line.substr(0, space), value = space == std::string::npos ? std::string() : line.substr(space + 1);
-    // Version 1 didn't look for MFC 8: such a record is walked again.
-    if (key == "mfc-scan" && value == "2") versioned = true;
+    // Versions 1 and 2 looked for MFC 14 and 8 only: such a record is walked again.
+    if (key == "mfc-scan" && value == "3") versioned = true;
     else if (key == "files") record.fingerprint = value;
-    else if (key == "x86") record.x86_program = value;
-    else if (key == "x64") record.x64_program = value;
-    else if (key == "x86-mfc80") record.x86_mfc80_program = value;
+    else if (key == "program") {
+      const auto split = value.find(' ');
+      if (split != std::string::npos && split > 0 && split + 1 < value.size())
+        record.programs[value.substr(0, split)] = value.substr(split + 1);
+    }
   }
   if (!versioned) return std::nullopt;
   return record;
 }
 
 bool WriteMfcScan(const std::string& prefix_dir, const MfcScanRecord& record) {
-  const auto line = [](const char* key, const std::string& value) {
-    return value.empty() || value.find('\n') != std::string::npos ? std::string() : std::string(key) + " " + value + "\n";
-  };
-  const auto text = "mfc-scan 2\n" + line("files", record.fingerprint) + line("x86", record.x86_program) +
-                    line("x64", record.x64_program) + line("x86-mfc80", record.x86_mfc80_program);
+  const auto clean = [](const std::string& value) { return !value.empty() && value.find('\n') == std::string::npos; };
+  std::string text = "mfc-scan 3\n";
+  if (clean(record.fingerprint)) text += "files " + record.fingerprint + "\n";
+  for (const auto& [kind, program] : record.programs)
+    if (clean(kind) && kind.find(' ') == std::string::npos && clean(program)) text += "program " + kind + " " + program + "\n";
   auto directory = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kApprovedTree);
   return directory && WriteFileAt(*directory, kMfcScanFile, text);
 }

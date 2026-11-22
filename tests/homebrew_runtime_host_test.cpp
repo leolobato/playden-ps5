@@ -31,6 +31,7 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <set>
 #include <thread>
 #include <atomic>
 #include <condition_variable>
@@ -6269,8 +6270,8 @@ void PlayInstallsMfcForGameThatImportsIt() {
   CHECK(!fs::exists(windows / "winsxs/x86_microsoft.vc80.crt_1fc8b3b9a1e18e3b_8.0.50727.6195_none_d09154e044272b9a"));
   CHECK(Read(fixture.root / "data/playden/redist/vc-8.0.50727.6195/x86/vcredist_x86.EXE") == vc2005_setup);
   auto upgrades = logged("mfc upgrade ");
-  CHECK(upgrades[upgrades.size() - 3].rfind("mfc upgrade app=220 arch=x86 mfc=140 program=tools/editor.dll installed files=2 from=download ms=", 0) == 0);
-  CHECK(upgrades[upgrades.size() - 2].rfind("mfc upgrade app=220 arch=x64 mfc=140 program=bin/chroma.dll installed files=2 from=download ms=", 0) == 0);
+  CHECK(upgrades[upgrades.size() - 3].rfind("mfc upgrade app=220 arch=x64 mfc=140 program=bin/chroma.dll installed files=2 from=download ms=", 0) == 0);
+  CHECK(upgrades[upgrades.size() - 2].rfind("mfc upgrade app=220 arch=x86 mfc=140 program=tools/editor.dll installed files=2 from=download ms=", 0) == 0);
   CHECK(upgrades.back().rfind("mfc upgrade app=220 arch=x86 mfc=80 program=FahrenheitSub.exe installed files=8 from=download ms=", 0) == 0);
   CHECK(host.Handoff());
   end_session();
@@ -6308,6 +6309,257 @@ void PlayInstallsMfcForGameThatImportsIt() {
   host.Play(220);
   WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
   CHECK(scans() == before + 1);
+  current_host = nullptr;
+  host.Shutdown();
+}
+
+// MFC from Steam's shared depots (app 228980) first: Kenshi's MFC 10, which no pinned download carries, and MFC 14
+// without Microsoft's download. A depot Steam refuses falls back to the pinned download (MFC 8); one that can't be
+// had without a pinned one leaves the game to start without it, with the notice. Start-up only takes kept copies.
+void PlayInstallsMfcFromSteamsSharedDepots() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.session_data_root = fixture.root / "data";
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return "00000000-0000-4000-8000-" + std::string(11 - std::to_string(uuids).size(), '0') + "1" + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  std::string session;
+  config.launch_title = [&session](const std::string&, const std::vector<std::string>& arguments) {
+    session = arguments.at(0).substr(8);  // "session=<UUID>"
+    return TitleResult{true, 0, "launch"};
+  };
+  GameSettingsRecord saved;
+  config.settings_record = [&saved](const playden::GameId&) -> std::optional<GameSettingsRecord> { return saved; };
+  std::vector<std::string> lines;
+  std::mutex lines_mutex;
+  config.log = [&](const std::string& line) {
+    std::lock_guard<std::mutex> lock(lines_mutex);
+    lines.push_back(line);
+  };
+  const auto logged = [&](const char* prefix) {
+    std::lock_guard<std::mutex> lock(lines_mutex);
+    std::vector<std::string> found;
+    for (const auto& line : lines)
+      if (line.rfind(prefix, 0) == 0) found.push_back(line);
+    return found;
+  };
+  // Microsoft's pinned downloads, synthetic at their own hashes: MFC 14 for x64 and MFC 8 for x86.
+  const auto x64_bundle = playden::test::msi::MfcBundle(true);
+  const auto vc2005_setup = playden::test::msi::Vc2005Setup();
+  config.vc_redists = {
+      {"x64", "https://download.example/x64/VC_redist.x64.exe", *HashArtifactBytes(x64_bundle), x64_bundle.size(),
+       "vcRuntimeAdditional_x64", "14.44.35211"},
+      {"x86", "https://download.example/vc2005/vcredist_x86.EXE", *HashArtifactBytes(vc2005_setup), vc2005_setup.size(),
+       "vcredist.msi", "8.0.50727.6195", "80"}};
+  config.redist_retry_wait = std::chrono::seconds(10);  // longer than a Play on a loaded machine
+  std::vector<std::string> fetched_urls;
+  std::mutex fetch_mutex;
+  std::atomic<bool> online{true};
+  config.fetch_range = [&](const std::string& url, std::uint64_t offset, std::uint64_t length, const std::atomic<bool>&,
+                           std::string* error) -> std::optional<std::string> {
+    std::lock_guard<std::mutex> lock(fetch_mutex);
+    fetched_urls.push_back(url);
+    if (!online) {
+      *error = "offline";
+      return std::nullopt;
+    }
+    const auto& bundle = url.find("vc2005") != std::string::npos ? vc2005_setup : x64_bundle;
+    return bundle.substr(offset, length);
+  };
+  // Steam's depots: what each holds once downloaded, and how Steam answers.
+  const auto steam_root = fixture.root / "data/playden/redist/steam";
+  std::map<std::uint32_t, std::pair<std::string, std::string>> depot_files = {
+      {228989, {"_CommonRedist/vcredist/2022/VC_redist.x64.exe", playden::test::msi::MfcBundle(true)}},
+      {228983, {"_CommonRedist/vcredist/2010/vcredist_x86.exe", playden::test::msi::Vc2010Setup(false)}}};
+  std::map<std::uint32_t, RuntimeHostConfig::SharedDepot::Status> answers = {
+      {228989, RuntimeHostConfig::SharedDepot::Status::kReady},
+      {228983, RuntimeHostConfig::SharedDepot::Status::kReady},
+      {228981, RuntimeHostConfig::SharedDepot::Status::kRefused},
+      {228984, RuntimeHostConfig::SharedDepot::Status::kUnavailable}};
+  std::set<std::uint32_t> kept;
+  std::vector<std::pair<std::uint32_t, bool>> asked;  // depot, download
+  std::atomic<RuntimeHost*> current_host{nullptr};
+  std::atomic<bool> progress_shown{false};
+  std::mutex depot_mutex;
+  // The signed-in account, read by the worker before its hold; only it lets the hook download.
+  config.online_session = []() -> std::optional<playden::runtime::OnlineSession> {
+    playden::runtime::OnlineSession session;
+    session.steam_id = 76561197960287930ull;
+    session.account_name = "player";
+    session.refresh_token = "token";
+    return session;
+  };
+  config.shared_redist = [&](std::uint32_t depot, const std::string& file_name, const playden::runtime::OnlineSession* account,
+                             const std::atomic<bool>&) {
+    std::lock_guard<std::mutex> lock(depot_mutex);
+    const bool download = account != nullptr;
+    CHECK(!account || (account->account_name == "player" && account->refresh_token == "token"));
+    asked.emplace_back(depot, download);
+    if (download)
+      if (auto* host = current_host.load()) {
+        const auto progress = host->Snapshot().play_progress;
+        if (progress.count(220) && progress.at(220) == kPlayDownloadingMfc) progress_shown = true;
+      }
+    RuntimeHostConfig::SharedDepot out;
+    const auto folder = steam_root / std::to_string(depot);
+    const auto file = [&] {
+      const auto& path = depot_files.at(depot).first;
+      CHECK(fs::path(path).filename() == file_name);
+      return (folder / path).string();
+    };
+    if (kept.count(depot)) {
+      out.status = RuntimeHostConfig::SharedDepot::Status::kReady;
+      out.file = file();
+      return out;
+    }
+    out.status = RuntimeHostConfig::SharedDepot::Status::kNotCached;
+    if (!download) return out;
+    out.status = !online ? RuntimeHostConfig::SharedDepot::Status::kUnavailable
+                 : answers.count(depot) ? answers.at(depot) : RuntimeHostConfig::SharedDepot::Status::kFailed;
+    if (out.status != RuntimeHostConfig::SharedDepot::Status::kReady) {
+      out.detail = "steam said no";
+      return out;
+    }
+    const auto& [path, bytes] = depot_files.at(depot);
+    Write(folder / path, bytes, 0644);
+    kept.insert(depot);
+    out.file = file();
+    out.downloaded = true;
+    return out;
+  };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
+  Write(game / "hl2.exe", "existing-game", 0644);
+  Write(game / "bin/chroma.dll", ImportingDll(true, "MFC140U.dll"), 0644);
+  Write(game / "kenshi.exe", ImportingDll(false, "mfc100u.dll"), 0644);
+  Write(game / "FahrenheitSub.exe", ImportingDll(false, "MFC80.DLL"), 0644);
+  Write(game / "tools/old.dll", ImportingDll(true, "mfc110.dll"), 0644);
+  const auto windows = fixture.root / "data/playden/games/steam-220/library/prefixes/game/drive_c/windows";
+  const auto end_session = [&](RuntimeHost& host) {
+    const auto sessions = fixture.root / "data/playden/games/steam-220/logs/sessions";
+    fs::create_directories(sessions);
+    CHECK(chmod((fixture.root / "data/playden/games/steam-220/logs").c_str(), 0700) == 0);
+    CHECK(chmod(sessions.c_str(), 0700) == 0);
+    Write(sessions / (session + ".json"),
+          R"({"schema_version":1,"session_id":")" + session +
+              R"(","install_id":"steam-220","title_id":"FAKE78001","origin":"playden","settings_revision":1,)"
+              R"("runtime_bundle_id":"wine-wow64","phase":"exited"})" "\n", 0600);
+    WaitFor(host, [](const RuntimeSnapshot& s) { return s.launch && s.launch->state == LaunchState::kExited; }, 30);
+  };
+  // Offline while the game is set up: nothing is installed, and the game is ready all the same.
+  online = false;
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(Hl2());
+    const auto prepared = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(220) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    CHECK(!prepared.refusals.count(220));
+    CHECK(!fs::exists(windows / "system32/mfc140u.dll") && kept.empty());
+    host.Shutdown();
+  }
+  {
+    std::lock_guard<std::mutex> lock(depot_mutex);
+    asked.clear();
+  }
+  // Settings saved while Playden was closed are published at start-up, which doesn't download.
+  saved.revision = 1;
+  saved.overrides = {{"resolution", "1280x720"}};
+  online = true;
+  std::this_thread::sleep_for(std::chrono::milliseconds(10100));  // past the retry wait
+  RuntimeHost host(config);
+  current_host = &host;
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  CHECK(!logged("startup settings app=220 applied").empty());
+  CHECK(kept.empty());
+  {
+    std::lock_guard<std::mutex> lock(depot_mutex);
+    CHECK(!asked.empty() && std::all_of(asked.begin(), asked.end(), [](const auto& call) { return !call.second; }));
+  }
+  {
+    std::lock_guard<std::mutex> lock(fetch_mutex);
+    fetched_urls.clear();
+  }
+  host.Play(220);
+  auto played = WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+  // MFC 14 and 10 from Steam's depots, downloaded once; MFC 8's depot refused, so Microsoft's download; MFC 11 can't be
+  // had at all (Steam unavailable, no pinned download): the game starts, with the notice.
+  CHECK(Read(windows / "system32/mfc140u.dll") == "MFC64U");
+  CHECK(Read(windows / "syswow64/mfc100u.dll") == "MFC100U-32" && !fs::exists(windows / "syswow64/msvcr100.dll"));
+  CHECK(Read(windows / "winsxs" / playden::test::msi::kVc2005MfcFolder / "mfc80.dll") == "MFC80");
+  CHECK(!fs::exists(windows / "system32/mfc110.dll"));
+  CHECK(played.play_notices.count(220) && played.play_notices.at(220) == kPlayMfcNotDownloaded);
+  CHECK(progress_shown && !played.play_progress.count(220));
+  {
+    std::lock_guard<std::mutex> lock(fetch_mutex);
+    CHECK(fetched_urls.size() == 1 && fetched_urls[0].find("vc2005") != std::string::npos);  // never MFC 14's
+  }
+  const auto upgrades = logged("mfc upgrade app=220 ");
+  const auto has = [&](const std::string& start) {
+    return std::any_of(upgrades.begin(), upgrades.end(), [&](const std::string& line) { return line.rfind(start, 0) == 0; });
+  };
+  CHECK(has("mfc upgrade app=220 arch=x64 mfc=140 program=bin/chroma.dll installed files=2 from=steam depot 228989 downloaded ms="));
+  CHECK(has("mfc upgrade app=220 arch=x86 mfc=100 program=kenshi.exe installed files=3 from=steam depot 228983 downloaded ms="));
+  CHECK(has("mfc upgrade app=220 arch=x86 mfc=80 program=FahrenheitSub.exe steam depot 228981 refused: steam said no; "
+            "Microsoft's download instead"));
+  CHECK(has("mfc upgrade app=220 arch=x86 mfc=80 program=FahrenheitSub.exe installed files=8 from=download ms="));
+  CHECK(has("mfc upgrade app=220 arch=x64 mfc=110 program=tools/old.dll skipped: depot 228984 unavailable: steam said no"));
+  CHECK(host.Handoff());
+  end_session(host);
+
+  // Installed: the next Play neither downloads nor installs again, from either source; MFC 11's failed download isn't
+  // tried again right away.
+  {
+    std::lock_guard<std::mutex> lock(depot_mutex);
+    asked.clear();
+  }
+  const auto count = logged("mfc upgrade ").size();
+  host.Play(220);
+  played = WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+  {
+    std::lock_guard<std::mutex> lock(depot_mutex);
+    // Only the kept copy of MFC 11's depot is looked for (a Play may run the step more than once).
+    CHECK(!asked.empty() && std::all_of(asked.begin(), asked.end(), [](const auto& call) {
+      return call == std::pair<std::uint32_t, bool>{228984, false};
+    }));
+  }
+  const auto after = logged("mfc upgrade ");
+  CHECK(after.size() > count && after.back().find("depot 228984 download failed ") != std::string::npos &&
+        after.back().find(" s ago") != std::string::npos);
+  {
+    std::lock_guard<std::mutex> lock(fetch_mutex);
+    CHECK(fetched_urls.size() == 1);
+  }
+  CHECK(host.Handoff());
+  end_session(host);
+
+  // Once Steam gives it, MFC 11 comes in too (past the retry wait), from a fresh download.
+  answers[228984] = RuntimeHostConfig::SharedDepot::Status::kReady;
+  depot_files[228984] = {"_CommonRedist/vcredist/2012/vcredist_x64.exe", playden::test::msi::MfcBundle(true, true, true, 64)};
+  std::this_thread::sleep_for(std::chrono::milliseconds(10100));
+  host.Play(220);
+  played = WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+  // This synthetic bundle carries MFC 14's files only: the wrong package for MFC 11 is refused and nothing goes in.
+  const auto last = logged("mfc upgrade ");
+  CHECK(last.size() > after.size() &&
+        last.back().rfind("mfc upgrade app=220 arch=x64 mfc=110 program=tools/old.dll skipped: depot 228984: ", 0) == 0);
+  CHECK(kept.count(228984) && !fs::exists(windows / "system32/mfc110.dll"));
+  CHECK(played.play_notices.count(220) && played.play_notices.at(220) == kPlayMfcNotInstalled);
   current_host = nullptr;
   host.Shutdown();
 }
@@ -11913,6 +12165,7 @@ int main(int argc, char** argv) {
   SteamEntryWithoutFolderStartsInInstallRoot();
   PreparesUdkGameWithEulaAccepted();
   PlayInstallsMfcForGameThatImportsIt();
+  PlayInstallsMfcFromSteamsSharedDepots();
   ResumesInterruptedCaptureFromSavedRequest();
   ResumesInterruptedCaptureFromSavedRequest(true);
   RefreshesInstalledTitleToRespunKit();

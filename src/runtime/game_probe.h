@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <set>
 #include <string>
 #include <string_view>
@@ -92,21 +93,22 @@ std::string UnityGameProgram(const std::string& install_root, const std::string&
 // UnrealGameProgram, else UnityGameProgram: the program to start in place of executable, or empty to keep it.
 std::string GameProgramInstead(const std::string& install_root, const std::string& executable);
 
-// Which of a game's programs and libraries import Microsoft's MFC library (mfc140*.dll, mfcm140*.dll, directly
-// or delay-loaded), which Wine doesn't provide: Playden installs Microsoft's own into the game's bottle. Every
-// .exe and .dll of the game folder is read, kMfcScanDepth folders deep, at most kMfcScanPrograms of them (headers
-// only) in at most kMfcScanFolders folders, without following links; the walk ends once every kind below is
-// found. The first program found per kind, relative to the root.
+// Which of a game's programs and libraries import Microsoft's MFC library (mfc<version>*.dll, mfcm<version>*.dll,
+// directly or delay-loaded, for Visual C++ 2005's MFC 8 to 2015-2022's MFC 14), which Wine doesn't provide: Playden
+// installs Microsoft's own into the game's bottle. Every .exe and .dll of the game folder is read, kMfcScanDepth
+// folders deep, at most kMfcScanPrograms of them (headers only) in at most kMfcScanFolders folders, without following
+// links; the walk ends once every kind is found. The first program found per kind, relative to the root.
 struct MfcImports {
-  std::string x86_program;  // a PE32 one
-  std::string x64_program;  // a PE32+ one
-  // A PE32 one importing Visual C++ 2005's MFC (mfc80*.dll, mfcm80*.dll: Fahrenheit Remastered's game program). A
-  // PE32+ one isn't looked for: Playden has only the x86 package of that version.
-  std::string x86_mfc80_program;
-  std::size_t programs = 0;  // programs read
-  std::size_t folders = 0;   // folders listed
-  bool truncated = false;    // stopped at kMfcScanPrograms or kMfcScanFolders
+  // By kind, "<architecture>-<version>": "x86-140" for a PE32 program importing mfc140u.dll, "x64-100" for a PE32+
+  // one importing mfc100.dll.
+  std::map<std::string, std::string> programs;
+  std::size_t programs_read = 0;  // programs read
+  std::size_t folders = 0;        // folders listed
+  bool truncated = false;         // stopped at kMfcScanPrograms or kMfcScanFolders
 };
+// The MFC version a library name is ("mfc100u.dll", "MFCM140.dll" → "100", "140"), of those Playden installs; empty
+// for any other.
+std::string MfcLibraryVersion(const std::string& name);
 inline constexpr int kMfcScanDepth = 6;
 inline constexpr std::size_t kMfcScanPrograms = 4096;
 inline constexpr std::size_t kMfcScanFolders = 4096;

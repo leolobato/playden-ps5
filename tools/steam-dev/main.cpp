@@ -22,6 +22,10 @@
 //   playden-steam-dev --data <folder> workshop-sync <app id> <bottle folder>
 //                                                    downloads them as Playden does, into
 //                                                    <bottle folder>/drive_c/Program Files (x86)/Steam/steamapps/workshop
+//   playden-steam-dev --data <folder> shared-redist <depot> <cache folder>
+//                                                    one depot of app 228980 (Steamworks Common Redistributables), as
+//                                                    Playden keeps it for games' redistributables: downloaded into
+//                                                    <cache folder>/<depot> (or the copy there), then each file listed
 //
 // <folder> is absolute, with no link in any component. Output never holds a token or the account name.
 #include "homebrew/qr.hpp"
@@ -30,7 +34,9 @@
 #include "steam/backend/collections_client.h"
 #include "steam/backend/cm_client.h"
 #include "steam/backend/cdn_client.h"
+#include "steam/backend/depot_installer.h"
 #include "steam/backend/proto_wire.h"
+#include "steam/backend/shared_redist.h"
 #include "steam/backend/workshop_client.h"
 #include "steam/backend/workshop_items.h"
 #include "steam/session_store.h"
@@ -61,7 +67,8 @@ namespace proto = playden::steam::proto;
 int Usage() {
   std::fputs("usage: playden-steam-dev --data <folder> sign-in | sign-in-qr <png file> | collections |\n"
              "                         config <namespace> [version] <out file> | workshop <app id> |\n"
-             "                         workshop-sync <app id> <bottle folder>\n", stderr);
+             "                         workshop-sync <app id> <bottle folder> |\n"
+             "                         shared-redist <depot> <cache folder>\n", stderr);
   return 2;
 }
 
@@ -373,6 +380,32 @@ int Workshop(const std::string& folder, std::uint32_t app_id, const std::string&
   return result.error == steam::InstallError::kNone ? 0 : 1;
 }
 
+// One depot of app 228980 into the cache, as Playden's games get their redistributables, then its files.
+int SharedRedist(const std::string& folder, std::uint32_t depot, const std::string& cache) {
+  Storage storage(folder);
+  const auto session = LoadSession(storage);
+  if (!session) return 1;
+  steam::CmClient cm(PLAYDEN_STEAM_DEV_CA_BUNDLE, storage);
+  steam::CdnClient cdn(PLAYDEN_STEAM_DEV_CA_BUNDLE);
+  steam::DepotInstaller installer(cm, cdn);
+  steam::SharedRedistCache redist(
+      [&cm](const StoredSession& s, const std::vector<std::uint32_t>& apps, const std::atomic<bool>& c) {
+        return cm.FetchAppInfo(s, apps, c);
+      },
+      installer);
+  std::atomic<bool> cancel{false};
+  const auto result = redist.Get(&*session, depot, cache, true, cancel);
+  std::printf("depot=%u status=%s downloaded=%d detail=%s\n", depot, steam::SharedDepotStatusName(result.status),
+              result.downloaded ? 1 : 0, result.detail.c_str());
+  if (result.status != steam::SharedDepotResult::Status::kReady) return 1;
+  std::FILE* list = std::fopen((result.folder + "/" + steam::DepotInstaller::kFileTree).c_str(), "r");
+  if (!list) return 1;
+  char line[1024];
+  while (std::fgets(line, sizeof line, list)) std::fputs(line, stdout);
+  std::fclose(list);
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -390,6 +423,8 @@ int main(int argc, char** argv) {
   if (command == "workshop" && argc - i == 1) return Workshop(folder, static_cast<std::uint32_t>(std::strtoul(argv[i], nullptr, 10)), {});
   if (command == "workshop-sync" && argc - i == 2 && argv[i + 1][0] == '/')
     return Workshop(folder, static_cast<std::uint32_t>(std::strtoul(argv[i], nullptr, 10)), argv[i + 1]);
+  if (command == "shared-redist" && argc - i == 2 && argv[i + 1][0] == '/')
+    return SharedRedist(folder, static_cast<std::uint32_t>(std::strtoul(argv[i], nullptr, 10)), argv[i + 1]);
   if (command == "config") {
     if (argc - i == 2) return Config(folder, std::strtoul(argv[i], nullptr, 10), 0, argv[i + 1]);
     if (argc - i == 3) return Config(folder, std::strtoul(argv[i], nullptr, 10), std::strtoull(argv[i + 1], nullptr, 10), argv[i + 2]);

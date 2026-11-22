@@ -643,6 +643,63 @@ inline std::string Vc2005Setup() {
   return out;
 }
 
+// Like Visual C++ 2010's vc_red.msi: built from merge modules, so MFC's folder is SystemFolder_x86_VC (x64:
+// System64Folder_amd64_VC) below a Win\System of its own, which a type 51 custom action sets to [SystemFolder]
+// ([System64Folder]). MFC 10's files, a resource DLL and the C runtime, from the external vc_red.cab
+// (Vc2010Cabinet). Vc2010Setup wraps both in its setup program's cabinet, under ".\" names as Microsoft's has them.
+inline std::string Vc2010Cabinet(bool x64) {
+  return StoredCabinet({{"F_CENTRAL_mfc100u", x64 ? "MFC100U-64" : "MFC100U-32"},
+                        {"F_CENTRAL_mfcm100", x64 ? "MFCM100-64" : "MFCM100-32"},
+                        {"F_CENTRAL_mfc100enu", "ENU"},
+                        {"F_CENTRAL_msvcr100", "MICROSOFT-CRT"}});
+}
+// sequence: 0 runs the custom action in InstallExecuteSequence, 1 leaves it out of the sequence, 2 lists it under a
+// condition that doesn't hold.
+inline std::string Vc2010Package(bool x64, int sequence = 0) {
+  const std::string windows = x64 ? "WindowsFolder_amd64_VC" : "WindowsFolder_x86_VC";
+  const std::string system = x64 ? "System64Folder_amd64_VC" : "SystemFolder_x86_VC";
+  std::vector<TableSpec> tables;
+  tables.push_back({"Property", {{"Property", 's'}, {"Value", 's'}},
+                    {{"ProductCode", "{F0C3E5D1-1ADE-321E-8167-68EF0DE699A5}"},
+                     {"ProductName", "Microsoft Visual C++ 2010  x86 Redistributable - 10.0.40219"},
+                     {"ProductVersion", "10.0.40219"}}});
+  tables.push_back({"Directory", {{"Directory", 's'}, {"Directory_Parent", 's'}, {"DefaultDir", 's'}},
+                    {{"TARGETDIR", "", "SourceDir"}, {windows, "TARGETDIR", "Win"}, {system, windows, x64 ? "System64" : "System"}}});
+  tables.push_back({"Feature", {{"Feature", 's'}, {"Feature_Parent", 's'}, {"Level", 'i'}}, {{"F_Main", "", "1"}}});
+  tables.push_back({"Condition", {{"Feature_", 's'}, {"Level", 'i'}, {"Condition", 's'}}, {}});
+  tables.push_back({"Component",
+                    {{"Component", 's'}, {"ComponentId", 's'}, {"Directory_", 's'}, {"Attributes", 'i'}, {"Condition", 's'}, {"KeyPath", 's'}},
+                    {{"C_MFC", "{A}", system, x64 ? "256" : "0", "", ""}, {"C_CRT", "{B}", system, x64 ? "256" : "0", "", ""}}});
+  tables.push_back({"FeatureComponents", {{"Feature_", 's'}, {"Component_", 's'}}, {{"F_Main", "C_MFC"}, {"F_Main", "C_CRT"}}});
+  tables.push_back({"File",
+                    {{"File", 's'}, {"Component_", 's'}, {"FileName", 's'}, {"FileSize", 'l'}, {"Version", 's'},
+                     {"Language", 's'}, {"Attributes", 'i'}, {"Sequence", 'i'}},
+                    {{"F_CENTRAL_mfc100u", "C_MFC", "mfc100u.dll", "10", "", "", "512", "1"},
+                     {"F_CENTRAL_mfcm100", "C_MFC", "mfcm100.dll", "10", "", "", "512", "2"},
+                     {"F_CENTRAL_mfc100enu", "C_MFC", "mfc100enu.dll", "3", "", "", "512", "3"},
+                     {"F_CENTRAL_msvcr100", "C_CRT", "msvcr100.dll", "13", "", "", "512", "4"}}});
+  tables.push_back({"Media", {{"DiskId", 'i'}, {"LastSequence", 'i'}, {"DiskPrompt", 's'}, {"Cabinet", 's'}},
+                    {{"1", "4", "", "vc_red.cab"}}});
+  tables.push_back({"Registry",
+                    {{"Registry", 's'}, {"Root", 'i'}, {"Key", 's'}, {"Name", 's'}, {"Value", 's'}, {"Component_", 's'}}, {}});
+  tables.push_back({"Environment", {{"Environment", 's'}, {"Name", 's'}, {"Value", 's'}, {"Component_", 's'}}, {}});
+  tables.push_back({"CustomAction", {{"Action", 's'}, {"Type", 'i'}, {"Source", 's'}, {"Target", 's'}},
+                    {{system, "51", system, x64 ? "[System64Folder]" : "[SystemFolder]"},
+                     {"CA_Other", "51", "SOME_PROPERTY", "[SystemFolder]"}}});
+  std::vector<std::vector<std::string>> steps = {{"CostInitialize", "", "800"}, {"CA_Other", "", "410"}};
+  if (sequence == 0) steps.push_back({system, "", "400"});
+  if (sequence == 2) steps.push_back({system, "VersionNT < 500", "400"});
+  tables.push_back({"InstallExecuteSequence", {{"Action", 's'}, {"Condition", 's'}, {"Sequence", 'i'}}, steps});
+  return Package(tables, {});
+}
+inline std::string Vc2010Setup(bool x64) {
+  std::string out = "MZ";
+  out.resize(0x400, '\0');
+  out += StoredCabinet({{".\\.\\.\\.\\vc_red.msi", Vc2010Package(x64)}, {".\\.\\.\\.\\vc_red.cab", Vc2010Cabinet(x64)},
+                        {".\\.\\.\\.\\Setup.exe", "MZ-setup"}});
+  return out;
+}
+
 // A small package like XNA's or a runtime's: files in Program Files\<folder> from its own stored cabinet, and one
 // registry value ("Installed" under HKLM\SOFTWARE\<folder>).
 inline std::string RuntimePackage(const std::string& folder, const std::vector<std::pair<std::string, std::string>>& files) {

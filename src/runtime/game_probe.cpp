@@ -488,20 +488,31 @@ std::string UnityPlayerBeside(const fs::path& directory_path, const std::vector<
   return folder.empty() ? players.front() : folder + "/" + players.front();
 }
 
-// Microsoft's MFC library, which Wine doesn't provide: mfc140.dll, mfc140u.dll, mfcm140.dll, mfcm140u.dll (and
-// whatever later 140 builds add).
-bool MfcLibrary(const std::string& lower) {
-  return (lower.rfind("mfc140", 0) == 0 || lower.rfind("mfcm140", 0) == 0) && EndsWith(lower, ".dll");
+}  // namespace
+
+std::string MfcLibraryVersion(const std::string& name) {
+  const auto lower = Lower(name);
+  if (!EndsWith(lower, ".dll")) return {};
+  std::string_view rest(lower);
+  if (rest.rfind("mfcm", 0) == 0) rest.remove_prefix(4);
+  else if (rest.rfind("mfc", 0) == 0) rest.remove_prefix(3);
+  else return {};
+  // The version's digits, then "u" (Unicode) or nothing before ".dll": mfc140u.dll, mfcm80.dll. mfc100enu.dll and
+  // the like are resources a program doesn't import; the debug builds (mfc100ud.dll) aren't in any redistributable.
+  for (const char* version : {"140", "120", "110", "100", "90", "80"}) {
+    const std::string_view digits(version);
+    if (rest.rfind(digits, 0) != 0) continue;
+    const auto tail = rest.substr(digits.size());
+    if (tail == ".dll" || tail == "u.dll") return version;
+  }
+  return {};
 }
 
-// Visual C++ 2005's: mfc80.dll, mfc80u.dll, mfcm80.dll, mfcm80u.dll.
-bool Mfc80Library(const std::string& lower) {
-  return (lower.rfind("mfc80", 0) == 0 || lower.rfind("mfcm80", 0) == 0) && EndsWith(lower, ".dll");
-}
+namespace {
 
-bool MfcScanDone(const MfcImports& out) {
-  return out.truncated || (!out.x86_program.empty() && !out.x64_program.empty() && !out.x86_mfc80_program.empty());
-}
+constexpr std::size_t kMfcKinds = 12;  // two architectures, six versions
+
+bool MfcScanDone(const MfcImports& out) { return out.truncated || out.programs.size() >= kMfcKinds; }
 
 void ScanMfc(const fs::path& root, const std::string& relative, int depth, MfcImports* out, std::size_t* seen) {
   if (out->folders >= kMfcScanFolders) {
@@ -523,15 +534,11 @@ void ScanMfc(const fs::path& root, const std::string& relative, int depth, MfcIm
     const auto path = relative.empty() ? name : relative + "/" + name;
     const auto facts = ReadPe((root / path).string(), true);
     if (!facts.valid) continue;
-    // Each kind is looked for on its own: a program filling one doesn't hide another's import of the other.
-    const auto imports = [&](bool (*library)(const std::string&)) {
-      for (const auto* list : {&facts.imports, &facts.delay_imports})
-        if (std::any_of(list->begin(), list->end(), library)) return true;
-      return false;
-    };
-    auto& program = facts.pe64 ? out->x64_program : out->x86_program;
-    if (program.empty() && imports(MfcLibrary)) program = path;
-    if (!facts.pe64 && out->x86_mfc80_program.empty() && imports(Mfc80Library)) out->x86_mfc80_program = path;
+    // Each version is looked for on its own: a program importing two of them counts for both.
+    for (const auto* list : {&facts.imports, &facts.delay_imports})
+      for (const auto& library : *list)
+        if (const auto version = MfcLibraryVersion(library); !version.empty())
+          out->programs.emplace(std::string(facts.pe64 ? "x64-" : "x86-") + version, path);
   }
   if (depth >= kMfcScanDepth) return;
   for (const auto& [name, directory] : entries)
@@ -582,7 +589,7 @@ MfcImports FindMfcImports(const std::string& install_root) {
   MfcImports out;
   std::size_t seen = 0;
   ScanMfc(fs::path(install_root), std::string(), 0, &out, &seen);
-  out.programs = seen;
+  out.programs_read = seen;
   return out;
 }
 

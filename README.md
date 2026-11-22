@@ -136,8 +136,9 @@ Other versions can work, but these are the ones we know.
   on the PS5 Home screen, and it is isolated: its files, settings and crashes stay inside it.
 - **The runtime kit is separate from Playden.** The kit holds Wine for PS5, the graphics drivers, a clean Windows
   environment and the per-game app shell. Playden checks that the installed kit is complete before it uses it.
-- **Microsoft's MFC library.** Wine doesn't include it. When a game needs it, Playden downloads Microsoft's Visual C++
-  redistributable (about 25 MB, once per console) and installs only its MFC files into that game's Windows folder.
+- **Microsoft's MFC library.** Wine doesn't include it. When a game needs it (Visual C++ 2005 to 2022), Playden
+  downloads the Visual C++ redistributable Steam shares between games (6 to 25 MB, once per console), or Microsoft's own
+  download when Steam's can't be had, and installs only its MFC files into that game's Windows folder.
 
 ## Online play (experimental)
 
@@ -326,7 +327,7 @@ you update it.
 | `/data/playden/staging` | PS5 titles and game folders being built |
 | `/data/playden/steam-client` | Valve's Steam client, for games with Steam features set to Online |
 | `/data/playden/exported-recipes` | Recipes you exported as files |
-| `/data/playden/redist` | Microsoft runtimes Playden downloads for games (MFC, Visual C++) |
+| `/data/playden/redist` | Microsoft runtimes Playden downloads for games (MFC, Visual C++); Steam's shared ones in `steam/` |
 | `/data/playden/title-remover` | Requests to remove a PS5 title |
 | `/data/playden/kits` | The runtime kit (belongs to root) |
 | `/data/playden/title-rule` | The list of PS5 titles Playden may start (belongs to root) |

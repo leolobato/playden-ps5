@@ -767,11 +767,12 @@ bool PlanBuilder::Build(MsiInstallPlan* plan, std::string* reason) {
   };
   *plan = MsiInstallPlan{};
   Table property, directory, component, feature, feature_components, condition, file, media, registry, environment,
-      custom_action;
+      custom_action, execute_sequence;
   for (const auto& [name, table] : std::initializer_list<std::pair<const char*, Table*>>{
            {"Property", &property}, {"Directory", &directory}, {"Component", &component}, {"Feature", &feature},
            {"FeatureComponents", &feature_components}, {"Condition", &condition}, {"File", &file}, {"Media", &media},
-           {"Registry", &registry}, {"Environment", &environment}, {"CustomAction", &custom_action}})
+           {"Registry", &registry}, {"Environment", &environment}, {"CustomAction", &custom_action},
+           {"InstallExecuteSequence", &execute_sequence}})
     if (!database_.ReadTable(name, table)) return fail("a package table could not be read");
   plan->custom_actions = custom_action.rows.size();
 
@@ -791,6 +792,27 @@ bool PlanBuilder::Build(MsiInstallPlan* plan, std::string* reason) {
   for (const auto& row : directory.rows)
     directory_rows_[At(directory, row, "Directory").text] = {At(directory, row, "Directory_Parent").text,
                                                              At(directory, row, "DefaultDir").text};
+  // A directory a custom action sets to a standard folder is that folder (type 51 on the directory's key, or type 35):
+  // the merge modules of Visual C++ 2010 and 2012 place MFC in SystemFolder_x86_VC with SystemFolder_x86_VC =
+  // [SystemFolder], under a Win\System of their own that is never used. Only an action a quiet install runs counts:
+  // one InstallExecuteSequence lists, with no condition or one that holds.
+  std::set<std::string> executed;
+  for (const auto& row : execute_sequence.rows) {
+    const auto& when = At(execute_sequence, row, "Condition");
+    if (when.null || when.text.empty() || EvaluateMsiCondition(when.text, properties_).value_or(false))
+      executed.insert(At(execute_sequence, row, "Action").text);
+  }
+  for (const auto& row : custom_action.rows) {
+    const auto type = At(custom_action, row, "Type").number & 0x3f;
+    if (type != 35 && type != 51) continue;
+    if (!executed.count(At(custom_action, row, "Action").text)) continue;
+    const auto& source = At(custom_action, row, "Source").text;
+    const auto& target = At(custom_action, row, "Target").text;
+    if (!directory_rows_.count(source) || StandardFolder(source) || target.size() < 3 || target.front() != '[' ||
+        target.back() != ']')
+      continue;
+    if (const auto standard = StandardFolder(target.substr(1, target.size() - 2))) directories_[source] = standard;
+  }
   for (const auto& [key, unused] : directory_rows_) {
     (void)unused;
     if (const auto path = Directory(key)) properties_[key] = WindowsPath(*path) + (path->empty() ? "" : "\\");

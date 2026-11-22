@@ -1,4 +1,5 @@
 #include "runtime/game_probe.h"
+#include "runtime/redist_install.h"
 #include "runtime/game_settings.h"
 
 #include "steam_stub_fixture.h"
@@ -1437,18 +1438,22 @@ int main() {
   }
 
   {  // MFC: a Unity plugin deep in the game's data imports mfc140u.dll (Moonlighter); per architecture.
+    const auto of = [](const MfcImports& found, const char* kind) {
+      const auto at = found.programs.find(kind);
+      return at == found.programs.end() ? std::string() : at->second;
+    };
     const auto root = fresh();
     WritePe(root / "Moonlighter.exe", {true, {"UnityPlayer.dll", "KERNEL32.dll"}});
     WritePe(root / "Moonlighter_Data/Plugins/UnityNativeChromaSDK.dll", {true, {"KERNEL32.dll", "MFC140U.dll"}});
     fs::create_directories(root / "Moonlighter_Data/Managed");
     auto found = FindMfcImports(root.string());
-    CHECK(found.x64_program == "Moonlighter_Data/Plugins/UnityNativeChromaSDK.dll" && found.x86_program.empty());
-    CHECK(found.programs == 2 && !found.truncated);
+    CHECK(of(found, "x64-140") == "Moonlighter_Data/Plugins/UnityNativeChromaSDK.dll" && found.programs.size() == 1);
+    CHECK(found.programs_read == 2 && !found.truncated);
     // A 32-bit helper that delay-loads mfcm140.dll counts for x86; other DLLs named alike don't.
     WritePe(root / "Tools/Editor.exe", {false, {"KERNEL32.dll"}, false, false, "", 0x1400, false, {"mfcm140.dll"}});
-    WritePe(root / "Tools/Other.dll", {false, {"mfc42.dll", "mfc140x.lib", "msvcp140.dll"}});
+    WritePe(root / "Tools/Other.dll", {false, {"mfc42.dll", "mfc140x.lib", "msvcp140.dll", "mfc100enu.dll"}});
     found = FindMfcImports(root.string());
-    CHECK(found.x86_program == "Tools/Editor.exe" && !found.x64_program.empty());
+    CHECK(of(found, "x86-140") == "Tools/Editor.exe" && !of(found, "x64-140").empty() && found.programs.size() == 2);
     // PhysX's loader, imported or delay-loaded (a game may not load it until it needs it); a bare engine DLL doesn't count.
     WritePe(root / "Physx/Direct.exe", {false, {"KERNEL32.dll", "PhysXLoader.dll"}});
     WritePe(root / "Physx/Delayed.exe", {false, {"KERNEL32.dll"}, false, false, "", 0x1400, false, {"PhysXLoader.dll"}});
@@ -1459,48 +1464,61 @@ int main() {
     const auto plain = fresh();
     WritePe(plain / "Game.exe", {true, {"KERNEL32.dll", "VCRUNTIME140.dll", "d3d11.dll"}});
     found = FindMfcImports(plain.string());
-    CHECK(found.x86_program.empty() && found.x64_program.empty() && found.programs == 1);
+    CHECK(found.programs.empty() && found.programs_read == 1);
     // Too deep is not looked into; a link is not followed.
     WritePe(plain / "a/b/c/d/e/f/g/Deep.dll", {true, {"mfc140.dll"}});
     fs::create_directory_symlink(root, plain / "linked");
     found = FindMfcImports(plain.string());
-    CHECK(found.x86_program.empty() && found.x64_program.empty());
+    CHECK(found.programs.empty());
     WritePe(plain / "a/b/c/d/e/f/Six.dll", {true, {"mfc140.dll"}});
-    CHECK(FindMfcImports(plain.string()).x64_program == "a/b/c/d/e/f/Six.dll");
+    CHECK(of(FindMfcImports(plain.string()), "x64-140") == "a/b/c/d/e/f/Six.dll");
     // Once every kind is found the walk ends: the folder after them isn't listed.
-    const auto both = fresh();
-    WritePe(both / "A.dll", {true, {"mfc140u.dll"}});
-    WritePe(both / "B.dll", {false, {"mfc140u.dll"}});
-    WritePe(both / "D.dll", {false, {"MFC80U.DLL"}});
-    WritePe(both / "later/C.dll", {true, {"KERNEL32.dll"}});
-    found = FindMfcImports(both.string());
-    CHECK(!found.x86_program.empty() && !found.x64_program.empty() && found.x86_mfc80_program == "D.dll" &&
-          found.folders == 1 && found.programs == 3);
-    CHECK(!found.truncated);
+    const auto every = fresh();
+    for (const char* version : kMfcVersions) {
+      WritePe(every / (std::string("x64-") + version + ".dll"), {true, {"mfc" + std::string(version) + "u.dll"}});
+      WritePe(every / (std::string("x86-") + version + ".dll"), {false, {"MFCM" + std::string(version) + ".DLL"}});
+    }
+    WritePe(every / "later/C.dll", {true, {"KERNEL32.dll"}});
+    found = FindMfcImports(every.string());
+    CHECK(found.programs.size() == 12 && of(found, "x86-90") == "x86-90.dll" && of(found, "x64-80") == "x64-80.dll");
+    CHECK(found.folders == 1 && found.programs_read == 12 && !found.truncated);
   }
 
-  {  // MFC 8 (Visual C++ 2005): Fahrenheit Remastered's game program imports MFC80.DLL. It is looked for on its own: a
-     // 32-bit program with MFC 14 found first doesn't hide it, nor does one with both.
+  {  // Each version on its own: Fahrenheit Remastered's game program imports MFC80.DLL, Kenshi's mfc100u.dll. A 32-bit
+     // program with MFC 14 found first doesn't hide another version, nor does one with two.
+    const auto of = [](const MfcImports& found, const char* kind) {
+      const auto at = found.programs.find(kind);
+      return at == found.programs.end() ? std::string() : at->second;
+    };
+    CHECK(MfcLibraryVersion("MFC80.DLL") == "80" && MfcLibraryVersion("mfcm90u.dll") == "90" &&
+          MfcLibraryVersion("mfc100u.dll") == "100" && MfcLibraryVersion("mfc110.dll") == "110" &&
+          MfcLibraryVersion("MFC120U.dll") == "120" && MfcLibraryVersion("mfc140u.dll") == "140");
+    CHECK(MfcLibraryVersion("mfc42.dll").empty() && MfcLibraryVersion("mfc70.dll").empty() &&
+          MfcLibraryVersion("mfc100enu.dll").empty() && MfcLibraryVersion("mfc140u.lib").empty() &&
+          MfcLibraryVersion("mfc1400.dll").empty() && MfcLibraryVersion("msvcr80.dll").empty() &&
+          MfcLibraryVersion("mfc100ud.dll").empty() && MfcLibraryVersion("mfcm140d.dll").empty());
     const auto root = fresh();
     WritePe(root / "A.exe", {false, {"KERNEL32.dll", "mfc140.dll"}});
     WritePe(root / "FahrenheitSub.exe", {false, {"stlport_vc745.dll", "MFC80.DLL", "MSVCR80.dll", "d3d9.dll"}});
+    WritePe(root / "kenshi_x64.exe", {true, {"mfc100u.dll", "OgreMain_x64.dll"}});
     auto found = FindMfcImports(root.string());
-    CHECK(found.x86_program == "A.exe" && found.x86_mfc80_program == "FahrenheitSub.exe");
+    CHECK(of(found, "x86-140") == "A.exe" && of(found, "x86-80") == "FahrenheitSub.exe" &&
+          of(found, "x64-100") == "kenshi_x64.exe" && found.programs.size() == 3);
     const auto one = fresh();
     WritePe(one / "Both.exe", {false, {"mfc140u.dll", "mfcm80.dll"}});
     found = FindMfcImports(one.string());
-    CHECK(found.x86_program == "Both.exe" && found.x86_mfc80_program == "Both.exe");
-    // Delay-loaded counts too; other DLLs named alike (MFC 4.2, 7.0, an MFC 8 locale's own name) don't.
+    CHECK(of(found, "x86-140") == "Both.exe" && of(found, "x86-80") == "Both.exe");
+    // Delay-loaded counts too; other DLLs named alike (MFC 4.2, 7.0, the C runtime) don't.
     const auto delayed = fresh();
     WritePe(delayed / "Tool.exe", {false, {"KERNEL32.dll"}, false, false, "", 0x1400, false, {"mfc80u.dll"}});
     WritePe(delayed / "Old.exe", {false, {"mfc42.dll", "mfc70.dll", "msvcr80.dll"}});
     found = FindMfcImports(delayed.string());
-    CHECK(found.x86_mfc80_program == "Tool.exe" && found.x86_program.empty());
-    // Playden has only the x86 package of MFC 8: a 64-bit program importing it isn't recorded.
+    CHECK(of(found, "x86-80") == "Tool.exe" && found.programs.size() == 1);
+    // A 64-bit program importing MFC 8 is its own kind: Steam's depot has that package too.
     const auto x64 = fresh();
     WritePe(x64 / "Game64.exe", {true, {"mfc80.dll"}});
     found = FindMfcImports(x64.string());
-    CHECK(found.x86_mfc80_program.empty() && found.x64_program.empty());
+    CHECK(of(found, "x64-80") == "Game64.exe" && found.programs.size() == 1);
   }
 
   {  // Fahrenheit Remastered: Steam starts Aspyr's launcher, a Qt web view that draws nothing itself and starts the game

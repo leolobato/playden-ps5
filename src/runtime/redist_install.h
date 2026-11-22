@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -100,11 +101,17 @@ RedistInstallResult InstallRedistEntries(const std::string& game_root, const std
                                          bool burn_bundles, const RedistProgress& progress = {});
 
 // Microsoft's MFC library, which Wine doesn't provide, for the games that import it (runtime/game_probe.h
-// FindMfcImports): Playden downloads Microsoft's Visual C++ redistributable once per console, keeps the verified
-// setup program, and installs only its MFC files into a game's bottle. For MFC 14 (2015-2022), the MFC files of
-// the bundle's "Additional" package. For MFC 8 (2005), whose games ask for it as a side-by-side assembly
-// (Microsoft.VC80.MFC), the MFC and MFCLOC assembly folders under windows\winsxs, with each one's manifest also in
-// winsxs\manifests, where Wine looks assemblies up; the VC80 C runtime stays Wine's builtin.
+// FindMfcImports): Playden installs only the MFC files of a Visual C++ redistributable into a game's bottle, and the C
+// runtime stays Wine's builtin. The versions (kMfcVersions): MFC 8 (2005) and 9 (2008) go in as side-by-side
+// assemblies (Microsoft.VC80.MFC, Microsoft.VC90.MFC), the MFC and MFCLOC assembly folders under windows\winsxs with
+// each one's manifest also in winsxs\manifests, where Wine looks assemblies up; MFC 10 (2010) to 14 (2015-2022) as
+// mfc<version>*.dll and mfcm<version>*.dll in the system folder of their architecture.
+//
+// The redistributable comes from Steam's shared depot for that version (app 228980, SteamVcRedists): downloaded once
+// per console, its manifest and chunks checked as a game's are. Where that isn't there, MFC 14 and MFC 8 for x86
+// come from Microsoft's own download instead, pinned to a release (MicrosoftVcRedists): downloaded once per console
+// and kept, its SHA-256 checked.
+inline constexpr const char* kMfcVersions[] = {"80", "90", "100", "110", "120", "140"};
 
 // The redistributable for one architecture, pinned to a release: the URL embeds its SHA-256.
 struct VcRedist {
@@ -119,13 +126,32 @@ struct VcRedist {
 // Microsoft's 14.44.35211 for x86 and x64, and 8.0.50727.6195 (Visual C++ 2005 SP1, MFC security update) for x86.
 std::vector<VcRedist> MicrosoftVcRedists();
 
-// Whether a file the package installs is one of MFC's (mfc140*.dll, mfcm140*.dll): the only ones Playden takes
-// from it, so the C runtime never replaces the kit's Wine builtins.
+// The depot of app 228980 that holds a version's Visual C++ redistributable, and its setup program's file name for
+// each architecture (in _CommonRedist/vcredist/<year>/; FindRedistProgram finds it by name).
+struct SteamVcRedist {
+  std::string mfc;
+  std::uint32_t depot = 0;
+  std::string x86_program;
+  std::string x64_program;
+};
+// Visual C++ 2005 (228981), 2008, 2010, 2012, 2013 and 2022 (228989).
+std::vector<SteamVcRedist> SteamVcRedists();
+// The one for an MFC version, or nullopt.
+std::optional<SteamVcRedist> SteamVcRedistFor(const std::string& mfc);
+
+// A file in folder by name (any case), up to four folders deep, without following links: its path, or empty.
+std::string FindRedistProgram(const std::string& folder, const std::string& name);
+
+// Whether a file the package installs is one of MFC 14's (mfc140*.dll, mfcm140*.dll): the only ones Playden takes
+// from it, so the C runtime never replaces the kit's Wine builtins. MfcFileNameOf is the same for any version.
 bool MfcFileName(std::string_view name);
+bool MfcFileNameOf(std::string_view name, const std::string& mfc);
 // The same for Visual C++ 2005's package: whether a file it installs (a path below drive_c, '/' separators) is in
 // the folder of the Microsoft.VC80.MFC or Microsoft.VC80.MFCLOC assembly under Windows/winsxs. Their publisher
-// policies, the C runtime, ATL and OpenMP are left out.
+// policies, the C runtime, ATL and OpenMP are left out. MfcAssemblyFile is the same for MFC 8 or 9 and either
+// architecture (x86_ or amd64_ folders).
 bool Mfc80AssemblyFile(std::string_view target);
+bool MfcAssemblyFile(std::string_view target, const std::string& mfc, const std::string& architecture);
 
 // One ranged GET: the bytes [offset, offset + length) of url, or nothing with a reason.
 using RangeFetch = std::function<std::optional<std::string>(const std::string& url, std::uint64_t offset,
@@ -148,17 +174,25 @@ struct MfcInstallResult {
 MfcInstallResult InstallMfcRuntime(const VcRedist& redist, const std::string& cache_root, const std::string& prefix_dir,
                                    const RangeFetch& fetch, std::int64_t unix_time);
 
+// Installs MFC mfc for architecture from the Visual C++ setup program at program (Steam's copy, SteamVcRedists) into
+// the stopped bottle, once: .playden-redist lists it as mfc<version>-<architecture> afterwards. The program is
+// trusted as Steam's depot download checked it; it is mapped, not read into the heap. source is "steam".
+MfcInstallResult InstallMfcFromProgram(const std::string& program, const std::string& mfc, const std::string& architecture,
+                                       const std::string& prefix_dir, std::int64_t unix_time);
+
 // Whether the bottle at prefix_dir lists redist's MFC as installed.
 bool MfcInstalled(const VcRedist& redist, const std::string& prefix_dir);
+// Whether it lists MFC mfc for architecture from either source: Steam's copy, or one of pinned.
+bool MfcInstalledFrom(const std::string& prefix_dir, const std::string& mfc, const std::string& architecture,
+                      const std::vector<VcRedist>& pinned);
 
 // The latest MFC scan of a game (runtime/game_probe.h FindMfcImports), kept in its bottle (.playden-mfc) so Play
 // doesn't walk the game folder each time: the programs found, per kind, and the game files' fingerprint then. A
-// record from before MFC 8 was looked for (version 1) is not read, so each game's folder is walked once more.
+// record from before every version was looked for (version 1 or 2) is not read, so each game's folder is walked
+// once more.
 struct MfcScanRecord {
   std::string fingerprint;
-  std::string x86_program;
-  std::string x64_program;
-  std::string x86_mfc80_program;
+  std::map<std::string, std::string> programs;  // "<architecture>-<version>" → the first program that imports it
 };
 std::optional<MfcScanRecord> ReadMfcScan(const std::string& prefix_dir);
 bool WriteMfcScan(const std::string& prefix_dir, const MfcScanRecord& record);

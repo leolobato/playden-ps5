@@ -179,7 +179,24 @@ struct RuntimeHostConfig {
   std::function<std::optional<std::string>(const std::string& url, std::size_t max_bytes, const std::atomic<bool>& cancel,
                                            std::string* error)>
       fetch_text;
-  // The redistributables MFC comes from, by architecture; kept under <console data>/playden/redist.
+  // A file in a depot of Steam's shared redistributables (app 228980), where a game's MFC comes from first: its path,
+  // kept once per console under <console data>/playden/redist/steam (steam/backend/shared_redist.h) and checked against
+  // the depot's file list. Without a session only the kept copy is given; with one a missing or damaged copy is
+  // downloaded with that account (on the worker, only for work the player started; it should give up soon after
+  // cancel). The session is the one the worker read before its hold (online_session), never read here: the session
+  // store takes that hold under its own lock. Empty: MFC comes from vc_redists only.
+  struct SharedDepot {
+    enum class Status { kReady, kNotCached, kRefused, kUnavailable, kFailed };
+    Status status = Status::kFailed;
+    std::string file;         // kReady: on the host's side of the console paths
+    bool downloaded = false;  // kReady: fetched now
+    std::string detail;       // for the log
+  };
+  std::function<SharedDepot(std::uint32_t depot, const std::string& file_name, const runtime::OnlineSession* session,
+                            const std::atomic<bool>& cancel)>
+      shared_redist;
+  // The redistributables MFC comes from when Steam's depot can't give it (pinned Microsoft downloads), by
+  // architecture; kept under <console data>/playden/redist.
   std::vector<runtime::VcRedist> vc_redists = runtime::MicrosoftVcRedists();
   // How long a failed download is not tried again (a preparation runs its steps more than once).
   std::chrono::seconds redist_retry_wait{60};

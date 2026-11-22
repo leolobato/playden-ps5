@@ -56,6 +56,7 @@
 #include "steam/backend/cm_app_details.h"
 #include "steam/backend/cm_friends_source.h"
 #include "steam/backend/download_server_source.h"
+#include "steam/backend/shared_redist.h"
 #include "steam/backend/collections_client.h"
 #include "steam/backend/entitled_library.h"
 #include "steam/backend/steam_install_runner.h"
@@ -661,6 +662,17 @@ int main() {
         // The runtime worker's own view of the session, for games set to Steam features = Online.
         playden::LocalSessionRepository online_sessions(user_root, {}, &session_vault);
         playden::Storage online_storage(user_root);
+        // Steam's shared redistributables (app 228980) a game's MFC comes from, kept once per console: their own CM
+        // client on the shared session.
+        playden::steam::CmClient redist_cm(paths.trust_store, library_storage);
+        redist_cm.SetOwner("redist");
+        redist_cm.SetSharedSession(steam_cm);
+        playden::steam::CdnClient redist_cdn(paths.trust_store);
+        playden::steam::DepotInstaller redist_installer(redist_cm, redist_cdn);
+        playden::steam::SharedRedistCache redist_cache(
+            [&redist_cm](const playden::StoredSession& session, const std::vector<std::uint32_t>& apps,
+                         const std::atomic<bool>& cancel) { return redist_cm.FetchAppInfo(session, apps, cancel); },
+            redist_installer);
         // Per-game runtime: private bottles and PS5 titles from the admitted kit.
         // Its worker owns OWNER records, native inventory and publication.
         std::unique_ptr<playden::homebrew::RuntimeHost> runtime_host;
@@ -905,6 +917,34 @@ int main() {
             // What Playden downloads for a game's bottle (Microsoft's Visual C++ redistributable, for games that need
             // MFC): ranged HTTPS GETs on the worker, with its own client made on first use. Redirects are followed by
             // hand to other HTTPS addresses; the bytes are checked against their pinned SHA-256 afterwards.
+            config.shared_redist = [&redist_cache](std::uint32_t depot, const std::string& file_name,
+                                                   const rt::OnlineSession* online, const std::atomic<bool>& cancel) {
+                using Depot = playden::homebrew::RuntimeHostConfig::SharedDepot;
+                using Status = playden::steam::SharedDepotResult::Status;
+                // The account the worker read before its hold (RuntimeHostConfig::shared_redist): never read here.
+                std::optional<playden::StoredSession> session;
+                if (online) {
+                    session.emplace();
+                    session->steam_id = online->steam_id;
+                    session->account_name = online->account_name;
+                    session->refresh_token = online->refresh_token;
+                    if (online->cell_id) session->cell_id = online->cell_id;
+                }
+                const auto got = redist_cache.Get(session ? &*session : nullptr, depot, "/data/playden/redist/steam",
+                                                  online != nullptr, cancel, file_name);
+                if (session) playden::steam::ZeroizeSecret(session->refresh_token);
+                Depot out;
+                out.status = got.status == Status::kReady       ? Depot::Status::kReady
+                             : got.status == Status::kNotCached ? Depot::Status::kNotCached
+                             : got.status == Status::kRefused   ? Depot::Status::kRefused
+                             : got.status == Status::kUnavailable || got.status == Status::kCanceled
+                                 ? Depot::Status::kUnavailable
+                                 : Depot::Status::kFailed;
+                out.file = got.file;
+                out.downloaded = got.downloaded;
+                out.detail = got.detail;
+                return out;
+            };
             config.fetch_range = [client = std::make_shared<std::unique_ptr<playden::steam::HttpClient>>(),
                                   trust = paths.trust_store](const std::string& url, std::uint64_t offset,
                                                              std::uint64_t length, const std::atomic<bool>& cancel,

@@ -2027,10 +2027,11 @@ struct RuntimeHost::RedistWorkScope {
 };
 
 // Generic step: Microsoft's MFC for a game whose files import it (Wine has none; a Unity plugin of Moonlighter's
-// stops the game without it), downloaded once per console and installed into the bottle once. An upgrade, not a
-// condition: a failed download or install is logged, the game still starts, and the next Play tries again. Only
-// work the player started downloads (redist_work_); start-up and other background work install from a kept copy
-// or leave it for Play.
+// stops the game without it), downloaded once per console and installed into the bottle once. It comes from Steam's
+// shared depot of that Visual C++ version (config_.shared_redist), else from Microsoft's pinned download where
+// Playden has one (MFC 14, and MFC 8 for x86). An upgrade, not a condition: a failed download or install is logged,
+// the game still starts, and the next Play tries again. Only work the player started downloads (redist_work_);
+// start-up and other background work install from a kept copy or leave it for Play.
 void RuntimeHost::MfcStep(const GameFiles& files) {
   const auto app = std::to_string(files.record.runtime_number);
   struct stat hive {};
@@ -2042,10 +2043,19 @@ void RuntimeHost::MfcStep(const GameFiles& files) {
       if (static_cast<unsigned char>(value) < 0x20 || value == 0x7f) value = '?';
     return text;
   };
-  const auto redist_for = [&](const char* architecture, const char* mfc) -> const rt::VcRedist* {
+  const auto redist_for = [&](const std::string& architecture, const std::string& mfc) -> const rt::VcRedist* {
     for (const auto& candidate : config_.vc_redists)
       if (candidate.architecture == architecture && candidate.mfc == mfc) return &candidate;
     return nullptr;
+  };
+  const auto split = [](const std::string& kind) {
+    const auto dash = kind.find('-');
+    return dash == std::string::npos ? std::make_pair(kind, std::string())
+                                     : std::make_pair(kind.substr(0, dash), kind.substr(dash + 1));
+  };
+  const auto installed = [&](const std::string& kind) {
+    const auto [architecture, mfc] = split(kind);
+    return rt::MfcInstalledFrom(files.prefix, mfc, architecture, config_.vc_redists);
   };
   // The latest scan stands while the game's files are the ones it read, or while everything it found is
   // installed and the files can't be told apart (a folder without Playden's file list); otherwise the folder is
@@ -2053,46 +2063,92 @@ void RuntimeHost::MfcStep(const GameFiles& files) {
   // MFC (a game with MFC 14 installed gaining one that imports MFC 8).
   const auto fingerprint = rt::GameFilesFingerprint(files.root.string());
   auto scan = rt::ReadMfcScan(files.prefix);
-  const auto installed = [&](const std::string& program, const char* architecture, const char* mfc) {
-    const auto* redist = redist_for(architecture, mfc);
-    return program.empty() || (redist && rt::MfcInstalled(*redist, files.prefix));
-  };
   const bool changed = scan && !fingerprint.empty() && !scan->fingerprint.empty() && scan->fingerprint != fingerprint;
   const bool reuse = scan && !changed && ((!fingerprint.empty() && scan->fingerprint == fingerprint) ||
-                              ((!scan->x86_program.empty() || !scan->x64_program.empty() || !scan->x86_mfc80_program.empty()) &&
-                               installed(scan->x86_program, "x86", "140") && installed(scan->x64_program, "x64", "140") &&
-                               installed(scan->x86_mfc80_program, "x86", "80")));
+                              (!scan->programs.empty() && std::all_of(scan->programs.begin(), scan->programs.end(),
+                                                                      [&](const auto& found) { return installed(found.first); })));
   if (!reuse) {
     const auto began = std::chrono::steady_clock::now();
     const auto found = rt::FindMfcImports(files.root.string());
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count();
-    Log("mfc scan app=" + app + " programs=" + std::to_string(found.programs) + " folders=" + std::to_string(found.folders) +
-        " ms=" + std::to_string(ms) + (found.truncated ? " stopped early" : "") + " x86=" +
-        (found.x86_program.empty() ? "-" : field(found.x86_program)) + " x64=" +
-        (found.x64_program.empty() ? "-" : field(found.x64_program)) + " x86-mfc80=" +
-        (found.x86_mfc80_program.empty() ? "-" : field(found.x86_mfc80_program)));
-    scan = rt::MfcScanRecord{fingerprint, found.x86_program, found.x64_program, found.x86_mfc80_program};
+    std::string kinds;
+    for (const auto& [kind, program] : found.programs) kinds += " " + kind + "=" + field(program);
+    Log("mfc scan app=" + app + " programs=" + std::to_string(found.programs_read) + " folders=" + std::to_string(found.folders) +
+        " ms=" + std::to_string(ms) + (found.truncated ? " stopped early" : "") + (kinds.empty() ? " none" : kinds));
+    scan = rt::MfcScanRecord{fingerprint, found.programs};
     if (!rt::WriteMfcScan(files.prefix, *scan)) Log("mfc scan app=" + app + " could not be kept in the bottle");
   }
   const auto cache = HostPath(config_.package_paths.console_data_root + "/playden/redist").string();
-  struct Wanted {
-    const char* architecture;
-    const char* mfc;
-    std::string program;
+  const auto progress = [&](bool on) {
+    if (!redist_work_.play_app) return;
+    if (on) Publish([&](RuntimeSnapshot& s) { s.play_progress[*redist_work_.play_app] = kPlayDownloadingMfc; });
+    else Publish([&](RuntimeSnapshot& s) { s.play_progress.erase(*redist_work_.play_app); });
   };
-  for (const auto& [architecture, mfc, program] : {Wanted{"x86", "140", scan->x86_program}, Wanted{"x64", "140", scan->x64_program},
-                                                   Wanted{"x86", "80", scan->x86_mfc80_program}}) {
-    if (program.empty()) continue;
-    const auto* redist = redist_for(architecture, mfc);
+  for (const auto& [kind, program] : scan->programs) {
+    const auto [architecture, mfc] = split(kind);
+    if (mfc.empty() || installed(kind)) continue;
     const auto line = "mfc upgrade app=" + app + " arch=" + architecture + " mfc=" + mfc + " program=" + field(program);
+    const auto began = std::chrono::steady_clock::now();
+    const auto seconds_since = [&](std::chrono::steady_clock::time_point then) {
+      return std::to_string(std::chrono::duration_cast<std::chrono::seconds>(began - then).count());
+    };
+    // Steam's shared depot first. Why it didn't install, for the log; whether that was the download.
+    std::string steam_why;
+    bool steam_not_downloaded = false;
+    if (const auto shared = rt::SteamVcRedistFor(mfc); shared && config_.shared_redist) {
+      const auto depot_name = "depot " + std::to_string(shared->depot);
+      const auto key = "steam-" + std::to_string(shared->depot);
+      const auto failed = redist_download_failed_.find(key);
+      const bool waits = failed != redist_download_failed_.end() && began - failed->second < config_.redist_retry_wait;
+      using Status = RuntimeHostConfig::SharedDepot::Status;
+      const auto& name = architecture == "x64" ? shared->x64_program : shared->x86_program;
+      auto depot = config_.shared_redist(shared->depot, name, nullptr, cancel_downloads_);
+      if (depot.status == Status::kNotCached && redist_work_.downloads && !waits && !cancel_downloads_) {
+        // The session the worker read before its hold; none (not signed in) leaves only the pinned download.
+        if (batch_online_session_) {
+          progress(true);
+          depot = config_.shared_redist(shared->depot, name, &*batch_online_session_, cancel_downloads_);
+          progress(false);
+        } else {
+          depot.status = Status::kUnavailable;
+          depot.detail = batch_online_session_loaded_ ? "not signed in to Steam" : "the session was not read for this work";
+        }
+        if (depot.status == Status::kReady) redist_download_failed_.erase(key);
+        else if (depot.status != Status::kNotCached) redist_download_failed_[key] = std::chrono::steady_clock::now();
+      }
+      if (depot.status == Status::kReady) {
+        const auto result = rt::InstallMfcFromProgram(depot.file, mfc, architecture, files.prefix, config_.unix_time());
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count();
+        if (result.result == "already") continue;
+        if (result.result == "installed") {
+          Log(line + " installed files=" + std::to_string(result.files) + " from=steam " + depot_name +
+              (depot.downloaded ? " downloaded" : " kept") + " ms=" + std::to_string(ms));
+          continue;
+        }
+        steam_why = depot_name + ": " + result.detail;
+      } else {
+        steam_not_downloaded = true;
+        if (depot.status == Status::kNotCached)
+          steam_why = depot_name + (waits ? " download failed " + seconds_since(failed->second) + " s ago"
+                                    : redist_work_.downloads ? std::string(" not downloaded")
+                                                             : std::string(" waits for Play"));
+        else
+          steam_why = depot_name + " " +
+                      (depot.status == Status::kRefused ? "refused" : depot.status == Status::kUnavailable ? "unavailable" : "failed") +
+                      (depot.detail.empty() ? std::string() : ": " + depot.detail);
+      }
+    }
+    // Microsoft's pinned download, where Playden has one.
+    const auto* redist = redist_for(architecture, mfc);
     if (!redist) {
-      Log(line + " skipped: no redistributable for it");
+      Log(line + " skipped: " + (steam_why.empty() ? std::string("no redistributable for it") : steam_why));
+      if (redist_work_.play_app && !steam_why.empty())
+        redist_work_.notice = steam_not_downloaded ? kPlayMfcNotDownloaded : kPlayMfcNotInstalled;
       continue;
     }
-    if (rt::MfcInstalled(*redist, files.prefix)) continue;
+    if (!steam_why.empty()) Log(line + " steam " + steam_why + "; Microsoft's download instead");
     // A download that failed a moment ago (the same preparation, or a Play right after) isn't tried again yet;
     // a kept copy still installs.
-    const auto began = std::chrono::steady_clock::now();
     const auto failed = redist_download_failed_.find(redist->sha256);
     const bool waits = failed != redist_download_failed_.end() && began - failed->second < config_.redist_retry_wait;
     const bool downloads = redist_work_.downloads && !waits && config_.fetch_range;
@@ -2104,14 +2160,14 @@ void RuntimeHost::MfcStep(const GameFiles& files) {
           *error = "Playden is closing";
           return std::nullopt;
         }
-        if (redist_work_.play_app && !shown) {
+        if (!shown) {
           shown = true;
-          Publish([&](RuntimeSnapshot& s) { s.play_progress[*redist_work_.play_app] = kPlayDownloadingMfc; });
+          progress(true);
         }
         return config_.fetch_range(url, offset, length, cancel_downloads_, error);
       };
     const auto result = rt::InstallMfcRuntime(*redist, cache, files.prefix, fetch, config_.unix_time());
-    if (shown) Publish([&](RuntimeSnapshot& s) { s.play_progress.erase(*redist_work_.play_app); });
+    if (shown) progress(false);
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count();
     if (result.result == "already") continue;
     if (result.result == "installed") {
@@ -2126,9 +2182,8 @@ void RuntimeHost::MfcStep(const GameFiles& files) {
       Log(line + " waits for Play: " + (redist_work_.downloads ? std::string("Playden can't download here")
                                                                  : std::string("start-up and background work don't download")));
     else if (waits && !result.download_failed)
-      Log(line + " skipped: its download failed " +
-          std::to_string(std::chrono::duration_cast<std::chrono::seconds>(began - failed->second).count()) +
-          " s ago; it is tried again from " + std::to_string(config_.redist_retry_wait.count()) + " s");
+      Log(line + " skipped: its download failed " + seconds_since(failed->second) + " s ago; it is tried again from " +
+          std::to_string(config_.redist_retry_wait.count()) + " s");
     else
       Log(line + " skipped: " + result.detail);
     if (redist_work_.play_app)

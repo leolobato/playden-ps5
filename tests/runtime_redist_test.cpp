@@ -1436,23 +1436,143 @@ void TestMicrosoftVc2005Redist() {
   }
 }
 
+// A merge module's folder that a custom action sets to a standard one goes there, not under the module's own
+// Win\System (Visual C++ 2010's and 2012's MFC); a custom action on something else changes nothing.
+void TestCustomActionFolders() {
+  for (const bool x64 : {false, true}) {
+    MsiInstallPlan plan;
+    std::string reason;
+    CHECK(ReadMsiPackage(playden::test::msi::Vc2010Package(x64), &plan, &reason));
+    CHECK(plan.files.size() == 4);
+    for (const auto& file : plan.files) CHECK(file.target.rfind(x64 ? "windows/system32/" : "windows/syswow64/", 0) == 0);
+    // An action a quiet install doesn't run (not in InstallExecuteSequence, or under a condition that doesn't hold)
+    // places nothing: the package's own folders stand.
+    for (const int sequence : {1, 2}) {
+      CHECK(ReadMsiPackage(playden::test::msi::Vc2010Package(x64, sequence), &plan, &reason));
+      CHECK(plan.files.size() == 4);
+      for (const auto& file : plan.files) CHECK(file.target.rfind(x64 ? "Win/System64/" : "Win/System/", 0) == 0);
+    }
+  }
+}
+
+// MFC from a setup program Steam's depot holds: Visual C++ 2010's, whose cabinet names its members ".\.\vc_red.msi".
+// Only MFC 10's files go in, where the package's custom action places them; recorded by version and architecture, so
+// either source counts as installed.
+void TestMfcFromProgram() {
+  CHECK(MfcFileNameOf("mfc100u.dll", "100") && MfcFileNameOf("MFCM100.DLL", "100") && MfcFileNameOf("mfc100enu.dll", "100"));
+  CHECK(!MfcFileNameOf("mfc140u.dll", "100") && !MfcFileNameOf("msvcr100.dll", "100") && !MfcFileName("mfc100u.dll"));
+  CHECK(MfcAssemblyFile("Windows/winsxs/amd64_microsoft.vc90.mfc_1fc8b3b9a1e18e3b_9.0.30729.6161_none_04/mfc90.dll", "90", "x64"));
+  CHECK(MfcAssemblyFile("Windows/winsxs/x86_microsoft.vc90.mfcloc_1fc8b3b9a1e18e3b_9.0.30729.6161_none_49/mfc90enu.dll", "90", "x86"));
+  CHECK(!MfcAssemblyFile("Windows/winsxs/x86_microsoft.vc90.mfc_1fc8b3b9a1e18e3b_9.0.30729.6161_none_4b/mfc90.dll", "90", "x64"));
+  CHECK(!MfcAssemblyFile("Windows/winsxs/x86_microsoft.vc80.mfc_1fc8b3b9a1e18e3b_8.0_none_cb/mfc80.dll", "90", "x86"));
+  CHECK(SteamVcRedistFor("100") && SteamVcRedistFor("100")->depot == 228983 && SteamVcRedistFor("140")->depot == 228989);
+  CHECK(!SteamVcRedistFor("42"));
+
+  char pattern[] = "/tmp/playden-mfc-steam-XXXXXX";
+  CHECK(::mkdtemp(pattern));
+  const auto base = std::filesystem::canonical(pattern);
+  const auto depot = base / "228983";
+  WriteText(depot / "_CommonRedist/vcredist/2010/vcredist_x86.exe", playden::test::msi::Vc2010Setup(false));
+  WriteText(depot / "_CommonRedist/vcredist/2010/vcredist_x64.exe", playden::test::msi::Vc2010Setup(true));
+  CHECK(FindRedistProgram(depot.string(), "VCREDIST_X86.EXE") == (depot / "_CommonRedist/vcredist/2010/vcredist_x86.exe").string());
+  CHECK(FindRedistProgram(depot.string(), "vc_redist.x86.exe").empty());
+  const auto prefix = MakeBottle(base / "prefix");
+  const std::vector<VcRedist> pinned = MicrosoftVcRedists();
+  CHECK(!MfcInstalledFrom(prefix.string(), "100", "x86", pinned));
+  for (const bool x64 : {false, true}) {
+    const auto program = FindRedistProgram(depot.string(), x64 ? "vcredist_x64.exe" : "vcredist_x86.exe");
+    auto result = InstallMfcFromProgram(program, "100", x64 ? "x64" : "x86", prefix.string(), 1700000000);
+    if (result.result != "installed") std::fprintf(stderr, "mfc100: %s\n", result.detail.c_str());
+    CHECK(result.result == "installed" && result.source == "steam" && result.files == 3);
+    CHECK(InstallMfcFromProgram(program, "100", x64 ? "x64" : "x86", prefix.string(), 1700000100).result == "already");
+  }
+  const auto windows = prefix / "drive_c/windows";
+  CHECK(ReadText(windows / "syswow64/mfc100u.dll") == "MFC100U-32" && ReadText(windows / "syswow64/mfcm100.dll") == "MFCM100-32");
+  CHECK(ReadText(windows / "system32/mfc100u.dll") == "MFC100U-64");
+  CHECK(!std::filesystem::exists(windows / "syswow64/msvcr100.dll") && !std::filesystem::exists(windows / "system32/msvcr100.dll"));
+  CHECK(!std::filesystem::exists(prefix / "drive_c/Win"));
+  CHECK(MfcInstalledFrom(prefix.string(), "100", "x86", pinned) && MfcInstalledFrom(prefix.string(), "100", "x64", pinned));
+  CHECK(!MfcInstalledFrom(prefix.string(), "140", "x86", pinned));
+  // A pinned download's record counts as well.
+  const auto bundle = MfcBundle(false);
+  const auto redist = SyntheticRedist(false, bundle);
+  const RangeFetch fetch = [&](const std::string&, std::uint64_t offset, std::uint64_t length, std::string*) {
+    return std::optional<std::string>(bundle.substr(offset, length));
+  };
+  CHECK(InstallMfcRuntime(redist, (base / "cache").string(), prefix.string(), fetch, 1700000200).result == "installed");
+  CHECK(MfcInstalledFrom(prefix.string(), "140", "x86", {redist}) && !MfcInstalledFrom(prefix.string(), "140", "x86", pinned));
+  // The wrong program for the version, or none, fails and records nothing.
+  const auto other = MakeBottle(base / "other");
+  auto result = InstallMfcFromProgram((depot / "_CommonRedist/vcredist/2010/vcredist_x86.exe").string(), "120", "x86",
+                                      other.string(), 1700000000);
+  CHECK(result.result == "failed" && !std::filesystem::exists(other / ".playden-redist"));
+  CHECK(InstallMfcFromProgram((base / "missing.exe").string(), "100", "x86", other.string(), 1).result == "failed");
+  std::filesystem::remove_all(base);
+}
+
+// Steam's own Visual C++ setup programs, when PLAYDEN_TEST_STEAM_REDIST names a folder holding depots of app 228980
+// (<folder>/<depot>/..., as playden-steam-dev shared-redist keeps them): each version's MFC installs for both
+// architectures.
+void TestSteamVcRedists() {
+  const char* folder = std::getenv("PLAYDEN_TEST_STEAM_REDIST");
+  if (!folder || !*folder) return;
+  char pattern[] = "/tmp/playden-steam-vc-XXXXXX";
+  CHECK(::mkdtemp(pattern));
+  const auto base = std::filesystem::canonical(pattern);
+  for (const auto& redist : SteamVcRedists()) {
+    const auto depot = std::filesystem::path(folder) / std::to_string(redist.depot);
+    if (!std::filesystem::is_directory(depot)) continue;
+    for (const char* architecture : {"x86", "x64"}) {
+      const auto program = FindRedistProgram(depot.string(), std::string(architecture) == "x64" ? redist.x64_program : redist.x86_program);
+      CHECK(!program.empty());
+      const auto prefix = MakeBottle(base / (redist.mfc + architecture));
+      const auto result = InstallMfcFromProgram(program, redist.mfc, architecture, prefix.string(), 1700000000);
+      std::fprintf(stderr, "steam vc mfc=%s arch=%s: %s %s files=%zu\n", redist.mfc.c_str(), architecture,
+                   result.result.c_str(), result.detail.c_str(), result.files);
+      CHECK(result.result == "installed" && result.files >= 2);
+      const auto windows = prefix / "drive_c/windows";
+      if (redist.mfc == "80" || redist.mfc == "90") {
+        std::size_t manifests = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(windows / "winsxs/manifests")) {
+          CHECK(entry.path().filename().string().rfind(std::string(std::string(architecture) == "x64" ? "amd64" : "x86") +
+                                                        "_microsoft.vc" + redist.mfc + ".mfc", 0) == 0);
+          ++manifests;
+        }
+        CHECK(manifests == 2);
+      } else {
+        const auto system = windows / (std::string(architecture) == "x64" ? "system32" : "syswow64");
+        CHECK(std::filesystem::exists(system / ("mfc" + redist.mfc + "u.dll")));
+        // The C runtime stays Wine's (MakeBottle's stand-in for its msvcp140.dll included).
+        CHECK(!std::filesystem::exists(system / ("msvcr" + redist.mfc + ".dll")));
+        const auto msvcp = system / ("msvcp" + redist.mfc + ".dll");
+        CHECK(!std::filesystem::exists(msvcp) || ReadText(msvcp) == "WINE-BUILTIN");
+      }
+    }
+  }
+  std::filesystem::remove_all(base);
+}
+
 void TestMfcScanRecord() {
   char pattern[] = "/tmp/playden-mfc-scan-XXXXXX";
   CHECK(::mkdtemp(pattern));
   const auto base = std::filesystem::canonical(pattern);
   const auto prefix = MakeBottle(base / "prefix");
   CHECK(!ReadMfcScan(prefix.string()));
-  CHECK(WriteMfcScan(prefix.string(), {"files-1", "", "Game_Data/Plugins/Chroma.dll"}));
+  CHECK(WriteMfcScan(prefix.string(), {"files-1", {{"x64-140", "Game_Data/Plugins/Chroma.dll"}}}));
   auto read = ReadMfcScan(prefix.string());
-  CHECK(read && read->fingerprint == "files-1" && read->x86_program.empty() && read->x64_program == "Game_Data/Plugins/Chroma.dll");
-  CHECK(WriteMfcScan(prefix.string(), {"", "", ""}));  // scanned, no MFC, no fingerprint
+  CHECK(read && read->fingerprint == "files-1" &&
+        read->programs == (std::map<std::string, std::string>{{"x64-140", "Game_Data/Plugins/Chroma.dll"}}));
+  CHECK(WriteMfcScan(prefix.string(), {"", {}}));  // scanned, no MFC, no fingerprint
   read = ReadMfcScan(prefix.string());
-  CHECK(read && read->fingerprint.empty() && read->x64_program.empty());
-  CHECK(WriteMfcScan(prefix.string(), {"files-2", "", "", "FahrenheitSub.exe"}));
+  CHECK(read && read->fingerprint.empty() && read->programs.empty());
+  CHECK(WriteMfcScan(prefix.string(), {"files-2", {{"x86-80", "FahrenheitSub.exe"}, {"x86-100", "Kenshi x64/A b.exe"}}}));
   read = ReadMfcScan(prefix.string());
-  CHECK(read && read->x86_mfc80_program == "FahrenheitSub.exe" && read->x86_program.empty());
-  // A scan from before MFC 8 was looked for isn't used: the folder is walked again.
+  CHECK(read && read->programs.size() == 2 && read->programs.at("x86-80") == "FahrenheitSub.exe" &&
+        read->programs.at("x86-100") == "Kenshi x64/A b.exe");
+  // A scan from before every version was looked for isn't used: the folder is walked again.
   WriteText(prefix / ".playden-mfc", "mfc-scan 1\nfiles files-1\nx64 Game_Data/Plugins/Chroma.dll\n");
+  CHECK(!ReadMfcScan(prefix.string()));
+  WriteText(prefix / ".playden-mfc", "mfc-scan 2\nfiles files-1\nx86-mfc80 FahrenheitSub.exe\n");
   CHECK(!ReadMfcScan(prefix.string()));
   // The fingerprint follows the install record and file list Playden writes at the game's root.
   const auto game = base / "game";
@@ -1611,6 +1731,9 @@ int main() {
   TestMfcInstallMemory();
   TestMfc80Install();
   TestMicrosoftVc2005Redist();
+  TestCustomActionFolders();
+  TestMfcFromProgram();
+  TestSteamVcRedists();
   TestMfcScanRecord();
   TestMicrosoftVcRedist();
   return 0;

@@ -175,6 +175,7 @@ add_library(playden_steam_cm STATIC
     "${CMAKE_SOURCE_DIR}/src/steam/backend/cdn_client.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/download_server_source.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/depot_installer.cpp"
+    "${CMAKE_SOURCE_DIR}/src/steam/backend/shared_redist.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/steam_install_runner.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/cloud_messages.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/cloud_mapping.cpp"
@@ -355,6 +356,10 @@ function(playden_register_steam_backend_tests)
         target_link_libraries(depot_installer_test PRIVATE playden_steam_cm)
         add_test(NAME depot_installer COMMAND depot_installer_test "${CMAKE_SOURCE_DIR}/fixtures/steam/appinfo")
         # Steam Workshop items (#856) in the bottle: state file, sync plan, download, swap and resume.
+        # Steam's shared redistributables (app 228980), kept once per console.
+        add_executable(shared_redist_test "${CMAKE_SOURCE_DIR}/tests/shared_redist_test.cpp")
+        target_link_libraries(shared_redist_test PRIVATE playden_steam_cm)
+        add_test(NAME shared_redist COMMAND shared_redist_test)
         add_executable(workshop_items_test "${CMAKE_SOURCE_DIR}/tests/workshop_items_test.cpp")
         target_link_libraries(workshop_items_test PRIVATE playden_steam_cm)
         add_test(NAME workshop_items COMMAND workshop_items_test)
