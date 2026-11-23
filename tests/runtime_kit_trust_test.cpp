@@ -44,6 +44,8 @@ int main(int argc, char** argv) {
   CHECK(std::count(config.known_capabilities.begin(), config.known_capabilities.end(), kKitTitleNotify) == 1);
   // And one whose title swaps presets with the touchpad: otherwise Touchpad hold never turns on.
   CHECK(std::count(config.known_capabilities.begin(), config.known_capabilities.end(), kKitTouchpadSwitch) == 1);
+  // The runtime's built-in amd_ags_x64.dll (AMD GPU Services row, #1298).
+  CHECK(std::count(config.known_capabilities.begin(), config.known_capabilities.end(), kKitAmdAgs) == 1);
   CHECK(std::is_sorted(config.known_capabilities.begin(), config.known_capabilities.end()));
 
   const std::filesystem::path root = argv[2];

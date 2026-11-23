@@ -321,6 +321,20 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"game", "DXVK default", ""}, {"amd", "AMD", ""}, {"nvidia", "NVIDIA", ""},
                          {"intel", "Intel", "An Arc A770."}},
                         "game", 2));
+  // A game's own amd_ags_x64.dll asks AMD's Windows driver, which the PS5 doesn't have: RDR2 shows AMD's hardware
+  // check box, UNCHARTED: Legacy of Thieves Collection says the GPU can't do Direct3D 12 (#1298). The runtime's
+  // built-in (kit capability wine-amd-ags) answers from Vulkan as a recent driver would. Off by default, as in Proton:
+  // a game that finds AMD's extensions may take paths it doesn't take without them.
+  auto ags = Choice("amd_gpu_services", "AMD GPU Services",
+                    "Which library answers when the game asks AMD's driver about the GPU.", "amd_ags_x64.dll",
+                    G::kGraphics,
+                    {{"game", "Game's own", "The library the game ships. It finds no AMD driver on the PS5."},
+                     {"runtime", "Runtime kit's",
+                      "Answers as a recent AMD driver would. Try it if a game says your AMD GPU or driver isn't "
+                      "supported."}},
+                    "game", 2);
+  ags.since = "0.13.0";
+  list.push_back(std::move(ags));
   list.push_back(Choice("reported_vram", "Reported video memory", "How much VRAM the game is told it has. Does not add memory.",
                         "dxgi.maxDeviceMemory · d3d9.maxAvailableMemory", G::kGraphics,
                         {{"game", "DXVK default", ""}, {"2048", "2 GB", ""}, {"4096", "4 GB", ""}}, "game", 2));
@@ -700,6 +714,9 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   }
   // Wine sets both locales from the Unix locale at start and only mirrors them into the registry, so the title sets
   // them ([runtime] user_locale and system_locale).
+  if (id == "amd_gpu_services" && !kit.amd_ags)
+    return kit.amd_ags_needs_update ? kAppliesAfterKitUpdate
+                                    : "Needs a newer runtime kit with its own AMD GPU Services.";
   if ((id == "locale" || id == "system_locale") && !kit.windows_locale)
     return kit.windows_locale_needs_update ? kAppliesAfterKitUpdate
                                            : "Needs a newer runtime kit that sets the game's locale.";
@@ -1255,6 +1272,31 @@ std::string EnvironmentValueOf(std::string_view entries, std::string_view name) 
 }
 }  // namespace
 
+namespace {
+// Whether a DLL override list names the library (in any case, with or without ".dll" or a leading "*").
+bool DllOverridesName(const std::string& list, std::string_view library) {
+  for (const auto& entry : SplitDllOverrides(list)) {
+    auto names = entry.substr(0, entry.find('='));
+    for (auto& c : names) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+    std::size_t start = 0;
+    while (start <= names.size()) {
+      const auto end = std::min(names.find(',', start), names.size());
+      auto name = std::string_view(names).substr(start, end - start);
+      if (!name.empty() && name.front() == '*') name.remove_prefix(1);
+      if (name.size() > 4 && name.substr(name.size() - 4) == ".dll") name.remove_suffix(4);
+      if (name == library) return true;
+      start = end + 1;
+    }
+  }
+  return false;
+}
+// Whether the profile adds kXnaOpenGlOverrides: an XNA game drawn with OpenGL.
+bool XnaOnOpenGl(const GameRecipe& recipe, const std::string& graphics) {
+  const auto engine = std::string_view(recipe.detected).substr(0, recipe.detected.find_first_of(", "));
+  return engine == "xna" && graphics == "opengl";
+}
+}  // namespace
+
 bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* preset,
                             const std::map<std::string, std::string>& overrides, const KitCapabilities& kit,
                             EffectiveSettings* settings, SettingsError* error) {
@@ -1697,36 +1739,44 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
   out.dll_overrides = overrides_row.value;
   if (!out.dll_overrides.empty() && !IsProsperoDllOverrides(out.dll_overrides))
     return fail("dll_overrides", "library overrides are too long");
+  // AMD GPU Services = Runtime kit's adds its entry to the profile's list (ProfileDllOverrides), after the XNA one: the
+  // whole line has to fit, or the game would load its own library while the row says the runtime kit's.
+  if (const auto ags = out.values.find("amd_gpu_services");
+      ags != out.values.end() && ags->second.available && ags->second.value == "runtime" &&
+      !DllOverridesName(out.dll_overrides, "amd_ags_x64")) {
+    std::size_t size = std::string_view(kAmdAgsBuiltinOverride).size();
+    if (!out.dll_overrides.empty()) size += out.dll_overrides.size() + 1;
+    if (XnaOnOpenGl(recipe, out.graphics) && !DllOverridesName(out.dll_overrides, "d3d11"))
+      size += std::string_view(kXnaOpenGlOverrides).size() + 1;
+    if (size > kProsperoMaxDllOverrideBytes)
+      return fail("dll_overrides", "library overrides are too long to add AMD GPU Services");
+  }
 
   *settings = std::move(out);
   return true;
 }
 
 std::string ProfileDllOverrides(const GameRecipe& recipe, const EffectiveSettings& settings) {
+  std::string list = settings.dll_overrides;
   // Wine Mono's FNA3D tries Direct3D 11 before OpenGL. With Graphics = OpenGL there's no DXVK, so that is Wine's own
   // Direct3D 11 on Zink. Celeste draws there, but TowerFall's ResizeBuffers fails ("Something's still holding back
   // buffer 0") and no frame shows after it: the music plays on a black screen (#1151). With Wine's d3d11 turned off
   // FNA3D draws with OpenGL, as FNA did before FNA3D. The entry is the profile's only: the rows and a shared recipe
   // don't show it. A list that names d3d11 already keeps its own choice.
-  const auto& list = settings.dll_overrides;
-  const auto engine = std::string_view(recipe.detected).substr(0, recipe.detected.find_first_of(", "));
-  if (engine != "xna" || settings.graphics != "opengl") return list;
-  // Wine reads a name in any case, with or without ".dll", and "*d3d11" for every path.
-  for (const auto& entry : SplitDllOverrides(list)) {
-    auto names = entry.substr(0, entry.find('='));
-    for (auto& c : names) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-    std::size_t start = 0;
-    while (start <= names.size()) {
-      const auto end = std::min(names.find(',', start), names.size());
-      auto name = std::string_view(names).substr(start, end - start);
-      if (!name.empty() && name.front() == '*') name.remove_prefix(1);
-      if (name.size() > 4 && name.substr(name.size() - 4) == ".dll") name.remove_suffix(4);
-      if (name == "d3d11") return list;
-      start = end + 1;
-    }
+  if (XnaOnOpenGl(recipe, settings.graphics) && !DllOverridesName(list, "d3d11")) {
+    auto with = list.empty() ? std::string(kXnaOpenGlOverrides) : kXnaOpenGlOverrides + (";" + list);
+    if (with.size() <= kProsperoMaxDllOverrideBytes) list = std::move(with);
   }
-  auto with = list.empty() ? std::string(kXnaOpenGlOverrides) : kXnaOpenGlOverrides + (";" + list);
-  return with.size() <= kProsperoMaxDllOverrideBytes ? with : list;
+  // AMD GPU Services = Runtime kit's: the runtime's built-in amd_ags_x64.dll before the game's own. Like the XNA entry
+  // it is the profile's only, and a list that names amd_ags_x64 keeps its own choice. BuildEffectiveSettings refuses a
+  // list it doesn't fit.
+  const auto ags = settings.values.find("amd_gpu_services");
+  if (ags != settings.values.end() && ags->second.available && ags->second.value == "runtime" &&
+      !DllOverridesName(list, "amd_ags_x64")) {
+    auto with = list.empty() ? std::string(kAmdAgsBuiltinOverride) : list + ";" + kAmdAgsBuiltinOverride;
+    if (with.size() <= kProsperoMaxDllOverrideBytes) list = std::move(with);
+  }
+  return list;
 }
 
 namespace {
@@ -4651,6 +4701,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.game_root_usb_search = has(kKitGameRootUsbSearch);
   kit.steam_library_path = has(kKitSteamLibraryPath);
   kit.windows_locale = has(kKitWindowsLocale);
+  kit.amd_ags = has(kKitAmdAgs);
   kit.display_120hz = has(kKitDisplay120Hz);
   kit.profile_version_2 = has(kKitProfileVersion2);
   kit.input_rumble = has(kKitInputRumble);
@@ -4692,6 +4743,11 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   if (!title_runtime_current && kit.windows_locale) {
     kit.windows_locale = false;
     kit.windows_locale_needs_update = true;
+  }
+  // Nor has an older title's Wine the built-in amd_ags_x64.dll.
+  if (!title_runtime_current && kit.amd_ags) {
+    kit.amd_ags = false;
+    kit.amd_ags_needs_update = true;
   }
   if (!title_runtime_current && kit.display_120hz) {
     kit.display_120hz = false;

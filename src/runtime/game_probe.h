@@ -159,5 +159,8 @@ inline constexpr const char* kVkd3dProtonOverrides = "d3d12,d3d12core=n";
 inline constexpr const char* kVkd3dProtonDxgiOverrides = "d3d12,d3d12core,dxgi=n";
 // The DLL override an XNA game drawn with OpenGL gets in its profile, so FNA3D draws with OpenGL, not Wine's Direct3D 11.
 inline constexpr const char* kXnaOpenGlOverrides = "d3d11=d";
+// The DLL override AMD GPU Services = Runtime kit's puts in the profile: the runtime's built-in amd_ags_x64.dll before
+// the game's own, which loads instead where the runtime has none.
+inline constexpr const char* kAmdAgsBuiltinOverride = "amd_ags_x64=b,n";
 
 }  // namespace playden::runtime

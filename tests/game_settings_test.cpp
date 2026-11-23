@@ -144,7 +144,8 @@ int main(int argc, char** argv) {
         "pointer_stick", "pointer_speed", "rumble",
         "volume", "microphone",
         "start_check",
-        "graphics", "d3d12", "d3d12_feature_level", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
+        "graphics", "d3d12", "d3d12_feature_level", "pixel_shader_waves", "frame_latency", "reported_gpu", "amd_gpu_services",
+        "reported_vram",
         "steam_library_path", "steam_network", "steam_input", "windows_version", "text_scale",
         "locale", "system_locale", "cpu_topology", "address_space", "cpu", "network_adapters", "logging",
         "environment", "program_folder", "program_arguments", "arguments", "architecture", "dll_overrides",
@@ -1153,6 +1154,69 @@ int main(int argc, char** argv) {
     CHECK(BuildEffectiveSettings(opengl, nullptr, {}, zink, &settings, &error));
     CHECK(RenderProsperoProfile(opengl, settings, target, &profile, &reason));
     CHECK(profile.text.find("\ndll_overrides = d3d9=n\n") != std::string::npos);
+  }
+  // AMD GPU Services = Runtime kit's puts the runtime's built-in amd_ags_x64.dll before the game's own (#1298). The
+  // game's own is the default, and the row waits for a runtime kit that has the built-in (wine-amd-ags).
+  {
+    auto ags_kit = KitCapabilitiesFromManifest({"dxvk", kKitAmdAgs}, false);
+    CHECK(ags_kit.amd_ags && !KitCapabilitiesFromManifest({"dxvk"}, false).amd_ags);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {}, ags_kit, &settings, &error));
+    CHECK(Value(settings, "amd_gpu_services") == "game" && settings.values.at("amd_gpu_services").available);
+    CHECK(ProfileDllOverrides(hl2, settings) == settings.dll_overrides);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"amd_gpu_services", "runtime"}}, ags_kit, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\ndll_overrides = " + settings.dll_overrides + ";amd_ags_x64=b,n\n") != std::string::npos);
+    CHECK(CheckProsperoProfile(profile.text, &reason));
+    // The rows and a shared recipe keep the list without it; the row itself is what a share carries.
+    CHECK(settings.dll_overrides.find("amd_ags") == std::string::npos);
+    const auto shared = BuildCommunityRecipe(hl2, settings, playden::GameRef::Steam(220), "AGS").recipe;
+    CHECK(shared.dll_overrides.find("amd_ags") == std::string::npos);
+    CHECK(shared.defaults.count("amd_gpu_services") && shared.defaults.at("amd_gpu_services") == "runtime");
+    // Alone in an empty list; a list that names amd_ags_x64 keeps its own choice.
+    auto bare = hl2;
+    bare.dll_overrides.clear();
+    bare.graphics = "gdi";
+    CHECK(BuildEffectiveSettings(bare, nullptr, {{"amd_gpu_services", "runtime"}}, ags_kit, &settings, &error));
+    CHECK(ProfileDllOverrides(bare, settings) == "amd_ags_x64=b,n");
+    for (const char* own : {"amd_ags_x64=n", "xinput1_3,*AMD_AGS_X64.DLL=n,b"}) {
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"amd_gpu_services", "runtime"}, {"dll_overrides", own}}, ags_kit,
+                                   &settings, &error));
+      CHECK(ProfileDllOverrides(hl2, settings) == own);
+    }
+    // A name that only starts like it is another library.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"amd_gpu_services", "runtime"}, {"dll_overrides", "amd_ags_x64x=n"}},
+                                 ags_kit, &settings, &error));
+    CHECK(ProfileDllOverrides(hl2, settings) == "amd_ags_x64x=n;amd_ags_x64=b,n");
+    // The whole line has to fit the profile's 256 bytes: a list one byte too long is refused rather than left without
+    // the entry the row promises. 240 bytes + ";" + "amd_ags_x64=b,n" is exactly 256.
+    const auto list_of = [](std::size_t size) { return std::string(size - 2, 'x') + "=n"; };
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"amd_gpu_services", "runtime"}, {"dll_overrides", list_of(240)}},
+                                 ags_kit, &settings, &error));
+    CHECK(ProfileDllOverrides(hl2, settings) == list_of(240) + ";amd_ags_x64=b,n");
+    CHECK(!BuildEffectiveSettings(hl2, nullptr, {{"amd_gpu_services", "runtime"}, {"dll_overrides", list_of(241)}},
+                                  ags_kit, &settings, &error));
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"dll_overrides", list_of(241)}}, ags_kit, &settings, &error));
+    // An XNA game drawn with OpenGL keeps its d3d11=d entry first; both have to fit.
+    {
+      auto xna = opengl;
+      xna.detected = "xna";
+      CHECK(BuildEffectiveSettings(xna, nullptr, {{"amd_gpu_services", "runtime"}, {"dll_overrides", "xinput1_3=n"}},
+                                   ags_kit, &settings, &error));
+      CHECK(ProfileDllOverrides(xna, settings) == "d3d11=d;xinput1_3=n;amd_ags_x64=b,n");
+      CHECK(BuildEffectiveSettings(xna, nullptr, {{"amd_gpu_services", "runtime"}, {"dll_overrides", list_of(232)}},
+                                   ags_kit, &settings, &error));
+      CHECK(ProfileDllOverrides(xna, settings) == "d3d11=d;" + list_of(232) + ";amd_ags_x64=b,n");
+      CHECK(!BuildEffectiveSettings(xna, nullptr, {{"amd_gpu_services", "runtime"}, {"dll_overrides", list_of(233)}},
+                                    ags_kit, &settings, &error));
+    }
+    // Without the capability, or before the game's title runs this kit's runtime, the row says why and adds nothing.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"amd_gpu_services", "runtime"}}, dxvk_kit, &settings, &error));
+    CHECK(!settings.values.at("amd_gpu_services").available && ProfileDllOverrides(hl2, settings) == settings.dll_overrides);
+    CHECK(settings.values.at("amd_gpu_services").reason == "Needs a newer runtime kit with its own AMD GPU Services.");
+    const auto older_title = KitForTitleRuntime(ags_kit, false);
+    CHECK(!older_title.amd_ags && older_title.amd_ags_needs_update && KitDependsOnTitleRuntime(ags_kit));
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"amd_gpu_services", "runtime"}}, older_title, &settings, &error));
+    CHECK(!settings.values.at("amd_gpu_services").available && ProfileDllOverrides(hl2, settings) == settings.dll_overrides);
   }
   auto gdi = hl2;
   gdi.graphics = "gdi";

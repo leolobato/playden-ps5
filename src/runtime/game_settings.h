@@ -75,6 +75,10 @@ struct KitCapabilities {
   // Counts only for a title that runs this kit's runtime, like display_120hz.
   bool windows_locale = false;
   bool windows_locale_needs_update = false;
+  // The runtime's built-in amd_ags_x64.dll (kKitAmdAgs): the AMD GPU Services row. Counts only for a title that runs
+  // this kit's runtime, like display_120hz: an older title's Wine has no such library.
+  bool amd_ags = false;
+  bool amd_ags_needs_update = false;
   bool game_root_unowned = false;  // games start from drives that record no file owners (exFAT)
   // The title's start check admits Playden's folders and files at any mode of its user's (#868). Counts only for a
   // title made from this kit: an older title shell still wants them owner-only.
@@ -584,7 +588,8 @@ struct ProfileTarget {
 
 // The full prospero profile: [application], [display], [input] and [debug].
 // The dll_overrides line of the profile: the settings' list, and for an XNA game drawn with OpenGL kXnaOpenGlOverrides
-// first, unless the list names d3d11 itself.
+// first, unless the list names d3d11 itself. AMD GPU Services = Runtime kit's adds kAmdAgsBuiltinOverride at the end,
+// unless the list names amd_ags_x64 itself.
 std::string ProfileDllOverrides(const GameRecipe& recipe, const EffectiveSettings& settings);
 bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& settings, const ProfileTarget& target,
                            ProsperoProfile* profile, std::string* reason);
@@ -1033,6 +1038,10 @@ inline constexpr const char* kKitSteamLibraryPath = "steam-library-path";
 // The title reads [runtime] system_locale and user_locale and sets the game's Windows system locale (its code page for
 // programs that are not Unicode) and user locale (prospero-win Wine patch 1028). Runtimes without it refuse the keys.
 inline constexpr const char* kKitWindowsLocale = "windows-locale";
+// The runtime's Wine has a built-in amd_ags_x64.dll (prospero-win Wine patch 1042, from Proton): AMD GPU Services
+// answered from Vulkan, as a recent AMD driver would. A game uses it in place of its own copy only when its DLL overrides
+// put the built-in first (amd_ags_x64=b,n); with an older runtime that entry finds no built-in and loads the game's.
+inline constexpr const char* kKitAmdAgs = "wine-amd-ags";
 const std::vector<std::string>& SettingsKitCapabilityNames();
 
 // Settings gates from a verified kit's capabilities. bottle_access: the adapter can edit the
