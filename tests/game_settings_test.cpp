@@ -2960,6 +2960,20 @@ int main(int argc, char** argv) {
     CHECK(rebirth && BuildEffectiveSettings(*rebirth, nullptr, {{"environment", "VKD3D_FEATURE_LEVEL=11_1"}}, kit, &typed,
                                             &error));
     CHECK(feature_level(typed) == "\"11_1\"" && !typed.values.at("d3d12_feature_level").available);
+    // The row shows the typed level when it is one of its own (a recipe from before the row sets it this way), as
+    // `shown` only: its own value stays the recipe's, and shows nothing for a level it doesn't offer.
+    CHECK(typed.values.at("d3d12_feature_level").shown == "11_1" && typed.values.at("d3d12_feature_level").value == "12_2");
+    CHECK(BuildEffectiveSettings(*expedition, nullptr, {{"environment", "VKD3D_DEBUG=warn; VKD3D_FEATURE_LEVEL = 12_2"}},
+                                 kit, &other, &error));
+    CHECK(feature_level(other) == "\"12_2\"" && other.values.at("d3d12_feature_level").shown == "12_2" &&
+          other.values.at("d3d12_feature_level").value == "12_0" && !other.values.at("d3d12_feature_level").available);
+    CHECK(!BuildCommunityRecipe(*expedition, other, expedition_ref, "Clair Obscur: Expedition 33")
+               .recipe.defaults.count("d3d12_feature_level"));
+    CHECK(BuildEffectiveSettings(*expedition, nullptr, {{"environment", "VKD3D_FEATURE_LEVEL=11_0"}}, kit, &other, &error));
+    CHECK(feature_level(other) == "\"11_0\"" && other.values.at("d3d12_feature_level").shown.empty());
+    // Without a typed level nothing is shown in its place.
+    CHECK(BuildEffectiveSettings(*expedition, nullptr, {}, kit, &other, &error));
+    CHECK(other.values.at("d3d12_feature_level").shown.empty());
     // Only for vkd3d-proton: Wine's Direct3D 12, or a runtime kit without vkd3d-proton, gets no level at all.
     CHECK(BuildEffectiveSettings(*expedition, nullptr, {{"d3d12", "wine"}}, kit, &other, &error));
     CHECK(!other.values.at("d3d12_feature_level").available &&

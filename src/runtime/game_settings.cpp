@@ -1231,6 +1231,27 @@ bool EnvironmentSetsName(std::string_view entries, std::string_view name) {
   }
   return false;
 }
+
+// The value an Environment variables value gives the variable name, trimmed; the last entry wins, as in the bottle
+// (RenderBottleEnvironment). Empty when no entry sets it.
+std::string EnvironmentValueOf(std::string_view entries, std::string_view name) {
+  std::string found;
+  std::size_t start = 0;
+  while (start <= entries.size()) {
+    const auto end = std::min(entries.find(';', start), entries.size());
+    auto entry = entries.substr(start, end - start);
+    start = end + 1;
+    const auto equals = entry.find('=');
+    if (equals == std::string_view::npos) continue;
+    auto key = entry.substr(0, equals), value = entry.substr(equals + 1);
+    while (!key.empty() && key.front() == ' ') key.remove_prefix(1);
+    while (!key.empty() && key.back() == ' ') key.remove_suffix(1);
+    while (!value.empty() && value.front() == ' ') value.remove_prefix(1);
+    while (!value.empty() && value.back() == ' ') value.remove_suffix(1);
+    if (key == name) found = std::string(value);
+  }
+  return found;
+}
 }  // namespace
 
 bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* preset,
@@ -1642,12 +1663,18 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
   // vkd3d-proton's entry follows the Direct3D 12 row the same way, whoever wrote the list.
   out.vkd3d_proton = out.values["d3d12"].value == "vkd3d-proton";
   // A VKD3D_FEATURE_LEVEL typed in Environment variables is what the bottle gets (RenderBottleEnvironment), so
-  // Reported feature level says so rather than show a level the game never sees.
+  // Reported feature level says so rather than show a level the game never sees, and shows that level when it is one
+  // of the row's (a recipe from before the row sets 12_2 this way). Only as `shown`: the row's own value stays, so a
+  // share, a preset or a later choice in the row compares against what the row really holds.
   if (auto level = out.values.find("d3d12_feature_level"); level != out.values.end() && level->second.available) {
     const auto& environment = out.values["environment"];
     if (environment.available && EnvironmentSetsName(environment.value, "VKD3D_FEATURE_LEVEL")) {
       level->second.available = false;
       level->second.reason = "Environment variables set VKD3D_FEATURE_LEVEL.";
+      const auto typed = EnvironmentValueOf(environment.value, "VKD3D_FEATURE_LEVEL");
+      if (const auto* definition = FindSetting("d3d12_feature_level"))
+        for (const auto& choice : definition->choices)
+          if (choice.value == typed) level->second.shown = typed;
     }
   }
   // It also brings DXVK's dxgi, which it presents through, when no other entry names dxgi.

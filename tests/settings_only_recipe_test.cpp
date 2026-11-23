@@ -362,6 +362,7 @@ void Share() {
   {
     auto vkd3d_kit = kit;
     vkd3d_kit.vkd3d_proton = true;
+    vkd3d_kit.environment = true;
     auto d3d12_base = Read("\"d3d12\": \"vkd3d-proton\", \"program\": \"Bin/Old.exe\"");
     auto d3d12_filled = d3d12_base;
     FillSettingsOnlyRecipe(&d3d12_filled.recipe, own, copy);
@@ -375,6 +376,19 @@ void Share() {
     const auto raised_level = BuildSettingsOnlyRecipe(d3d12_base, plain, raised, playden::GameRef::Steam(274520), "Darkwood");
     CHECK(raised_level.recipe.defaults.at("d3d12_feature_level") == "12_2" &&
           raised_level.recipe.defaults.at("d3d12") == "vkd3d-proton");
+    // A recipe from before the row sets the level in Environment variables. The player moves it to the row: clears the
+    // variable and picks 12_2. The share keeps 12_2 in the row (the row showed 12_2 before, but only as `shown`).
+    auto env_base = Read("\"d3d12\": \"vkd3d-proton\", \"program\": \"Bin/Old.exe\", \"environment\": \"VKD3D_FEATURE_LEVEL=12_2\"");
+    auto env_filled = env_base;
+    FillSettingsOnlyRecipe(&env_filled.recipe, own, copy);
+    EffectiveSettings from_env, moved;
+    CHECK(BuildEffectiveSettings(env_filled.recipe, nullptr, {}, vkd3d_kit, &from_env, &error));
+    CHECK(!from_env.values.at("d3d12_feature_level").available && from_env.values.at("d3d12_feature_level").shown == "12_2");
+    CHECK(BuildEffectiveSettings(env_filled.recipe, nullptr, {{"environment", ""}, {"d3d12_feature_level", "12_2"}},
+                                 vkd3d_kit, &moved, &error));
+    CHECK(moved.values.at("d3d12_feature_level").available && moved.values.at("d3d12_feature_level").value == "12_2");
+    const auto moved_share = BuildSettingsOnlyRecipe(env_base, from_env, moved, playden::GameRef::Steam(274520), "Darkwood");
+    CHECK(moved_share.recipe.defaults.at("d3d12_feature_level") == "12_2");
   }
   // Online is shared; the sign-in and invites stay each player's own; Offline emulation and its Steam network value
   // are shared.

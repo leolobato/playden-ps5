@@ -9608,10 +9608,14 @@ void Simulation::rebuild_view() {
                                                               &my_templates_);
                 else if (definition->kind == rt::SettingKind::kText) item.value = value.value.empty() ? "Empty" : value.value;
                 // A choice that waits for the kit update shows as chosen; the subtitle says when it applies.
-                else item.value = choice_label(*definition, rt::ChosenValue(value));
+                // A disabled row another row decides (Reported feature level from Environment variables) shows that value.
+                else item.value = choice_label(*definition, !value.available && !value.shown.empty() ? value.shown
+                                                                                                     : rt::ChosenValue(value));
                 item.badge = value.unlocked ? "Changed anyway" : value.locked ? "Required by this game"
                     : definition->apply == rt::ApplyMode::kGameClosed ? "Game must be closed"
                     : definition->apply == rt::ApplyMode::kPreparesBottle ? "Prepares bottle" : "";
+                // Its recipe's lock doesn't hold while another row decides: the badge would name a value the game doesn't get.
+                if (!value.available && !value.shown.empty()) item.badge.clear();
                 // A locked row opens "Change anyway"; the program type only follows the program.
                 // A row the kit's runtime takes can be chosen before the title's update (it applies then).
                 item.enabled = (value.available || value.waits_for_update) && id != "architecture";

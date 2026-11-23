@@ -389,6 +389,9 @@ struct EffectiveValue {
   // until the title is updated. after_update is the saved choice that applies then, when it differs from `value`.
   bool waits_for_update = false;
   std::string after_update;
+  // What a disabled row shows when another row decides its value: Reported feature level shows the level typed in
+  // Environment variables. Display only: `value` stays the row's own, for shares, presets and the bottle.
+  std::string shown;
 };
 
 // Why a row's saved choice waits: the title must move to the kit's runtime first.
