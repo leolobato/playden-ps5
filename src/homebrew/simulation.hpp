@@ -2748,6 +2748,10 @@ private:
     void apply_organization_snapshot(const playden::OrganizationSnapshot& snapshot);
     void reconcile_applied_organization_selection(GameId prior_selected_id);
     void land_home_on_last_played();
+    void set_browse_focus(std::string key);
+    GameId home_ring_game() const;
+    bool select_home_ring_cell();
+    void arrive_home();
     bool record_live_persistence();
     void update_persistence_notice();
     void apply_live_volume_usage();

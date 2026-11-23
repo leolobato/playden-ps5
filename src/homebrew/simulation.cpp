@@ -4687,8 +4687,7 @@ void Simulation::UpdateAccount(AccountUpdate update) {
                     state_.navigation.library_rail_focused = false;
                     reconcile_library_selection(state_);
                 } else {
-                    state_.navigation.route = Route::Home;
-                    state_.navigation.focus_key = state_.games.empty() ? "home-library" : game_key(state_.games.front().id);
+                    arrive_home();
                 }
             }
         }
@@ -4768,8 +4767,9 @@ void Simulation::UpdateAccount(AccountUpdate update) {
             }
         }
     } else if (update.authentication == AuthState::SignedIn || update.authentication == AuthState::Offline) {
-        if (state_.navigation.route == Route::Startup || state_.navigation.route == Route::SignIn) state_.navigation.route = Route::Home;
-        state_.navigation.focus_key = state_.games.empty() ? "home-library" : game_key(state_.games.front().id);
+        // Only arriving on Home places the focus. A later update (a sync ending, back online) leaves the screen the
+        // player is on, and any dialog on it, alone.
+        if (state_.navigation.route == Route::Startup || state_.navigation.route == Route::SignIn) arrive_home();
     } else if (update.authentication == AuthState::SignedOut || update.authentication == AuthState::Cancelled) {
         // With another store to play, a Steam restore's answer or a canceled sign-in leaves the player where they are;
         // signing out of Steam, or a game's page whose game may have gone, still returns to Home.
@@ -5611,8 +5611,7 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
         state_.account().authentication != AuthState::Restoring && beyond_steam()) {
         const bool failed_restore = restore_failed_sign_in_;
         restore_failed_sign_in_ = false;
-        state_.navigation.route = Route::Home;
-        state_.navigation.focus_key = state_.games.empty() ? "home-library" : game_key(state_.games.front().id);
+        arrive_home();
         if (failed_restore) steam_restore_notice();
     }
     land_home_on_last_played();
@@ -5798,13 +5797,16 @@ void Simulation::apply_organization_snapshot(const playden::OrganizationSnapshot
 }
 
 void Simulation::reconcile_applied_organization_selection(GameId prior_selected_id) {
+    // A dialog (or the keyboard) open while the organization arrives keeps its focus and its button, which is the
+    // selected index while it's open: the screen's new focus is where closing it returns.
+    const bool overlay = !state_.navigation.modals.empty() || state_.editor.active;
     if (state_.games.empty()) {
         if (!library_catalog_received_) return;
         state_.navigation.selected_game_id = {};
-        state_.navigation.selected_index = 0;
-        if (state_.navigation.route == Route::Home) state_.navigation.focus_key = "home-library";
+        if (!overlay) state_.navigation.selected_index = 0;
+        if (state_.navigation.route == Route::Home) set_browse_focus("home-library");
         else if (state_.navigation.route == Route::Library && !state_.navigation.library_rail_focused)
-            state_.navigation.focus_key = state_.library.query.empty() ? "library-empty" : "clear-search";
+            set_browse_focus(state_.library.query.empty() ? "library-empty" : "clear-search");
         return;
     }
     if (state_.navigation.route == Route::Details &&
@@ -5828,7 +5830,7 @@ void Simulation::reconcile_applied_organization_selection(GameId prior_selected_
     const GameId library_candidate = library_item == visible.end() ? GameId{} : (*library_item)->id;
     if (library_item != visible.end()) {
         const int index = static_cast<int>(std::distance(visible.begin(), library_item));
-        state_.navigation.selected_index = index;
+        if (!overlay) state_.navigation.selected_index = index;
         state_.navigation.library_grid_column = index % 6;
         state_.navigation.scroll_offsets["library-grid"] = index / 6;
     }
@@ -5871,16 +5873,16 @@ void Simulation::reconcile_applied_organization_selection(GameId prior_selected_
     if (state_.navigation.route == Route::Library) {
         state_.navigation.selected_game_id = library_candidate;
         if (!state_.navigation.library_rail_focused)
-            state_.navigation.focus_key = !library_candidate.valid()
+            set_browse_focus(!library_candidate.valid()
                 ? (state_.library.query.empty() ? "library-empty" : "clear-search")
-                : game_key(library_candidate);
+                : game_key(library_candidate));
     } else if (state_.navigation.route == Route::Home ||
                state_.navigation.route == Route::Settings ||
                state_.navigation.route == Route::Downloads) {
         state_.navigation.selected_game_id = home_candidate;
         if (state_.navigation.route == Route::Home)
-            state_.navigation.focus_key = !home_more_key.empty() ? home_more_key
-                                          : !home_candidate.valid() ? "home-library" : game_key(home_candidate);
+            set_browse_focus(!home_more_key.empty() ? home_more_key
+                             : !home_candidate.valid() ? "home-library" : game_key(home_candidate));
     }
 }
 
@@ -5916,9 +5918,63 @@ void Simulation::land_home_on_last_played() {
     state_.navigation.home_shelf_focus[shelf->key] = cell_index;
     state_.navigation.scroll_offsets["home"] = shelf_index;
     // The prompt after a game may already be open over Home: closing it comes back to the landed game.
-    if (state_.navigation.modals.empty()) state_.navigation.focus_key = game_key(*cell);
-    else state_.navigation.modals.front().opener_focus_key = game_key(*cell);
+    set_browse_focus(game_key(*cell));
     captured_organization_.selected_game_id = *cell;
+}
+
+// A focus the screen under a dialog (or the keyboard) gets from elsewhere is where closing it returns: the dialog keeps
+// its button.
+void Simulation::set_browse_focus(std::string key) {
+    if (!state_.navigation.modals.empty()) state_.navigation.modals.front().opener_focus_key = std::move(key);
+    else if (state_.editor.active) state_.editor.opener_focus_key = std::move(key);
+    else state_.navigation.focus_key = std::move(key);
+}
+
+// Home acts on the card under its ring, which comes back to the shelf's remembered cell. The selection, its index and
+// the focus follow that cell, as a move along the row sets them (another tab's selection would otherwise stay, and
+// Square or Options would act on it). False when Home has no shelves.
+// The game on Home's ring cell, none on "See all" or with no shelves.
+GameId Simulation::home_ring_game() const {
+    const auto projected = shelves(state_);
+    if (projected.empty()) return {};
+    const auto& shelf = projected[static_cast<std::size_t>(
+        std::clamp(state_.navigation.home_shelf, 0, static_cast<int>(projected.size()) - 1))];
+    const auto remembered = state_.navigation.home_shelf_focus.find(shelf.key);
+    const int cell = remembered == state_.navigation.home_shelf_focus.end() ? 0 : remembered->second;
+    return cell >= 0 && cell < static_cast<int>(shelf.game_ids.size()) ? shelf.game_ids[static_cast<std::size_t>(cell)]
+                                                                       : GameId{};
+}
+
+bool Simulation::select_home_ring_cell() {
+    if (state_.navigation.route != Route::Home) return false;
+    const auto projected = shelves(state_);
+    if (projected.empty()) return false;
+    const int shelf_index = std::clamp(state_.navigation.home_shelf, 0, static_cast<int>(projected.size()) - 1);
+    const auto& shelf = projected[static_cast<std::size_t>(shelf_index)];
+    const int cell = std::clamp(state_.navigation.home_shelf_focus[shelf.key], 0, playden::homebrew::shelf_cells(shelf) - 1);
+    state_.navigation.home_shelf = shelf_index;
+    state_.navigation.home_shelf_focus[shelf.key] = cell;
+    state_.navigation.scroll_offsets["home"] = shelf_index;
+    const bool more = cell == static_cast<int>(shelf.game_ids.size());  // "See all in Library": no game there
+    state_.navigation.selected_game_id = more ? GameId{} : shelf.game_ids[static_cast<std::size_t>(cell)];
+    // An open dialog's button is the selected index while it's open.
+    if (state_.navigation.modals.empty() && !state_.editor.active) state_.navigation.selected_index = cell;
+    set_browse_focus(more ? playden::homebrew::shelf_more_key(shelf) : game_key(state_.navigation.selected_game_id));
+    return true;
+}
+
+// Startup or the sign-in screen gives way to Home. Its ring starts on the remembered cell (the saved selection's, once
+// the organization placed it), and the selection follows it.
+void Simulation::arrive_home() {
+    state_.navigation.route = Route::Home;
+    // A sign-in field still open (a Steam Guard code the phone approval made unnecessary) closes with its screen.
+    if (state_.editor.active && (state_.editor.opener_focus_key.rfind("signin-", 0) == 0 ||
+                                 state_.editor.opener_focus_key.rfind("guard-", 0) == 0)) {
+        state_.editor.active = false;
+        clear_sign_in_secrets();
+    }
+    if (!select_home_ring_cell())
+        set_browse_focus(state_.games.empty() ? "home-library" : game_key(state_.games.front().id));
 }
 
 PersistenceLoadToken Simulation::BeginOrganizationLoad(std::uint64_t account) {
@@ -5972,7 +6028,7 @@ bool Simulation::ApplyOrganization(std::uint64_t account, PersistenceLoadToken t
     }
     apply_organization_snapshot(merged);
     // A saved store collection its store's known list doesn't have (the lists can arrive first) falls back now.
-    if (reconcile_store_collection_scope(state_)) reconcile_library_selection(state_);
+    if (reconcile_store_collection_scope(state_)) reconcile_applied_organization_selection(state_.navigation.selected_game_id);
     land_home_on_last_played();
     merged.scope = state_.library.scope;
     merged.selected_game_id = state_.navigation.selected_game_id;
@@ -12045,6 +12101,17 @@ void Simulation::close_modal() {
     const bool gog_sign_in = state_.navigation.modals.back().id == "gog-sign-in";
     state_.navigation.modals.pop_back();
     state_.navigation.focus_key = opener;
+    // While it was open the selected index was its button: the screen under it gets its own back (the Library's grid
+    // window is drawn around it, and on Home it's the ring's cell).
+    if (state_.navigation.modals.empty() && !state_.editor.active) {
+        if (state_.navigation.route == Route::Library && !state_.navigation.library_rail_focused &&
+            opener == game_key(state_.navigation.selected_game_id))
+            reconcile_library_selection(state_);
+        else if (state_.navigation.route == Route::Home && opener.rfind("game-", 0) == 0 &&
+                 opener == game_key(state_.navigation.selected_game_id) &&
+                 home_ring_game() == state_.navigation.selected_game_id)
+            select_home_ring_cell();
+    }
     if (gog_sign_in) end_gog_sign_in();
 }
 
@@ -12609,8 +12676,9 @@ void Simulation::cancel() {
         if (state_.navigation.route == Route::Friends) state_.navigation.focus_key = friends_return_focus_;
         queue_return_focus_.clear();
     } else if (state_.navigation.route != Route::Home) {
+        // Back to Home (from the Library its "See all" opened, say): the card under the ring, not that tab's selection.
         state_.navigation.route = Route::Home;
-        state_.navigation.focus_key = game_key(state_.navigation.selected_game_id);
+        if (!select_home_ring_cell()) state_.navigation.focus_key = game_key(state_.navigation.selected_game_id);
     }
 }
 
@@ -12833,6 +12901,7 @@ void Simulation::change_route(int delta) {
     state_.navigation.settings_rail_focused = false;
     state_.navigation.tab_focus = index;
     if (state_.navigation.route == Route::Saves) open_saves();
+    select_home_ring_cell();
 }
 
 void Simulation::open_saves() {
@@ -12946,6 +13015,9 @@ void Simulation::UpdateSavesJob(LiveSavesJob job) {
 void Simulation::SetPlayHistory(playden::PlayHistory history) {
     if (!live() || history == play_history_) return;
     play_history_ = std::move(history);
+    // Home's ring follows its own card: another tab's selection (the Library's) isn't Home's.
+    const auto ring = home_ring_game();
+    const auto anchor = state_.navigation.route != Route::Home && ring.valid() ? ring : state_.navigation.selected_game_id;
     // The history only moves forward, so taking the later date and the longer time again keeps what the store said.
     for (auto& game : state_.games) apply_play_history(game, play_history_);
     // Continue playing may have changed order: the Home focus stays on the selected game, wherever it is now, in the
@@ -12953,10 +13025,13 @@ void Simulation::SetPlayHistory(playden::PlayHistory history) {
     const auto projected = shelves(state_);
     const auto place = [&](std::size_t shelf_index) {
         const auto& shelf = projected[shelf_index];
-        const auto selected = std::find(shelf.game_ids.begin(), shelf.game_ids.end(), state_.navigation.selected_game_id);
+        const auto selected = std::find(shelf.game_ids.begin(), shelf.game_ids.end(), anchor);
         if (selected == shelf.game_ids.end()) return false;
         state_.navigation.home_shelf = static_cast<int>(shelf_index);
         state_.navigation.home_shelf_focus[shelf.key] = static_cast<int>(std::distance(shelf.game_ids.begin(), selected));
+        // On Home the selected index is the cell: a stale one would take the first Up as a move along the row.
+        if (state_.navigation.route == Route::Home && state_.navigation.modals.empty() && !state_.editor.active)
+            state_.navigation.selected_index = state_.navigation.home_shelf_focus[shelf.key];
         return true;
     };
     const auto current = static_cast<std::size_t>(std::max(0, state_.navigation.home_shelf));
@@ -15852,7 +15927,9 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
         else if (route == "friends" && rt::OnlineSteamEnabled()) state_.navigation.route = Route::Friends;
         else { last_error_ = "Unknown route: " + route; return false; }
         clear_sign_in_secrets();
-        state_.navigation.modals.clear(); state_.editor.active = false; state_.navigation.focus_key.clear(); rebuild_view(); return true;
+        state_.navigation.modals.clear(); state_.editor.active = false; state_.navigation.focus_key.clear();
+        select_home_ring_cell();
+        rebuild_view(); return true;
     }
     if (logical_action.rfind("select:", 0) == 0 || logical_action.rfind("details:", 0) == 0) {
         const bool details = logical_action.rfind("details:", 0) == 0;

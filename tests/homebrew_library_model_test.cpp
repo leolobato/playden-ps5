@@ -5943,9 +5943,236 @@ void live_home_lands_on_last_played() {
           "closing the dialog lands on the game played");
 }
 
+// What arrives in the background (the saved organization, Steam's sign-in) and a trip to another tab leave Home's ring,
+// the game Square and Options act on, and an open dialog's button in agreement.
+void live_browse_focus_survives_background_updates() {
+    const auto key = [](playden::GameId id) { return "game-" + playden::ToKey(id); };
+    const auto ring_game = [](const Simulation& model) {
+        const auto all = playden::homebrew::shelves(model.state());
+        const auto& navigation = model.state().navigation;
+        if (navigation.home_shelf < 0 || navigation.home_shelf >= static_cast<int>(all.size())) return playden::GameId{};
+        const auto& shelf = all[static_cast<std::size_t>(navigation.home_shelf)];
+        const auto cell = navigation.home_shelf_focus.find(shelf.key);
+        const int index = cell == navigation.home_shelf_focus.end() ? 0 : cell->second;
+        return index >= 0 && index < static_cast<int>(shelf.game_ids.size()) ? shelf.game_ids[static_cast<std::size_t>(index)]
+                                                                               : playden::GameId{};
+    };
+    std::vector<playden::GameSummary> games;
+    for (int id = 30; id < 34; ++id) {
+        auto entry = game(SteamId(id), "Game " + std::to_string(id));
+        entry.playtime_minutes = 60;
+        entry.last_played_unix_seconds = 1'600'000'000ULL + static_cast<std::uint64_t>(id);
+        games.push_back(entry);
+    }
+    const LibraryUpdate library{games, false, {}, false, true, 1};
+    const playden::homebrew::AccountUpdate signed_in{AuthState::SignedIn, "account", "Owner", {}, {}, false};
+
+    // A trip to the Library and back: Home's ring comes back to the card it was on, and the selection with it.
+    auto model = make_live();
+    model.UpdateAccount(signed_in);
+    playden::PlayHistory history;
+    history[SteamId(31)] = {1'900'000'000, 600};
+    model.SetPlayHistory(history);
+    check(model.UpdateLibrary(library), "the library loads");
+    check(ring_game(model) == SteamId(31) && model.state().navigation.selected_game_id == SteamId(31),
+          "Home lands on the game played");
+    model.action("r1");
+    check(model.state().navigation.route == Route::Library && model.state().navigation.selected_game_id.valid() &&
+              model.state().navigation.selected_game_id != SteamId(31),
+          "the Library selects its own first game");
+    model.action("l1");
+    check(model.state().navigation.route == Route::Home && ring_game(model) == SteamId(31) &&
+              model.state().navigation.selected_game_id == SteamId(31) &&
+              model.state().navigation.focus_key == key(SteamId(31)),
+          "back on Home, the selection is the card under the ring");
+    model.action("square");
+    check(model.state().library.favorites == std::set<playden::GameId>{SteamId(31)}, "Square favorites the card under the ring");
+    model.action("options");
+    check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().id == "context" &&
+              model.state().navigation.selected_game_id == SteamId(31),
+          "Options opens the actions of the card under the ring");
+    model.action("circle");
+    history[SteamId(33)] = {1'950'000'000, 600};
+    model.SetPlayHistory(history);
+    check(ring_game(model) == SteamId(31) && model.state().navigation.selected_game_id == SteamId(31),
+          "a later record leaves the ring on the player's card");
+    check(model.action("up") && model.state().navigation.tabs_focused, "the first Up reaches the tabs");
+
+    // The saved organization arriving while a dialog is open over Home or the Library: the dialog keeps its button.
+    for (const auto route : {Route::Home, Route::Library}) {
+        auto dialog = make_live();
+        const auto token = dialog.BeginOrganizationLoad(1);
+        dialog.UpdateAccount(signed_in);
+        check(dialog.UpdateLibrary(library), "the library loads");
+        // On the Library the player's own selection (the third game) wins over the saved one, and its grid index
+        // isn't the dialog's button.
+        if (route == Route::Library) {
+            dialog.action("r1");
+            dialog.action("right");
+            dialog.action("right");
+            check(dialog.state().navigation.selected_game_id == SteamId(32), "the player moves to the third game");
+        }
+        dialog.NotifyStartFailed(SteamId(30), "It stopped");
+        check(dialog.state().navigation.focus_key == "start-failed-settings", "the dialog opens on Change settings");
+        playden::OrganizationSnapshot organization;
+        organization.selected_game_id = SteamId(32);
+        check(dialog.ApplyOrganization(1, token, organization), "the saved organization applies");
+        check(dialog.state().navigation.focus_key == "start-failed-settings" &&
+                  dialog.state().navigation.modals.back().focused_action == 0,
+              "the dialog keeps Change settings when the organization arrives");
+        dialog.UpdateAccount(signed_in);
+        check(dialog.state().navigation.focus_key == "start-failed-settings", "and when Steam's sign-in updates");
+        dialog.action("circle");
+        check(dialog.state().navigation.modals.empty(), "the dialog closes");
+        if (route == Route::Library)
+            check(dialog.state().navigation.focus_key == key(SteamId(32)) &&
+                      dialog.state().navigation.selected_game_id == SteamId(32),
+                  "the Library comes back on the player's game");
+        else
+            check(ring_game(dialog) == dialog.state().navigation.selected_game_id &&
+                      dialog.state().navigation.focus_key == key(dialog.state().navigation.selected_game_id),
+                  "Home comes back with the ring on the selected game");
+    }
+
+    // A Steam update after Home showed (a sync ending, back online) leaves the player's place alone.
+    auto later = make_live();
+    later.UpdateAccount(signed_in);
+    check(later.UpdateLibrary(library), "the library loads");
+    later.action("r1");
+    later.action("right");
+    const auto library_focus = later.state().navigation.focus_key;
+    const auto library_selected = later.state().navigation.selected_game_id;
+    check(library_focus == key(library_selected) && library_selected != later.state().games.front().id,
+          "the player moved off the Library's first game");
+    later.UpdateAccount(signed_in);
+    check(later.state().navigation.focus_key == library_focus && later.state().navigation.selected_game_id == library_selected,
+          "a Steam update keeps the Library's focus");
+    later.action("cross");
+    check(later.state().navigation.route == Route::Details, "the game's page opens");
+    const auto page_focus = later.state().navigation.focus_key;
+    later.UpdateAccount(signed_in);
+    check(later.state().navigation.focus_key == page_focus, "a Steam update keeps the page's focus");
+
+    // A play history that reorders Continue playing while the Library is open keeps Home's own card.
+    auto away = make_live();
+    away.UpdateAccount(signed_in);
+    check(away.UpdateLibrary(library), "the library loads");
+    away.action("right");
+    const auto home_card = away.state().navigation.selected_game_id;
+    away.action("r1");
+    check(away.state().navigation.selected_game_id != home_card, "the Library selects another game");
+    playden::PlayHistory reordered;
+    reordered[SteamId(30)] = {1'990'000'000, 60};
+    away.SetPlayHistory(reordered);
+    away.action("l1");
+    check(ring_game(away) == home_card && away.state().navigation.selected_game_id == home_card,
+          "back on Home, the ring is on the card it was on");
+
+    // A big library: Continue playing ends with "See all in Library", and the grid is drawn in windows.
+    std::vector<playden::GameSummary> many;
+    for (int id = 40; id < 80; ++id) {
+        auto entry = game(SteamId(id), "Game " + std::to_string(id));
+        entry.playtime_minutes = 60;
+        entry.last_played_unix_seconds = 1'600'000'000ULL + static_cast<std::uint64_t>(id);
+        many.push_back(entry);
+    }
+    const LibraryUpdate big{many, false, {}, false, true, 1};
+
+    // See all, then Circle: Home comes back on "See all", with no game selected.
+    auto more = make_live();
+    more.UpdateAccount(signed_in);
+    check(more.UpdateLibrary(big), "the big library loads");
+    for (int step = 0; step < 40 && more.state().navigation.selected_game_id.valid(); ++step) more.action("right");
+    check(!more.state().navigation.selected_game_id.valid(), "the ring reaches See all in Library");
+    const auto see_all = more.state().navigation.focus_key;
+    more.action("cross");
+    check(more.state().navigation.route == Route::Library, "See all opens the Library");
+    more.action("circle");
+    check(more.state().navigation.route == Route::Home && !more.state().navigation.selected_game_id.valid() &&
+              more.state().navigation.focus_key == see_all,
+          "Circle comes back to See all, not the Library's game");
+    more.action("cross");
+    check(more.state().navigation.route == Route::Library, "Cross opens the Library again, not a game's page");
+
+    // A dialog the player moved in gives the screen under it its own place back when it closes.
+    auto deep = make_live();
+    deep.UpdateAccount(signed_in);
+    check(deep.UpdateLibrary(big), "the big library loads");
+    deep.action("r1");
+    for (int row = 0; row < 5; ++row) deep.action("down");
+    const auto deep_game = deep.state().navigation.selected_game_id;
+    check(deep.state().navigation.selected_index >= 24, "the player is past the grid's first window");
+    deep.action("options");
+    deep.action("down");
+    deep.action("circle");
+    check(deep.state().navigation.modals.empty() && deep.state().navigation.focus_key == key(deep_game) &&
+              deep.state().navigation.selected_game_id == deep_game,
+          "closing a dialog comes back to the Library's game");
+    // A saved sort that moves the Library's game deep into the grid while a dialog is open over it.
+    auto sorted = make_live();
+    const auto sorted_token = sorted.BeginOrganizationLoad(1);
+    sorted.UpdateAccount(signed_in);
+    check(sorted.UpdateLibrary(big), "the big library loads");
+    sorted.action("r1");
+    const auto first = sorted.state().navigation.selected_game_id;
+    sorted.NotifyStartFailed(SteamId(40), "It stopped");
+    playden::OrganizationSnapshot resorted;
+    resorted.sort = sorted.state().library.sort == "name" ? "recent-played" : "name";
+    check(sorted.ApplyOrganization(1, sorted_token, resorted), "the saved organization applies");
+    check(sorted.state().navigation.selected_game_id == first && sorted.state().navigation.focus_key == "start-failed-settings",
+          "the player's game stays selected and the dialog keeps its button");
+    sorted.action("circle");
+    check(sorted.state().navigation.modals.empty() && sorted.state().navigation.focus_key == key(first) &&
+              sorted.state().navigation.selected_index >= 24,
+          "closing the dialog comes back to the game, now past the grid's first window");
+    deep.action("l1");
+    deep.action("right");
+    deep.action("right");
+    const auto cell = deep.state().navigation.selected_index;
+    deep.action("options");
+    deep.action("down");
+    deep.action("circle");
+    check(deep.state().navigation.selected_index == cell, "closing a dialog over Home comes back to the ring's cell");
+    check(deep.action("up") && deep.state().navigation.tabs_focused, "and the first Up reaches the tabs");
+
+    // A saved store collection that's gone, with a dialog open over the Library: the dialog keeps its button.
+    auto gone = make_live();
+    const auto gone_token = gone.BeginOrganizationLoad(1);
+    gone.UpdateAccount(signed_in);
+    check(gone.UpdateLibrary(library), "the library loads");
+    gone.UpdateStoreCollections(playden::Store::kSteam, {{"uc-a", "Alpha", {SteamId(30)}}});
+    gone.action("r1");
+    gone.action("right");
+    gone.action("right");
+    gone.NotifyStartFailed(SteamId(30), "It stopped");
+    playden::OrganizationSnapshot missing;
+    missing.scope = "steam-collection:gone";
+    check(gone.ApplyOrganization(1, gone_token, missing), "the saved organization applies");
+    check(gone.state().navigation.focus_key == "start-failed-settings" &&
+              gone.state().navigation.modals.back().focused_action == 0,
+          "the dialog keeps Change settings when the saved collection falls back");
+
+    // Approving the sign-in on the phone while the code keyboard is open: Home shows without the keyboard.
+    auto guard = make_live();
+    check(guard.UpdateLibrary(library), "the library loads");
+    playden::homebrew::AccountUpdate waiting{AuthState::Waiting, {}, {}, {}, {}, false};
+    waiting.sign_in = playden::homebrew::SignInStep::EmailCode;
+    waiting.email_domain = "example.invalid";
+    guard.UpdateAccount(waiting);
+    check(guard.state().navigation.route == Route::SignIn && guard.state().navigation.focus_key == "guard-code",
+          "the sign-in asks for the code");
+    guard.action("cross");
+    check(guard.state().editor.active, "the code keyboard opens");
+    guard.UpdateAccount(signed_in);
+    check(guard.state().navigation.route == Route::Home && !guard.state().editor.active &&
+              guard.state().navigation.focus_key.rfind("guard-", 0) != 0,
+          "the approved sign-in closes the code keyboard on its way Home");
+}
+
 int main() {
     live_play_history();
     live_home_lands_on_last_played();
+    live_browse_focus_survives_background_updates();
     live_remove_playden();
     live_filters_sheet_sections();
     live_game_menus_regrouped();
