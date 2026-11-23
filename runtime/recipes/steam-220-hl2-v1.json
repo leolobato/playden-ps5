@@ -17,7 +17,8 @@
   "defaults": {
     "resolution": "1920x1080",
     "controller": "xinput",
-    "button.options": "escape"
+    "button.options": "escape",
+    "touchpad_hold": "mouse"
   },
   "locked": ["graphics"]
 }

@@ -103,6 +103,17 @@ int main(int argc, char** argv) {
 
   GameRecipe hl2;
   CHECK(ParseGameRecipe(ReadText(source / "runtime/recipes/steam-220-hl2-v1.json"), &hl2, &reason));
+  // The shipped recipe turns Touchpad hold on: Half-Life 2's Options window takes only the mouse (#968). The rest of this
+  // file uses the recipe as a plain sample game, so its copy goes without it.
+  {
+    EffectiveSettings shipped;
+    SettingsError why;
+    const auto touchpad_kit = KitCapabilitiesFromManifest({kKitTouchpadSwitch, kKitLauncherMode}, false);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {}, touchpad_kit, &shipped, &why));
+    CHECK(shipped.values.at("touchpad_hold").value == "mouse" && shipped.values.at("touchpad_hold").available &&
+          shipped.values.at("touchpad_hold").source == ValueSource::kRecipe);
+    CHECK(hl2.defaults.erase("touchpad_hold") == 1);
+  }
   // What the kit's template must provide is read and written back (UnmetRecipeRequirements checks it).
   CHECK(hl2.requirements == (std::map<std::string, std::string>{{"audio", "ps5"}}));
   {
