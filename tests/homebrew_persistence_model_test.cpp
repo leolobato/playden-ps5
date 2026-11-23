@@ -394,6 +394,12 @@ void DelayedStoredSelectionReconcilesVisibleNavigation() {
         Check(model.UpdateLibrary({{std::move(first), std::move(second)},
                                    false, {}, false, true, 1}),
               "home selection catalog arrives before organization");
+        // Untouched, Home lands on the game played last; once the player has pressed anything, a stored selection
+        // that arrives late moves Home's focus with it.
+        Check(model.state().navigation.selected_game_id == SteamId(43) &&
+                  model.state().navigation.focus_key == "game-43",
+              "untouched Home lands on Continue playing's first game");
+        model.action("left");
         OrganizationSnapshot saved;
         saved.selected_game_id = SteamId(99);
         Check(model.ApplyOrganization(42, token, saved), "stored Home selection applies");

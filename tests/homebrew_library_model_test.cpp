@@ -5837,8 +5837,115 @@ void live_play_history() {
     check(!continued().empty() && continued().front() == gog, "a GOG game played from Home leads Continue playing");
 }
 
+// Starting a game closes Playden, so coming back from it is a fresh start. Home lands on the game just played in
+// Continue playing, whatever the saved selection was, in the order the console delivers things: Playden's play
+// history, the saved organization, the library, then the session that just ended, recorded once the runtime starts.
+void live_home_lands_on_last_played() {
+    const auto continue_shelf = [](const Simulation& model) -> std::pair<int, std::vector<playden::GameId>> {
+        const auto all = playden::homebrew::shelves(model.state());
+        for (std::size_t index = 0; index < all.size(); ++index)
+            if (all[index].key == "continue") return {static_cast<int>(index), all[index].game_ids};
+        return {-1, {}};
+    };
+    const auto lands_on = [&continue_shelf](const Simulation& model, playden::GameId id) {
+        const auto [shelf, ids] = continue_shelf(model);
+        const auto& navigation = model.state().navigation;
+        const auto cell = std::find(ids.begin(), ids.end(), id);
+        return navigation.route == Route::Home && navigation.selected_game_id == id &&
+               navigation.focus_key == "game-" + playden::ToKey(id) && navigation.home_shelf == shelf &&
+               cell != ids.end() && navigation.selected_index == static_cast<int>(std::distance(ids.begin(), cell)) &&
+               navigation.home_shelf_focus.count("continue") &&
+               navigation.home_shelf_focus.at("continue") == static_cast<int>(std::distance(ids.begin(), cell));
+    };
+    const auto never = game(SteamId(20), "Listed first, never played");
+    auto saved = game(SteamId(21), "Saved selection");
+    saved.playtime_minutes = 60;
+    saved.last_played_unix_seconds = 1'600'000'000ULL;
+    auto just_played = game(SteamId(22), "Just played");
+    just_played.playtime_minutes = 30;
+    just_played.last_played_unix_seconds = 1'500'000'000ULL;
+    auto other_device = game(SteamId(23), "Played on another device");
+    other_device.playtime_minutes = 300;
+    other_device.last_played_unix_seconds = 1'850'000'000ULL;  // Steam's date, newer than anything played here
+    const LibraryUpdate library{{never, saved, just_played, other_device}, false, {}, false, true, 1};
+
+    // As on the console: the saved organization is asked for first, Steam's saved sign-in restores, Playden's history
+    // and the organization come back, the library loads from its cache, and Steam's sign-in finishes.
+    auto model = make_live();
+    const auto token = model.BeginOrganizationLoad(1);
+    model.UpdateAccount({AuthState::Restoring, {}, {}, {}, {}, false});
+    playden::PlayHistory history;
+    history[SteamId(21)] = {1'700'000'000, 600};
+    history[SteamId(22)] = {1'750'000'000, 300};  // played here last, before this session
+    model.SetPlayHistory(history);
+    playden::OrganizationSnapshot organization;
+    organization.selected_game_id = SteamId(21);
+    check(model.ApplyOrganization(1, token, organization), "the saved organization applies");
+    check(model.UpdateLibrary(library), "the library loads");
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    check(lands_on(model, SteamId(22)),
+          "Home lands on the game Playden saw played last, not the saved selection, the first game or Steam's newer date");
+    check(!model.OrganizationDirty(), "landing isn't a selection to save");
+
+    // The session that brought the player back is recorded once the runtime starts.
+    history[SteamId(21)] = {1'950'000'000, 900};
+    model.SetPlayHistory(history);
+    check(lands_on(model, SteamId(21)), "a session recorded after Home shows moves the landing to that game");
+    model.action("left");
+    check(lands_on(model, SteamId(21)), "Left on the row's first game stays on it");
+    check(!model.OrganizationDirty(), "the landing isn't saved as the player's selection");
+
+    // Once the player moves, Home stays where they put it.
+    model.action("right");
+    const auto moved = model.state().navigation.selected_game_id;
+    check(moved == SteamId(23), "the player moved along Continue playing");
+    history[SteamId(22)] = {1'990'000'000, 1300};
+    model.SetPlayHistory(history);
+    check(model.UpdateLibrary(library), "the library refreshes");
+    check(model.state().navigation.selected_game_id == moved, "a later record doesn't take the focus back");
+
+    // Without anything Playden saw played, Home lands on the first Continue playing game.
+    auto fresh = make_live();
+    fresh.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    const auto fresh_token = fresh.BeginOrganizationLoad(1);
+    check(fresh.UpdateLibrary(library), "the library loads before the organization");
+    playden::OrganizationSnapshot never_selected;
+    never_selected.selected_game_id = SteamId(20);
+    check(fresh.ApplyOrganization(1, fresh_token, never_selected), "the saved organization applies after");
+    check(lands_on(fresh, SteamId(23)), "with no history Home lands on the first Continue playing game");
+    check(fresh.action("up") && fresh.state().navigation.tabs_focused, "the first Up from the landed game reaches the tabs");
+
+    // Two games recorded in the same second don't say which was played last: the row's first game.
+    auto tied = make_live();
+    tied.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    playden::PlayHistory same_second;
+    same_second[SteamId(21)] = {1'800'000'000, 60};
+    same_second[SteamId(22)] = {1'800'000'000, 60};
+    tied.SetPlayHistory(same_second);
+    check(tied.UpdateLibrary(library), "the library loads");
+    check(lands_on(tied, SteamId(23)), "a tie lands on the first Continue playing game");
+
+    // A dialog already open over Home when the session is recorded: closing it comes back to the game played.
+    auto prompted = make_live();
+    prompted.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    check(prompted.UpdateLibrary(library), "the library loads");
+    prompted.NotifyStartFailed(SteamId(21), "It stopped");
+    check(!prompted.state().navigation.modals.empty(), "a dialog opens over Home");
+    const auto dialog_focus = prompted.state().navigation.focus_key;
+    playden::PlayHistory played;
+    played[SteamId(22)] = {1'900'000'000, 600};
+    prompted.SetPlayHistory(played);
+    check(prompted.state().navigation.focus_key == dialog_focus &&
+              prompted.state().navigation.modals.front().opener_focus_key == "game-" + playden::ToKey(SteamId(22)),
+          "the dialog keeps the focus and returns it to the game played");
+    prompted.action("circle");
+    check(prompted.state().navigation.modals.empty() && lands_on(prompted, SteamId(22)),
+          "closing the dialog lands on the game played");
+}
+
 int main() {
     live_play_history();
+    live_home_lands_on_last_played();
     live_remove_playden();
     live_filters_sheet_sections();
     live_game_menus_regrouped();

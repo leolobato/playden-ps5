@@ -1397,6 +1397,7 @@ Simulation::Simulation(std::filesystem::path fixture_directory, std::filesystem:
     : fixture_directory_(std::move(fixture_directory)), profile_path_(std::move(profile_path)), mode_(mode) {
     reset_default_state();
     if (live()) {
+        home_landing_pending_ = true;
         rebuild_view();
         return;
     }
@@ -4691,6 +4692,7 @@ void Simulation::UpdateAccount(AccountUpdate update) {
                 }
             }
         }
+        land_home_on_last_played();
         rebuild_view();
         return;
     }
@@ -4797,6 +4799,7 @@ void Simulation::UpdateAccount(AccountUpdate update) {
         if (state_.editor.active && state_.editor.opener_focus_key.rfind("guard-", 0) == 0) state_.editor.active = false;
         clear_sign_in_secrets();
     }
+    land_home_on_last_played();
     rebuild_view();
 }
 
@@ -5412,6 +5415,7 @@ void Simulation::UpdateStoreCollections(Store store, std::vector<playden::Librar
     // A chosen collection deleted in the store (or gone with a sign-out) falls back to the store's games.
     if (reconcile_store_collection_scope(state_)) {
         reconcile_library_selection(state_);
+        land_home_on_last_played();
         save_profile();
     }
     // A focused rail entry the new list doesn't have hands the focus on, so Cross never acts on it.
@@ -5611,6 +5615,7 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
         state_.navigation.focus_key = state_.games.empty() ? "home-library" : game_key(state_.games.front().id);
         if (failed_restore) steam_restore_notice();
     }
+    land_home_on_last_played();
     captured_organization_.selected_game_id = state_.navigation.selected_game_id;
     // A prompt after a game, and "couldn't start", wait for the library to list that game (its name is the title).
     if (std::any_of(alert_prompts_.begin(), alert_prompts_.end(),
@@ -5879,6 +5884,43 @@ void Simulation::reconcile_applied_organization_selection(GameId prior_selected_
     }
 }
 
+// Starting a game closes Playden, so a live start is a return from a game (or a plain start). Until the player presses
+// anything, Home lands on the game played last in Continue playing: the newest of Playden's own records (the merged
+// last played date can be Steam's, from another device), or the row's first game when that one isn't on the row (yet).
+// The library, saved organization and history arrive in any order, and the session just ended is recorded after Home
+// shows, so each of them lands again. Not a selection the player made: nothing is saved for it.
+void Simulation::land_home_on_last_played() {
+    if (!home_landing_pending_ || state_.navigation.route != Route::Home || state_.editor.active) return;
+    const auto projected = shelves(state_);
+    const auto shelf = std::find_if(projected.begin(), projected.end(),
+                                    [](const auto& item) { return item.key == "continue"; });
+    if (shelf == projected.end() || shelf->game_ids.empty()) return;
+    // Two records in the same second don't say which game was last: the row's first game then.
+    GameId last;
+    std::int64_t newest = 0;
+    for (const auto& [id, record] : play_history_)
+        if (record.last_played > newest) {
+            newest = record.last_played;
+            last = id;
+        } else if (record.last_played == newest) {
+            last = {};
+        }
+    const auto found = std::find(shelf->game_ids.begin(), shelf->game_ids.end(), last);
+    const auto cell = found == shelf->game_ids.end() ? shelf->game_ids.begin() : found;
+    const int shelf_index = static_cast<int>(std::distance(projected.begin(), shelf));
+    // As a move along the row does: the selected index is the cell on Home.
+    const int cell_index = static_cast<int>(std::distance(shelf->game_ids.begin(), cell));
+    state_.navigation.selected_game_id = *cell;
+    state_.navigation.selected_index = cell_index;
+    state_.navigation.home_shelf = shelf_index;
+    state_.navigation.home_shelf_focus[shelf->key] = cell_index;
+    state_.navigation.scroll_offsets["home"] = shelf_index;
+    // The prompt after a game may already be open over Home: closing it comes back to the landed game.
+    if (state_.navigation.modals.empty()) state_.navigation.focus_key = game_key(*cell);
+    else state_.navigation.modals.front().opener_focus_key = game_key(*cell);
+    captured_organization_.selected_game_id = *cell;
+}
+
 PersistenceLoadToken Simulation::BeginOrganizationLoad(std::uint64_t account) {
     if (!live() || account == 0) return {};
     if (organization_account_ != account) {
@@ -5931,6 +5973,7 @@ bool Simulation::ApplyOrganization(std::uint64_t account, PersistenceLoadToken t
     apply_organization_snapshot(merged);
     // A saved store collection its store's known list doesn't have (the lists can arrive first) falls back now.
     if (reconcile_store_collection_scope(state_)) reconcile_library_selection(state_);
+    land_home_on_last_played();
     merged.scope = state_.library.scope;
     merged.selected_game_id = state_.navigation.selected_game_id;
     captured_organization_ = merged;
@@ -12919,6 +12962,8 @@ void Simulation::SetPlayHistory(playden::PlayHistory history) {
     const auto current = static_cast<std::size_t>(std::max(0, state_.navigation.home_shelf));
     if (current >= projected.size() || !place(current))
         for (std::size_t shelf_index = 0; shelf_index < projected.size() && !place(shelf_index); ++shelf_index) {}
+    // Back from a game: the session it just recorded (often after Home shows) is where Home lands.
+    land_home_on_last_played();
     rebuild_view();
 }
 
@@ -15637,8 +15682,9 @@ void Simulation::activate() {
 }
 
 bool Simulation::action(const std::string& logical_action, bool repeat) {
-    // Any input settles Details focus where the user put it.
+    // Any input settles Details focus where the user put it, and Home's.
     details_primary_pending_ = false;
+    home_landing_pending_ = false;
     state_.controller = {};
     if (logical_action == "up") state_.controller.left_y = -1.0F;
     else if (logical_action == "down") state_.controller.left_y = 1.0F;

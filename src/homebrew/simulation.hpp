@@ -2372,6 +2372,9 @@ private:
     std::string live_log_topic_;
     GameId live_log_game_;
     bool details_primary_pending_ = false;  // live Details: move focus to the first action once known
+    // Live start (always a return from a game, which closed Playden): Home lands on the game played last until the
+    // player presses anything.
+    bool home_landing_pending_ = false;
     // Settings: the last focused row, so focus stays nearby when that row goes away.
     int settings_focus_index_ = 0;
     int queue_focus_index_ = 0;  // Queue: the focused row's place, for when that row goes away
@@ -2744,6 +2747,7 @@ private:
     void clear_account_specific_state();
     void apply_organization_snapshot(const playden::OrganizationSnapshot& snapshot);
     void reconcile_applied_organization_selection(GameId prior_selected_id);
+    void land_home_on_last_played();
     bool record_live_persistence();
     void update_persistence_notice();
     void apply_live_volume_usage();
