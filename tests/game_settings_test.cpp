@@ -2888,9 +2888,53 @@ int main(int argc, char** argv) {
   std::vector<SettingsPreset> loaded_presets;
   std::vector<GameRecipe> loaded_recipes;
   CHECK(LoadSettingsData((source / "runtime").string(), &loaded_presets, &loaded_recipes, &reason));
-  CHECK(loaded_presets.size() == 4 && loaded_recipes.size() == 10 && loaded_recipes.front().app_id == 220 &&
-        loaded_recipes.back().id == "steam-3240220-gta5enhanced-v1");
+  CHECK(loaded_presets.size() == 4 && loaded_recipes.size() == 11 && loaded_recipes.front().app_id == 220 &&
+        loaded_recipes.back().id == "steam-2909400-ff7rebirth-v1");
   CHECK(!LoadSettingsData((source / "missing").string(), &loaded_presets, &loaded_recipes, &reason));
+  // FINAL FANTASY VII REBIRTH (#1297): Steam starts it with -dx11, which stops with a fatal error, and with -dx12 it asks
+  // D3D12CreateDevice for feature level 12_2. Its recipe starts -dx12 on vkd3d-proton at 12_2; every other vkd3d-proton
+  // game keeps Playden's 12_0.
+  {
+    const auto shipped = [&](std::uint32_t app_id) -> const GameRecipe* {
+      for (const auto& recipe : loaded_recipes)
+        if (recipe.app_id == app_id) return &recipe;
+      return nullptr;
+    };
+    const auto feature_level = [](const EffectiveSettings& settings) {
+      for (const auto& value : RenderBottleEnvironment(settings))
+        if (value.name == "VKD3D_FEATURE_LEVEL") return value.data;
+      return std::string("missing");
+    };
+    KitCapabilities kit;
+    kit.environment = true;
+    kit.vkd3d_proton = true;
+    const auto* rebirth = shipped(2909400);
+    CHECK(rebirth && rebirth->launch_entries.size() == 1 &&
+          rebirth->launch_entries[0].executable == "End/Binaries/Win64/ff7rebirth_.exe");
+    EffectiveSettings settings;
+    SettingsError error;
+    CHECK(rebirth && BuildEffectiveSettings(*rebirth, nullptr, {}, kit, &settings, &error));
+    CHECK(settings.arguments == "-dx12" && settings.architecture == "pe64" && settings.vkd3d_proton);
+    CHECK(settings.values.at("d3d12").value == "vkd3d-proton" && settings.values.at("d3d12").locked);
+    CHECK(feature_level(settings) == "\"12_2\"");
+    // It quits with "Please launch the game via the Steam client" on its own Steam library.
+    CHECK(settings.values.at("steam_features").value == "emulate" && !settings.values.at("steam_features").locked);
+    // Environment variables is locked: a player's own variables replace the row, and the game then gets 12_0 again.
+    CHECK(settings.values.at("environment").locked);
+    EffectiveSettings typed;
+    CHECK(rebirth && BuildEffectiveSettings(*rebirth, nullptr, {{"environment", "VKD3D_DEBUG=warn"}}, kit, &typed, &error));
+    CHECK(feature_level(typed) == "\"12_2\"");
+    // A share of these settings carries the recipe's feature level; another game's share has no Environment row.
+    const auto share = BuildCommunityRecipe(*rebirth, settings, playden::GameRef::Steam(2909400), "FINAL FANTASY VII REBIRTH");
+    CHECK(share.recipe.defaults.count("environment") &&
+          share.recipe.defaults.at("environment") == "VKD3D_FEATURE_LEVEL=12_2");
+    const auto* expedition = shipped(1903340);
+    EffectiveSettings other;
+    CHECK(expedition && BuildEffectiveSettings(*expedition, nullptr, {}, kit, &other, &error));
+    CHECK(other.vkd3d_proton && feature_level(other) == "\"12_0\"");
+    CHECK(!BuildCommunityRecipe(*expedition, other, playden::GameRef::Steam(1903340), "Clair Obscur: Expedition 33")
+               .recipe.defaults.count("environment"));
+  }
 
   // ApplyGameSettings writes the profile and a Playden dxvk.conf, removes it when nothing is
   // set, and refuses to touch a dxvk.conf that came with the game.

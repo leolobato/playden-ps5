@@ -1,0 +1,21 @@
+{
+  "recipe_id": "steam-2909400-ff7rebirth-v1",
+  "recipe_version": 1,
+  "app_id": 2909400,
+  "name": "FINAL FANTASY VII REBIRTH",
+  "launch_entries": [
+    {"id": "game", "label": "FINAL FANTASY VII REBIRTH", "executable": "End/Binaries/Win64/ff7rebirth_.exe"}
+  ],
+  "arguments": "-dx12",
+  "dll_overrides": "d3d8,d3d9,d3d10core,d3d11,dxgi=n",
+  "architecture": "pe64",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "dxvk",
+  "defaults": {
+    "d3d12": "vkd3d-proton",
+    "environment": "VKD3D_FEATURE_LEVEL=12_2",
+    "steam_features": "emulate"
+  },
+  "locked": ["d3d12", "environment"]
+}
