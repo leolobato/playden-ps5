@@ -506,6 +506,29 @@ int main() {
     fs::remove_all(root / "renpy");
     CHECK(ProbeGame(root.string(), "lib/windows-i686/DDLC.exe").engine.empty());
   }
+  {  // MonoGame DesktopGL (Stardew Valley, #1224): a .NET 6 app host that names nothing of the framework. Under DXVK it
+    // stops at "Failed to create graphics device!"; MonoGame.Framework.dll with SDL2.dll beside it draws with OpenGL.
+    const auto root = fresh();
+    WritePe(root / "Stardew Valley.exe", {true, {"KERNEL32.dll"}});
+    Touch(root / "Stardew Valley.dll");
+    Touch(root / "MonoGame.Framework.dll");
+    Touch(root / "SDL2.dll");
+    auto defaults = DefaultsFor(ProbeGame(root.string(), "Stardew Valley.exe"));
+    CHECK(defaults.graphics == "opengl" && defaults.summary == "monogame graphics=opengl");
+    CHECK(DetectedLabel(defaults.summary) == "MonoGame \xC2\xB7 OpenGL");
+    // The WindowsDX build ships the same MonoGame.Framework.dll with SharpDX for Direct3D 11: DXVK, as before.
+    Touch(root / "SharpDX.Direct3D11.dll");
+    defaults = DefaultsFor(ProbeGame(root.string(), "Stardew Valley.exe"));
+    CHECK(defaults.graphics == "dxvk" && defaults.summary == "unknown graphics=dxvk");
+    // Without SDL2.dll it is no DesktopGL build either.
+    fs::remove(root / "SharpDX.Direct3D11.dll");
+    fs::remove(root / "SDL2.dll");
+    CHECK(ProbeGame(root.string(), "Stardew Valley.exe").engine.empty());
+    // A .NET Framework program that names XNA's parts stays XNA's, beside the same DesktopGL files: it is the game.
+    Touch(root / "SDL2.dll");
+    WritePe(root / "Game.exe", {false, {"mscoree.dll"}, true, false, "Microsoft.Xna.Framework GraphicsDeviceManager"});
+    CHECK(ProbeGame(root.string(), "Game.exe").engine == "xna");
+  }
   {  // SIL (FTL): OpenGL, though the program also imports Direct3D 11; known by its settings names.
     const auto root = fresh();
     PeSpec ftl{false, {"OPENGL32.dll", "d3d11.dll", "KERNEL32.dll"}};
@@ -1639,6 +1662,30 @@ int main() {
     current.detected = "unknown graphics=dxvk";
     current.defaults_revision = 2;
     CHECK(!RefreshRecipeDefaults(root.string(), {}, &current) && current.graphics == "dxvk");
+  }
+
+  {  // A MonoGame DesktopGL game set up before it was detected (Stardew Valley, #1224): no engine, DXVK. Its next Play
+    // takes OpenGL.
+    const auto root = fresh();
+    WritePe(root / "Stardew Valley.exe", {true, {"KERNEL32.dll"}});
+    Touch(root / "MonoGame.Framework.dll");
+    Touch(root / "SDL2.dll");
+    GameRecipe recipe;
+    std::string reason;
+    CHECK(GenerateGameRecipe(413150, "Stardew Valley", {{"", "", "Stardew Valley.exe", "", ""}}, root.string(), &recipe,
+                             &reason, {}));
+    CHECK(recipe.graphics == "opengl" && recipe.detected == "monogame graphics=opengl" &&
+          recipe.defaults_revision == 0);
+    for (const int revision : {0, 1}) {
+      auto old = recipe;
+      old.graphics = "dxvk";
+      old.detected = "unknown graphics=dxvk";
+      old.defaults_revision = revision;
+      CHECK(RefreshRecipeDefaults(root.string(), {}, &old));
+      CHECK(old.graphics == "opengl" && old.detected == "monogame graphics=opengl" && old.defaults_revision == 0 &&
+            old.launch_entries.size() == 1 && old.launch_entries[0].executable == "Stardew Valley.exe");
+      CHECK(!RefreshRecipeDefaults(root.string(), {}, &old));
+    }
   }
 
   {  // A program's own imports decide, not the libraries beside it: Hotline Miami's launcher sits next to cgGL.dll.

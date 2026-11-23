@@ -583,6 +583,17 @@ bool RenpyLayout(const fs::path& root, const std::string& folder, const std::vec
   return Find(Entries(above == std::string::npos ? root : root / lib.substr(0, above)), "renpy", true).has_value();
 }
 
+// MonoGame's DesktopGL build: MonoGame.Framework.dll with SDL2.dll beside it, which it draws through with OpenGL
+// (Stardew Valley, a .NET 6 app host whose program names nothing of the framework). The WindowsDX build ships the same
+// MonoGame.Framework.dll with SharpDX for Direct3D 11, so a SharpDX library beside it keeps DXVK.
+bool MonoGameDesktopGL(const std::vector<std::pair<std::string, bool>>& here) {
+  if (!Find(here, "monogame.framework.dll", false) || !Find(here, "sdl2.dll", false)) return false;
+  return std::none_of(here.begin(), here.end(), [](const auto& entry) {
+    const auto lower = Lower(entry.first);
+    return !entry.second && lower.rfind("sharpdx", 0) == 0 && EndsWith(lower, ".dll");
+  });
+}
+
 }  // namespace
 
 MfcImports FindMfcImports(const std::string& install_root) {
@@ -844,6 +855,9 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
     probe.engine = "idtech3";  // Quake III Arena's engine and its heirs: data in .pk3 files one folder down
   } else if (RenpyLayout(root, folder, here)) {
     probe.engine = "renpy";  // Ren'Py draws with OpenGL through SDL, which its Python loads at run time
+  } else if (marked_engine.empty() && MonoGameDesktopGL(here)) {
+    // A .NET Framework program that names XNA's parts stays "xna": it is the game, not a .NET launcher.
+    probe.engine = "monogame";
   } else {
     probe.engine = marked_engine;
   }
@@ -875,7 +889,8 @@ int DefaultsRevision(std::string_view engine) {
   // 1: a program that draws nothing and imports a Qt web view only starts the game (Fahrenheit Remastered, #1197), so a
   // game set up before with no engine is read once for the game's own program. 2: Ren'Py is detected (it names no
   // graphics library, so it got DXVK and stopped with "No matching GL pixel format available": Roadwarden, #960, #1232),
-  // so a game set up before with no engine is read once more for it.
+  // so a game set up before with no engine is read once more for it, and so is MonoGame's DesktopGL build (Stardew
+  // Valley, #1224).
   if (engine == "unknown") return 2;
   return 0;
 }
@@ -937,9 +952,11 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
     // Automatic graphics leave FNA without a GL pixel format ("No matching GL pixel format available").
     // Wine Mono's FNA3D would still pick Wine's Direct3D 11: the profile turns it off (ProfileDllOverrides).
     out.graphics = "opengl";
-  } else if (probe.engine == "love" || probe.engine == "sil" || probe.engine == "java" || probe.engine == "renpy") {
+  } else if (probe.engine == "love" || probe.engine == "sil" || probe.engine == "java" || probe.engine == "renpy" ||
+             probe.engine == "monogame") {
     // SIL (FTL) draws with OpenGL though its program also names Direct3D 11; under DXVK it
-    // quits right after setting up video. Ren'Py under DXVK gets no GL pixel format (#1232).
+    // quits right after setting up video. Ren'Py under DXVK gets no GL pixel format (#1232). MonoGame DesktopGL under
+    // DXVK stops at "Failed to create graphics device!" (Stardew Valley, #1224).
     out.graphics = "opengl";
   } else if (probe.engine == "idtech3") {
     // id Tech 3 copies the OpenGL extension list into a fixed buffer; Mesa's is far longer than any
@@ -1007,7 +1024,8 @@ std::string DetectedLabel(const std::string& summary) {
            {"unity", "Unity"}, {"unity-il2cpp", "Unity"}, {"unity-legacy", "Unity"}, {"unity-legacy5", "Unity"},
            {"unreal", "Unreal Engine"}, {"unreal5", "Unreal Engine 5"}, {"source", "Source"},
            {"gamemaker", "GameMaker"}, {"godot", "Godot"}, {"love", "L\xC3\x96VE"}, {"nwjs", "NW.js"}, {"sil", "SIL"},
-           {"idtech3", "id Tech 3"}, {"hashlink", "HashLink"}, {"xna", "XNA"}, {"java", "Java"}, {"renpy", "Ren'Py"}})
+           {"idtech3", "id Tech 3"}, {"hashlink", "HashLink"}, {"xna", "XNA"}, {"java", "Java"}, {"renpy", "Ren'Py"},
+           {"monogame", "MonoGame"}})
     if (facts.count(id)) engine = name;
   for (const auto& fact : facts)
     if (engine == "NW.js" && fact.rfind("nwjs-", 0) == 0) engine += " " + fact.substr(5);

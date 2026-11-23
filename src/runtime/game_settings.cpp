@@ -3534,13 +3534,14 @@ bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilitie
   }
   // A program with no engine and nothing it draws (DefaultsRevision 1): one that imports a Qt web view only starts the
   // game (Fahrenheit Remastered's Aspyr launcher, #1197), so it's read once for the game's own program to start
-  // first. Ren'Py's games had no engine either (DefaultsRevision 2: Roadwarden, #960): one takes Ren'Py's defaults.
-  // Any other keeps what it was set up with and takes the revision.
+  // first. Ren'Py's games had no engine either (DefaultsRevision 2: Roadwarden, #960): one takes Ren'Py's defaults, and
+  // MonoGame's DesktopGL build its own (Stardew Valley, #1224). Any other keeps what it was set up with and takes the
+  // revision.
   std::optional<GameProbe> probed;
   if (!current && engine == "unknown") {
     probed = ProbeGame(install_root, *on_disk);
     if (recipe->defaults_revision < 1 && StartGameProgramFirst(install_root, *on_disk, *probed, kit, recipe)) return true;
-    if (probed->engine != "renpy") {
+    if (probed->engine != "renpy" && probed->engine != "monogame") {
       recipe->defaults_revision = DefaultsRevision(recipe->detected);
       current = moved = true;
     }
@@ -3577,7 +3578,7 @@ bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilitie
     }
     // Unreal's detection narrowed (DefaultsRevision 1): a program taken for Unreal's only for an "engine" folder beside
     // it (Cyberpunk 2077, #1163) takes the defaults its own files give, without -dx11. A game with no engine gets here
-    // only as Ren'Py, which takes its defaults.
+    // only as Ren'Py or MonoGame, which takes its defaults.
     if (engine != "unreal" && engine != "unreal5" && engine != "unknown") return moved;
   }
   *recipe = std::move(refreshed);

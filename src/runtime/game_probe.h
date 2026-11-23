@@ -14,7 +14,7 @@ namespace playden::runtime {
 // most kProbeScanBytes of a program are scanned.
 struct GameProbe {
   std::string engine;  // "unity", "unreal", "source", "gamemaker", "godot", "love", "nwjs", "sil", "idtech3",
-                       // "hashlink", "xna", "java", "renpy", or empty
+                       // "hashlink", "xna", "java", "renpy", "monogame", or empty
   // NW.js: nw.dll's version ("0.94.0"), empty when its version resource carries none (2017 builds such as OMORI's)
   // and for node-webkit before NW.js 0.13 (no nw.dll). Logs and the settings sheet show it.
   std::string engine_version;
