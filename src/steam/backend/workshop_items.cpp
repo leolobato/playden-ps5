@@ -199,6 +199,40 @@ WorkshopDownloadResult RunItem(DepotInstaller& installer, const StoredSession& s
   return {};
 }
 
+// What a failure detail says, for the log, without an ID, a path or a name from an item's content: up to three
+// leading words of letters only (such as "manifest unavailable"), then "http=<3 digits>" or "transport=<letters>"
+// if the detail names one.
+std::string WorkshopLogDetail(std::string_view detail) {
+  const auto letters = [](std::string_view word, bool digits) {
+    return !word.empty() && word.size() <= 24 && std::all_of(word.begin(), word.end(), [digits](char c) {
+      return (c >= 'a' && c <= 'z') || c == '-' || c == '_' || (digits && c >= '0' && c <= '9');
+    });
+  };
+  std::vector<std::string_view> words;
+  for (std::size_t start = 0; start < detail.size();) {
+    auto end = detail.find(' ', start);
+    if (end == std::string_view::npos) end = detail.size();
+    if (end > start) words.push_back(detail.substr(start, end - start));
+    start = end + 1;
+  }
+  std::string out;
+  std::size_t lead = 0;
+  while (lead < words.size() && lead < 3 && letters(words[lead], false)) {
+    if (!out.empty()) out += '_';
+    out += words[lead++];
+  }
+  for (const auto word : words) {
+    const auto http = word.substr(0, 5) == "http=" && word.size() == 8 && std::all_of(word.begin() + 5, word.end(),
+                                                                                       [](char c) { return c >= '0' && c <= '9'; });
+    const auto transport = word.substr(0, 10) == "transport=" && letters(word.substr(10), false);
+    if (!http && !transport) continue;
+    if (!out.empty()) out += '_';
+    out += word;
+    break;
+  }
+  return out.empty() ? "none" : out;
+}
+
 }  // namespace
 
 std::string WorkshopFolder(const std::string& prefix) {
@@ -393,6 +427,10 @@ WorkshopPlan PlanWorkshopSync(const std::vector<WorkshopItem>& subscribed, const
   for (const auto& item : subscribed) {
     if (item.id == 0 || !seen.insert(item.id).second) continue;
     const auto* local = state.Find(item.id);
+    // A legacy item listed with no manifest is a download that never finished (a Playden that took the item's UGC
+    // handle for a manifest, #1319). It holds nothing of Playden's: a folder there was put by hand and is never
+    // removed. The sync drops the entry (UnfinishedLegacyItems).
+    if (local && local->manifest == 0 && item.legacy()) local = nullptr;
     const bool here = present.count(item.id) > 0;
     if (item.banned) {
       // Steam took it down: nothing downloads or updates. A copy Playden holds stays until the player turns it off
@@ -486,7 +524,7 @@ std::size_t AdoptSteamClientItems(const std::string& workshop_folder, std::uint3
                                   const std::vector<WorkshopItem>& subscribed, WorkshopState* state) {
   std::vector<const WorkshopItem*> candidates;
   for (const auto& item : subscribed)
-    if (item.id != 0 && item.downloadable() && !state->Find(item.id)) candidates.push_back(&item);
+    if (item.id != 0 && item.manifest != 0 && !state->Find(item.id)) candidates.push_back(&item);
   if (candidates.empty() || state->items.size() >= kWorkshopMaxItems) return 0;
   const auto installed = runtime::ReadAppWorkshopInstalled(workshop_folder, app_id);
   if (installed.empty()) return 0;
@@ -604,6 +642,22 @@ WorkshopSyncResult SyncWorkshopItems(const WorkshopSyncRequest& request, const s
     if (fetching.count(local.id)) continue;
     if (!RemoveManagedTree(*downloads, std::to_string(local.id)))
       return fail(InstallError::kStorage, "cannot clear a download");
+  }
+  // A legacy item listed for a download that never finished (PlanWorkshopSync) holds nothing, its staging just went:
+  // it leaves the state, so the sheet and the launch don't take it for an item in the bottle. Its folder, if any,
+  // stays: it is the player's.
+  {
+    std::set<std::uint64_t> unfinished;
+    for (const auto& item : request.subscribed)
+      if (const auto* local = state.Find(item.id); local && local->manifest == 0 && item.legacy())
+        unfinished.insert(item.id);
+    if (!unfinished.empty()) {
+      state.items.erase(std::remove_if(state.items.begin(), state.items.end(),
+                                       [&](const WorkshopLocalItem& local) { return unfinished.count(local.id) > 0; }),
+                        state.items.end());
+      if (!save()) return fail(InstallError::kStorage, "cannot write workshop state");
+      log("workshop sync dropped-unfinished-legacy=" + std::to_string(unfinished.size()));
+    }
   }
 
   std::size_t index = 0;
@@ -811,6 +865,7 @@ WorkshopSyncResult SyncWorkshopItems(const WorkshopSyncRequest& request, const s
   std::string line = std::string("workshop sync ") + (result.error == InstallError::kNone ? "done" : "stopped") +
                      " error=" + InstallErrorName(result.error);
   for (const auto& [outcome, count] : counts) line += std::string(" ") + WorkshopOutcomeName(outcome) + "=" + std::to_string(count);
+  if (result.error != InstallError::kNone) line += " detail=" + WorkshopLogDetail(result.detail);
   log(line);
   return result;
 }

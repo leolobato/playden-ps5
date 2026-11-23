@@ -29,18 +29,22 @@ struct WorkshopItem {
   std::string title;     // sanitised (SanitiseWorkshopText), at most kWorkshopTitleBytes
   std::string filename;  // sanitised, at most kWorkshopFilenameBytes
   std::uint64_t file_size = 0;
-  std::string file_url;
-  std::uint64_t manifest = 0;  // hcontent_file: the item's manifest in the game's Workshop depot
+  std::string file_url;        // empty when Steam's URL was longer than Playden keeps (see has_file_url)
+  bool has_file_url = false;   // Steam named a URL: a legacy item
+  // hcontent_file: the item's manifest in the game's Workshop depot. For a legacy item it is the file's UGC handle
+  // instead, which no depot holds (Left 4 Dead 2, #1319).
+  std::uint64_t manifest = 0;
   std::uint32_t time_created = 0;
   std::uint32_t time_updated = 0;
   std::uint32_t consumer_appid = 0;
   std::uint32_t file_type = 0;
   bool banned = false;  // listed, but never downloaded (see PlanWorkshopSync)
 
-  // An item with a depot manifest. Legacy items (only a file_url, from the old UGC system) are listed but
-  // Playden does not download them.
-  bool downloadable() const { return manifest != 0; }
-  bool legacy() const { return manifest == 0; }
+  // An item with a depot manifest. Legacy items (from the old UGC system: Steam names a file_url, and their
+  // hcontent_file is not a manifest) are listed but Playden does not download them. A URL decides it, as in
+  // DepotDownloader: a depot item has none.
+  bool legacy() const { return manifest == 0 || has_file_url || !file_url.empty(); }
+  bool downloadable() const { return !legacy(); }
 };
 
 // Valid UTF-8 (each invalid sequence becomes U+FFFD), without control characters (C0, DEL, C1, U+2028/9),
@@ -55,6 +59,7 @@ struct WorkshopPageStats {
   std::size_t failed = 0;       // result other than 1 and 9: the list is incomplete
   std::size_t gone = 0;         // result 9 (file not found): the item was deleted from the Workshop
   std::size_t banned = 0;       // listed, flagged banned
+  std::size_t legacy = 0;       // listed, from the old UGC system (WorkshopItem::legacy): never downloaded
   std::size_t other_app = 0;
   std::size_t not_item = 0;     // file_type other than 0 (collections, art, guides...)
   std::size_t invalid = 0;      // no ID, or damaged

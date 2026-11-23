@@ -141,7 +141,12 @@ std::optional<std::vector<WorkshopItem>> ParseWorkshopSubscriptions(const std::v
         case 5: if (varint) item.consumer_appid = u32(); break;
         case 7: if (bytes) item.filename = Sanitised(part, kWorkshopFilenameBytes); break;
         case 8: if (varint) item.file_size = part.value; break;
-        case 10: if (bytes && part.size <= kMaximumUrlBytes) item.file_url = Sanitised(part, kMaximumUrlBytes); break;
+        case 10:
+          if (bytes && part.size > 0) {
+            item.has_file_url = true;
+            if (part.size <= kMaximumUrlBytes) item.file_url = Sanitised(part, kMaximumUrlBytes);
+          }
+          break;
         case 14: if (part.wire_type == proto::WireType::kFixed64) item.manifest = part.value; break;
         case 16: if (bytes) item.title = Sanitised(part, kWorkshopTitleBytes); break;
         case 19: if (varint) item.time_created = u32(); break;
@@ -165,6 +170,7 @@ std::optional<std::vector<WorkshopItem>> ParseWorkshopSubscriptions(const std::v
     // Listed, flagged: a copy Playden holds stays (PlanWorkshopSync), nothing downloads.
     if (item.banned) ++count.banned;
     else ++count.kept;
+    if (item.legacy()) ++count.legacy;  // per page; FetchWorkshopSubscriptions counts the list itself
     items.push_back(std::move(item));
   }
   if (!top.ok()) return std::nullopt;
@@ -199,6 +205,7 @@ WorkshopSubscriptions FetchWorkshopSubscriptions(const WorkshopSessionRunner& ru
       for (auto& item : *items) {
         if (!seen.insert(item.id).second) continue;
         if (out.items.size() >= kWorkshopMaxItems) { out.truncated = true; break; }
+        if (item.legacy()) ++sum.legacy;
         out.items.push_back(std::move(item));
       }
       // An item Steam couldn't describe may be one Playden holds: the list doesn't name everything.
@@ -223,6 +230,7 @@ WorkshopSubscriptions FetchWorkshopSubscriptions(const WorkshopSessionRunner& ru
         " " + ErrorText(error, out.eresult) + " pages=" + std::to_string(out.pages) + " total=" + std::to_string(out.total) +
         " received=" + std::to_string(sum.received) + " kept=" + std::to_string(out.items.size()) +
         " failed=" + std::to_string(sum.failed) + " banned=" + std::to_string(sum.banned) + " gone=" + std::to_string(sum.gone) +
+        " legacy=" + std::to_string(sum.legacy) +
         " other_app=" + std::to_string(sum.other_app) + " not_item=" + std::to_string(sum.not_item) +
         " invalid=" + std::to_string(sum.invalid) + (out.truncated ? " truncated" : ""));
   return out;

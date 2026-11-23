@@ -1202,6 +1202,137 @@ void TestRealDownloader() {
 
 }  // namespace
 
+// Left 4 Dead 2 (#1319): an item from the old UGC system names a file_url, and its hcontent_file is the file's UGC
+// handle, not a manifest. It is never handed to the depot downloader (which tried it as a manifest, failed with a
+// network error on every server and stopped the sync, again on every retry); an entry such a try left in the state
+// is dropped with its staging.
+void TestLegacyUgcItems() {
+  std::atomic<bool> cancel{false};
+  // As Steam lists one: a UGC handle where a manifest would be, and a URL.
+  auto ugc = [](std::uint64_t id) {
+    auto item = Item(id, 13584402027613737184ull, 1000, 27609578);
+    item.file_url = "https://ugc.example.invalid/" + std::to_string(id) + "/";
+    item.has_file_url = true;
+    return item;
+  };
+  {
+    Fixture fixture;
+    FakeDownloads downloads;
+    downloads.files[20] = {{"mod.zip", "depot item"}};
+    std::vector<std::string> lines;
+    auto request = Request(fixture, downloads, {ugc(1), Item(2, 20), ugc(3)});
+    request.log = [&lines](const std::string& line) { lines.push_back(line); };
+    const auto result = SyncWorkshopItems(request, cancel);
+    CHECK(result.error == InstallError::kNone);
+    CHECK(downloads.calls == (std::vector<std::uint64_t>{20}));
+    CHECK(OutcomeOf(result, 1) && OutcomeOf(result, 1)->outcome == WorkshopOutcome::kSkippedLegacy);
+    CHECK(OutcomeOf(result, 3) && OutcomeOf(result, 3)->outcome == WorkshopOutcome::kSkippedLegacy);
+    CHECK(OutcomeOf(result, 2) && OutcomeOf(result, 2)->outcome == WorkshopOutcome::kDownloaded);
+    CHECK(result.plan.downloads == 1 && result.plan.download_bytes == 100);
+    CHECK(!Here(fixture.Item(1)) && !Here(fixture.Staging(1)));
+    const auto state = fixture.State();
+    CHECK(state.items.size() == 1 && state.Find(2));
+    CHECK(!lines.empty() && lines.back().find("workshop sync done") == 0 &&
+          lines.back().find("skipped-legacy=2") != std::string::npos);
+  }
+  {
+    // What a Playden that tried the handle left: the item listed with no manifest yet, a partial staging.
+    Fixture fixture;
+    FakeDownloads downloads;
+    WorkshopState state;
+    state.items.push_back({1, 0, 0, 0, true, "unfinished"});
+    CHECK(WriteWorkshopState(fixture.workshop.string(), kApp, state));
+    Write(fixture.Staging(1) / "addon.vpk", "partial");
+    // Without a sync, the sheet already counts it as not held.
+    const auto plan = PlanWorkshopSync({ugc(1)}, state, {}, {});
+    CHECK(plan.entries.size() == 1 && plan.entries[0].action == WorkshopAction::kSkipLegacy && plan.downloads == 0);
+    std::vector<std::string> lines;
+    auto request = Request(fixture, downloads, {ugc(1)});
+    request.log = [&lines](const std::string& line) { lines.push_back(line); };
+    const auto result = SyncWorkshopItems(request, cancel);
+    CHECK(result.error == InstallError::kNone && downloads.calls.empty());
+    CHECK(OutcomeOf(result, 1) && OutcomeOf(result, 1)->outcome == WorkshopOutcome::kSkippedLegacy);
+    CHECK(fixture.State().items.empty());
+    CHECK(!Here(fixture.Staging(1)) && !Here(fixture.Item(1)));
+    CHECK(std::find(lines.begin(), lines.end(), "workshop sync dropped-unfinished-legacy=1") != lines.end());
+    // A copy Playden holds of an item that is legacy now stays.
+    state.items = {{4, 40, 1000, 400, true, "held"}};
+    CHECK(PlanWorkshopSync({ugc(4)}, state, {}, {4}).entries[0].action == WorkshopAction::kKeep);
+  }
+  {
+    // The player copied the item in by hand after a failed try: the folder is theirs. Not held, not removed when
+    // turned off or unsubscribed; the leftover entry goes. Also for an item Steam has since flagged.
+    Fixture fixture;
+    FakeDownloads downloads;
+    WorkshopState state;
+    state.items.push_back({1, 0, 0, 0, true, "unfinished"});
+    state.items.push_back({2, 0, 0, 0, true, "unfinished, banned"});
+    CHECK(WriteWorkshopState(fixture.workshop.string(), kApp, state));
+    Write(fixture.Item(1) / "addon.vpk", "by hand");
+    auto banned = ugc(2);
+    banned.banned = true;
+    const auto plan = PlanWorkshopSync({ugc(1), banned}, state, {1}, {1});
+    CHECK(plan.entries.size() == 1 && plan.entries[0].action == WorkshopAction::kSkipOff && plan.removals == 0);
+    CHECK(PlanWorkshopSync({ugc(1)}, state, {}, {1}).entries[0].action == WorkshopAction::kSkipLegacy);
+    auto result = SyncWorkshopItems(Request(fixture, downloads, {ugc(1), banned}, {1}), cancel);
+    CHECK(result.error == InstallError::kNone && downloads.calls.empty());
+    CHECK(Read(fixture.Item(1) / "addon.vpk") == "by hand");
+    CHECK(fixture.State().items.empty());
+    result = SyncWorkshopItems(Request(fixture, downloads, {}), cancel);
+    CHECK(result.error == InstallError::kNone && Read(fixture.Item(1) / "addon.vpk") == "by hand");
+  }
+  {
+    // Valve's client installed one in Online (its installed list names it with a manifest): Playden adopts it as
+    // its own and keeps it, URL or not.
+    Fixture fixture;
+    FakeDownloads downloads;
+    Write(fixture.Item(5) / "addon.vpk", "valve");
+    Write(fixture.workshop / runtime::WorkshopAcfName(kApp),
+          *runtime::MergeAppWorkshopAcf(std::nullopt, kApp, {{5, 100, 1000, 77}}));
+    auto item = ugc(5);
+    item.manifest = 77;
+    const auto result = SyncWorkshopItems(Request(fixture, downloads, {item}), cancel);
+    CHECK(result.error == InstallError::kNone && downloads.calls.empty());
+    CHECK(OutcomeOf(result, 5) && OutcomeOf(result, 5)->outcome == WorkshopOutcome::kKept);
+    CHECK(fixture.State().Find(5) && fixture.State().Find(5)->manifest == 77);
+  }
+}
+
+// The line a stopped sync logs says why, without a path from the item's content.
+void TestStoppedLineDetail() {
+  std::atomic<bool> cancel{false};
+  const auto stopped = [&](const std::string& detail, InstallError error) {
+    Fixture fixture;
+    FakeDownloads downloads;
+    std::vector<std::string> lines;
+    auto request = Request(fixture, downloads, {Item(1, 10)});
+    request.download = [&](const WorkshopItem&, const std::string&, const std::atomic<bool>&,
+                           const WorkshopProgressFn&) { return WorkshopDownloadResult{error, false, detail}; };
+    request.log = [&lines](const std::string& line) { lines.push_back(line); };
+    CHECK(SyncWorkshopItems(request, cancel).error == error);
+    return lines.empty() ? std::string() : lines.back();
+  };
+  auto line = stopped("manifest unavailable http=404", InstallError::kNetwork);
+  CHECK(line.find("workshop sync stopped error=network") == 0);
+  CHECK(line.find(" detail=manifest_unavailable_http=404") != std::string::npos);
+  line = stopped("cannot create folder for Maps/My Map.bsp: x is in the way", InstallError::kStorage);
+  const std::string folder = " detail=cannot_create_folder";
+  CHECK(line.size() >= folder.size() && line.compare(line.size() - folder.size(), folder.size(), folder) == 0);
+  CHECK(line.find("Map") == std::string::npos && line.find("for") == std::string::npos);
+  // What DepotInstaller says of a manifest that doesn't match: no depot or manifest ID.
+  line = stopped("manifest unavailable depot=550 bytes=1234 ids got_depot=550 got_gid=13584402027613737184",
+                 InstallError::kCorrupt);
+  CHECK(line.find(" detail=manifest_unavailable") != std::string::npos);
+  CHECK(line.find("550") == std::string::npos && line.find("13584402027613737184") == std::string::npos);
+  line = stopped("chunk unavailable transport=timeout", InstallError::kNetwork);
+  CHECK(line.find(" detail=chunk_unavailable_transport=timeout") != std::string::npos);
+  // A lowercase file name with spaces stays out after the third word.
+  line = stopped("cannot delete my secret mod/file.vpk", InstallError::kStorage);
+  CHECK(line.find("secret") == std::string::npos && line.find("mod") == std::string::npos);
+  line = stopped("", InstallError::kStorage);
+  CHECK(line.find(" detail=none") != std::string::npos);
+}
+
 int main() {
   TestEnsureFolder();
   TestStateFile();
@@ -1221,6 +1352,8 @@ int main() {
   TestOnlineJob();
   TestSteamClientItems();
   TestRealDownloader();
+  TestLegacyUgcItems();
+  TestStoppedLineDetail();
   if (failures) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);
     return 1;

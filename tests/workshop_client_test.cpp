@@ -372,6 +372,49 @@ void TestWorkshopDepot() {
 
 }  // namespace
 
+// Left 4 Dead 2 (#1319): Steam lists an item from the old UGC system with a URL and, where a manifest would be, the
+// file's UGC handle. It is legacy, not downloadable: a depot item has no URL. Also with a URL too long to keep.
+void TestLegacyUgc() {
+  Detail depot;
+  depot.id = 21;
+  Detail ugc;
+  ugc.id = 22;
+  ugc.manifest = 13584402027613737184ull;
+  ugc.url = "https://ugc.example.invalid/13584402027613737184/333EB399/";
+  Detail long_url = ugc;
+  long_url.id = 23;
+  long_url.url = "https://ugc.example.invalid/" + std::string(4096, 'a');
+  WorkshopPageStats stats;
+  const auto items = ParseWorkshopSubscriptions(Page(3, {depot, ugc, long_url}), kApp, &stats);
+  CHECK(items && items->size() == 3);
+  if (!items || items->size() != 3) return;
+  CHECK((*items)[0].downloadable() && !(*items)[0].legacy() && !(*items)[0].has_file_url);
+  CHECK((*items)[1].legacy() && !(*items)[1].downloadable() && (*items)[1].manifest == ugc.manifest);
+  CHECK((*items)[2].legacy() && (*items)[2].file_url.empty() && (*items)[2].has_file_url);
+  CHECK(stats.kept == 3 && stats.legacy == 2);
+}
+
+// The log line's legacy count is of the list handed to the sync: an item repeated on a later page counts once.
+void TestLegacyCountedOnce() {
+  Detail ugc;
+  ugc.id = 31;
+  ugc.url = "https://ugc.example.invalid/31/";
+  std::vector<std::vector<std::uint8_t>> pages = {Page(2, {ugc}), Page(2, {ugc})};
+  std::size_t page = 0;
+  const WorkshopSessionRunner run = [&](const auto& work) {
+    return work([&](const std::string&, const std::vector<std::uint8_t>&, std::vector<std::uint8_t>* reply, int* eresult) {
+      *eresult = 1;
+      *reply = pages[std::min(page++, pages.size() - 1)];
+      return CmError::kNone;
+    }, 76561190000000001ull);
+  };
+  std::atomic<bool> cancel{false};
+  std::string line;
+  const auto got = FetchWorkshopSubscriptions(run, kApp, cancel, [&line](const std::string& text) { line = text; });
+  CHECK(got.ok() && got.items.size() == 1);
+  CHECK(line.find(" legacy=1 ") != std::string::npos);
+}
+
 int main() {
   TestRequest();
   TestParse();
@@ -379,6 +422,8 @@ int main() {
   TestHostileText();
   TestPaging();
   TestWorkshopDepot();
+  TestLegacyUgc();
+  TestLegacyCountedOnce();
   if (failures) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);
     return 1;
