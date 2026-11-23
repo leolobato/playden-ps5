@@ -1139,6 +1139,57 @@ void ResetControllerLayout(GameSettingsRecord* record, const GameRecipe& recipe,
   else record->overrides.erase("controller_layout");
 }
 
+namespace {
+
+std::string EnvironmentNameUpper(std::string_view name) {
+  std::string upper(name);
+  for (auto& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  return upper;
+}
+
+// The names the runtime's profile sections carry ([environment] and [debug] env, IsProsperoEnvironmentEntry and
+// IsProsperoDebugEnvEntry), by name alone and without case: Wine and the drivers read these.
+bool IsProfileEnvironmentName(std::string_view name) {
+  const auto upper = EnvironmentNameUpper(name);
+  const auto starts = [&](std::string_view prefix) { return upper.compare(0, prefix.size(), prefix) == 0; };
+  for (const char* prefix : {"DXVK_", "MESA_", "RADV_", "SDL_", "VK_", "ZINK_", "GALLIUM_", "PW_"})
+    if (starts(prefix)) return true;
+  return upper == "WINE_CPU_TOPOLOGY" || upper == "WINE_LARGE_ADDRESS_AWARE" || upper == "WINE_PS5_PARK_FILES" ||
+         upper == "WINE_PS5_CACHED_FILES";
+}
+
+// Windows' and Wine's own variables, which the bottle needs as they are.
+bool IsReservedWindowsVariable(std::string_view name) {
+  static constexpr std::string_view kReserved[] = {
+      "ALLUSERSPROFILE", "APPDATA", "COMMONPROGRAMFILES", "COMMONPROGRAMW6432", "COMPUTERNAME", "COMSPEC",
+      "DRIVERDATA", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "NUMBER_OF_PROCESSORS", "OS", "PATH", "PATHEXT",
+      "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION", "PROGRAMDATA",
+      "PROGRAMFILES", "PROGRAMW6432", "PUBLIC", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERDOMAIN", "USERNAME",
+      "USERPROFILE", "WINDIR"};
+  const auto upper = EnvironmentNameUpper(name);
+  for (const auto reserved : kReserved)
+    if (upper == reserved) return true;
+  return upper.compare(0, 4, "WINE") == 0 && !IsProfileEnvironmentName(upper);
+}
+
+bool IsWindowsEnvironmentName(std::string_view name) {
+  if (name.empty() || name.size() >= 64 || (name.front() >= '0' && name.front() <= '9')) return false;
+  for (const char c : name)
+    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return false;
+  return !IsProfileEnvironmentName(name) && !IsReservedWindowsVariable(name);
+}
+
+// Why Environment variables refuses an entry's name.
+std::string EnvironmentRefusal(std::string_view name) {
+  const auto upper = EnvironmentNameUpper(name);
+  if (upper.compare(0, 4, "WINE") == 0 && !IsProfileEnvironmentName(upper))
+    return std::string(name) + " can't be set: Wine reads its own variables before the game starts.";
+  if (IsReservedWindowsVariable(name)) return std::string(name) + " is Windows' own variable, which the game's bottle needs.";
+  return std::string(name) + " is not an allowed variable. " + kEnvironmentNamesHint;
+}
+
+}  // namespace
+
 bool ValidateSettingValue(const GameRecipe& recipe, std::string_view id, std::string_view value, std::string* reason) {
   const auto fail = [&](std::string why) {
     if (reason) *reason = std::move(why);
@@ -1196,9 +1247,11 @@ bool ValidateSettingValue(const GameRecipe& recipe, std::string_view id, std::st
       while (!item.empty() && item.front() == ' ') item.remove_prefix(1);
       // DXVK_HUD and GALLIUM_HUD reach the game only with the runtime kit's overlay (RenderProsperoProfile).
       if (!IsProsperoEnvironmentEntry(name, item) && !IsProsperoDebugEnvEntry(name, item) &&
-          !IsProsperoHudDebugEnvEntry(name, item) && !IsBottleEnvironmentEntry(name, item))
-        return fail(std::string(name) + " is not an allowed variable. " + kEnvironmentNamesHint);
-      if (!names.insert(std::string(name)).second) return fail(std::string(name) + " appears twice");
+          !IsProsperoHudDebugEnvEntry(name, item) && !IsBottleEnvironmentEntry(name, item) &&
+          !IsWindowsEnvironmentEntry(name, item))
+        return fail(EnvironmentRefusal(name));
+      // Windows compares variable names without case.
+      if (!names.insert(EnvironmentNameUpper(name)).second) return fail(std::string(name) + " appears twice");
       if (++count > kProsperoMaxEnvironmentEntries) return fail("at most 8 variables");
     }
     return true;
@@ -2050,7 +2103,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   const auto& cores = OptionalValue(settings, "cpu_topology");
   std::string topology;
   if (cores.available && cores.value != "kit" &&
-      (!environment.available || environment.value.find("WINE_CPU_TOPOLOGY") == std::string::npos)) {
+      (!environment.available || !EnvironmentSetsName(environment.value, "WINE_CPU_TOPOLOGY"))) {
     const int count = std::atoi(cores.value.c_str());
     topology = std::to_string(count) + ":";
     for (int core = 0; core < count; ++core) topology += (core ? "," : "") + std::to_string(core);
@@ -2326,7 +2379,8 @@ bool RecipeRegistryValueAllowed(const std::string& key, const std::string& name,
                              : "use a section of the program's key, like " + key + "\\Direct3D";
     return false;
   }
-  static const std::set<std::string> kNotTheGames = {"wine", "microsoft", "classes", "policies", "wow6432node"};
+  // playden: kBottleEnvironmentNamesKey, which a recipe's value could otherwise rewrite.
+  static const std::set<std::string> kNotTheGames = {"wine", "microsoft", "classes", "policies", "wow6432node", "playden"};
   if (parts.size() >= 2 && parts[0] == "software" && !kNotTheGames.count(parts[1])) return true;
   *why = "only Software\\Wine\\AppDefaults\\<program>\\<section> and the game's own Software\\<publisher> keys";
   return false;
@@ -4087,6 +4141,13 @@ bool ClearShaderCache(const LaunchEntry& launch, const std::string& install_root
   return true;
 }
 
+bool IsWindowsEnvironmentEntry(std::string_view name, std::string_view value) {
+  if (!IsWindowsEnvironmentName(name) || value.empty() || value.size() >= 128) return false;
+  for (const unsigned char c : value)
+    if (c < 0x20 || c > 0x7e || c == '"' || c == '\'') return false;
+  return true;
+}
+
 bool IsBottleEnvironmentEntry(std::string_view name, std::string_view value) {
   if (std::find(std::begin(kBottleEnvironmentNames), std::end(kBottleEnvironmentNames), name) ==
           std::end(kBottleEnvironmentNames) ||
@@ -4097,8 +4158,17 @@ bool IsBottleEnvironmentEntry(std::string_view name, std::string_view value) {
   return true;
 }
 
-std::vector<RegistryValue> RenderBottleEnvironment(const EffectiveSettings& settings) {
+std::vector<RegistryValue> RenderBottleEnvironment(const EffectiveSettings& settings,
+                                                   const std::vector<std::string>& previous_names) {
   std::map<std::string, std::string> listed;
+  // The other Windows variables, by their name in capitals (Windows compares without case): written as the row
+  // spells them.
+  std::map<std::string, std::pair<std::string, std::string>> windows;
+  const auto fixed = [](const std::string& upper) {
+    for (const char* known : kBottleEnvironmentNames)
+      if (upper == known) return true;
+    return false;
+  };
   const auto& environment = settings.values.at("environment");
   if (environment.available)
     for (std::size_t start = 0; start <= environment.value.size();) {
@@ -4112,7 +4182,10 @@ std::vector<RegistryValue> RenderBottleEnvironment(const EffectiveSettings& sett
       while (!name.empty() && name.back() == ' ') name.pop_back();
       while (!item.empty() && item.front() == ' ') item.erase(0, 1);
       while (!item.empty() && item.back() == ' ') item.pop_back();
-      if (IsBottleEnvironmentEntry(name, item)) listed[name] = item;
+      const auto upper = EnvironmentNameUpper(name);
+      // vkd3d-proton's names in any case (Windows compares without it) are those names.
+      if (IsBottleEnvironmentEntry(upper, item)) listed[upper] = item;
+      else if (IsWindowsEnvironmentEntry(name, item)) windows[upper] = {name, item};
     }
   // The PS5 GPU has only Tier 1 tiled resources, so vkd3d-proton stops at feature level 11_1, and games that ask
   // for 12_0 (most Unreal 5 games) say Direct3D 12 is not supported. Reported feature level picks the level (12_0
@@ -4141,6 +4214,26 @@ std::vector<RegistryValue> RenderBottleEnvironment(const EffectiveSettings& sett
     }
     values.push_back({"Environment", name, data});
   }
+  const auto quoted = [](const std::string& text) {
+    std::string data = "\"";
+    for (const char c : text) data += c == '\\' ? std::string("\\\\") : std::string(1, c);
+    return data + "\"";
+  };
+  std::string names;
+  for (const auto& [upper, entry] : windows) {
+    values.push_back({"Environment", entry.first, quoted(entry.second)});
+    names += (names.empty() ? "" : ";") + entry.first;
+  }
+  // A variable written last time and no longer listed leaves the bottle. Only names the row could have written: the
+  // list sits in the bottle, where anything may have edited it.
+  std::set<std::string> removed;
+  for (const auto& name : previous_names) {
+    const auto upper = EnvironmentNameUpper(name);
+    if (!IsWindowsEnvironmentName(name) || fixed(upper) || windows.count(upper) || !removed.insert(upper).second) continue;
+    values.push_back({"Environment", name, ""});
+  }
+  if (!names.empty() || !previous_names.empty())
+    values.push_back({kBottleEnvironmentNamesKey, kBottleEnvironmentNamesValue, names.empty() ? std::string() : quoted(names)});
   return values;
 }
 
@@ -4501,6 +4594,33 @@ std::optional<std::string> RegistryData(const std::string& text, const std::stri
 }
 
 }  // namespace
+
+std::vector<std::string> BottleEnvironmentNames(const std::string& user_reg) {
+  std::vector<std::string> names;
+  const auto data = RegistryData(user_reg, kBottleEnvironmentNamesKey, kBottleEnvironmentNamesValue);
+  if (!data || data->size() < 2 || data->front() != '"' || data->back() != '"') return names;
+  const auto list = data->substr(1, data->size() - 2);
+  for (std::size_t start = 0; start <= list.size();) {
+    const auto end = std::min(list.find(';', start), list.size());
+    if (end > start) names.push_back(list.substr(start, end - start));
+    start = end + 1;
+  }
+  return names;
+}
+
+bool ApplyBottleEnvironment(const EffectiveSettings& settings, const std::string& prefix_dir, std::int64_t unix_time,
+                            std::string* reason) {
+  // The names come from the hive the edit is made to: a read that fails stops here rather than forget them.
+  // The bottle is open when its title has publication-open-modes (#868): any mode.
+  auto directory = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kOpenTree);
+  std::string text;
+  if (!directory || ReadRegularAt(*directory, "user.reg", 32u * 1024u * 1024u, &text, nullptr, true) != RelativeRead::kPresent) {
+    if (reason) *reason = "cannot read the bottle's user.reg";
+    return false;
+  }
+  return ApplyRegistryFileValues(RenderBottleEnvironment(settings, BottleEnvironmentNames(text)), prefix_dir, unix_time,
+                                 reason);
+}
 
 bool PointBottleAtKitMono(const std::string& template_dir, const std::string& prefix_dir, std::int64_t unix_time,
                           bool* changed, std::string* reason) {

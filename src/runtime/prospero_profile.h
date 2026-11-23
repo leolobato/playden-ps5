@@ -128,12 +128,6 @@ inline constexpr const char* kBottleEnvironmentNames[] = {
     "VKD3D_SHADER_MODEL",    "VKD3D_SWAPCHAIN_IMAGES", "VKD3D_SWAPCHAIN_LATENCY_FRAMES",
     "VKD3D_SWAPCHAIN_PRESENT_MODE"};
 
-// The exact variables Playden itself sets or documents: its rows (CPU cores: WINE_CPU_TOPOLOGY, Frame limit:
-// DXVK_FRAME_RATE), what a generated recipe writes (MESA_EXTENSION_MAX_YEAR), the runtime switch it documents
-// (PW_MEDIA_DISABLE) and vkd3d-proton's (kBottleEnvironmentNames). The profile and Environment variables still take
-// the broader families above for a player's own values; a community recipe may set only these, less the variables that
-// take a path (VKD3D_LOG_FILE, VKD3D_SHADER_CACHE_PATH).
-bool IsPlaydenEnvironmentVariable(std::string_view name);
 bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoProfileFeatures features = {});
 
 std::string ProsperoProfileId(std::uint32_t app_id);

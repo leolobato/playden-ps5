@@ -2214,7 +2214,7 @@ void t52_recipe_values_in_game_settings(const std::filesystem::path& fixtures, c
           "T52 Environment variables names the variables it accepts");
     activate(simulation, "setting-environment");
     check(simulation.state().editor.active, "T52 Environment variables opens the keyboard");
-    simulation.text("PROTON_DISABLE_LSTEAMCLIENT=1");
+    simulation.text("BAD-NAME=1");
     simulation.action("done");
     {
         const auto refused = std::find_if(simulation.state().notices.begin(), simulation.state().notices.end(),
@@ -2222,7 +2222,7 @@ void t52_recipe_values_in_game_settings(const std::filesystem::path& fixtures, c
         check(simulation.state().editor.active && refused != simulation.state().notices.end() && refused->persistent,
               "T52 a refused variable keeps the editor open with a notice");
         check(refused != simulation.state().notices.end() && refused->message == "Environment variables" &&
-                  refused->detail.rfind("PROTON_DISABLE_LSTEAMCLIENT is not an allowed variable.", 0) == 0 &&
+                  refused->detail.rfind("BAD-NAME is not an allowed variable.", 0) == 0 &&
                   refused->detail.find("DXVK_") != std::string::npos &&
                   refused->detail.find("WINE_CPU_TOPOLOGY") != std::string::npos,
               "T52 the notice gives the whole reason and the accepted names");
@@ -2235,7 +2235,7 @@ void t52_recipe_values_in_game_settings(const std::filesystem::path& fixtures, c
           "T52 a cancelled editor takes its refusal with it");
     activate(simulation, "setting-environment");
     simulation.action("triangle");  // clears the editor
-    simulation.text("PROTON_LOG=1");
+    simulation.text("WINEDEBUG=+relay");
     simulation.action("done");
     check(simulation.state().editor.active, "T52 refused again");
     simulation.action("triangle");  // clears the editor

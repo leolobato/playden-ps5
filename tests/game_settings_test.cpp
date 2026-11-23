@@ -2106,9 +2106,11 @@ int main(int argc, char** argv) {
   CHECK(!ValidateSettingValue(hl2, "environment", "DXVK_HUD=a b", &reason));
   CHECK(!ValidateSettingValue(hl2, "environment", "DXVK_A=1;DXVK_A=2", &reason));
   CHECK(!ValidateSettingValue(hl2, "environment", "DXVK_A", &reason));
-  // A refused name says which names are allowed, and every name the hint lists is (#480).
-  CHECK(!ValidateSettingValue(hl2, "environment", "PROTON_LOG=1", &reason) &&
-        reason == std::string("PROTON_LOG is not an allowed variable. ") + kEnvironmentNamesHint);
+  // A name no profile section carries is a Windows variable for the game; a name that isn't one says which names are
+  // allowed, and every name the hint lists is (#480).
+  CHECK(ValidateSettingValue(hl2, "environment", "PROTON_LOG=1", &reason));
+  CHECK(!ValidateSettingValue(hl2, "environment", "BAD-NAME=1", &reason) &&
+        reason == std::string("BAD-NAME is not an allowed variable. ") + kEnvironmentNamesHint);
   for (const char* prefix : {"DXVK_", "MESA_", "RADV_", "SDL_", "VK_", "ZINK_", "GALLIUM_", "PW_"}) {
     CHECK(std::string_view(kEnvironmentNamesHint).find(std::string(prefix) + ",") != std::string_view::npos ||
           std::string_view(kEnvironmentNamesHint).find(std::string(prefix) + " ") != std::string_view::npos);
@@ -2483,7 +2485,7 @@ int main(int argc, char** argv) {
                             R"(Software\\Wine\\AppDefaults\\a.exe\\DllOverrides)", R"(Software\\Wine\\AppDefaults\\a.exe)",
                             R"(Software\\Microsoft\\Windows\\CurrentVersion\\Run)", R"(Software\\Classes\\CLSID)",
                             R"(Software\\Policies\\X)", R"(software\\WINE\\drivers)", R"(Software)", R"(Environment)",
-                            R"(Control Panel\\Mouse)", R"(Console)"}) {
+                            R"(Control Panel\\Mouse)", R"(Console)", R"(Software\\Playden)", R"(software\\PLAYDEN\\x)"}) {
       CHECK(!ParseGameRecipe(head + "{\"" + key + R"(":{"A":"1"}}})", &refused, &reason));
     }
     CHECK(!ParseGameRecipe(head + R"({"Software\\Wine\\AppDefaults\\a.exe\\DllOverrides":{"d3d9":"native"}}})", &refused, &reason) &&
@@ -3373,7 +3375,11 @@ int main(int argc, char** argv) {
     CHECK(BuildEffectiveSettings(hl2, nullptr, {}, env_kit, &env_settings, &env_error));
     CHECK(ApplyBottleRegistryValues(RenderBottleEnvironment(env_settings), env_bottle.string(), 100, "user.reg", &reason));
     CHECK(ReadText(env_bottle / "user.reg") == hive && !std::filesystem::exists(env_bottle / "user.reg.playden-backup"));
-    CHECK(!ValidateSettingValue(hl2, "environment", "VKD3D_NOPE=1", &reason));
+    CHECK(ValidateSettingValue(hl2, "environment", "VKD3D_NOPE=1", &reason));  // a Windows variable now
+    CHECK(!ValidateSettingValue(hl2, "environment", "WINEDEBUG=+relay", &reason) && reason.find("Wine reads") != std::string::npos);
+    CHECK(!ValidateSettingValue(hl2, "environment", "Path=C:\\x", &reason) && reason.find("Windows' own") != std::string::npos);
+    CHECK(!ValidateSettingValue(hl2, "environment", "1GAME=1", &reason));
+    CHECK(!ValidateSettingValue(hl2, "environment", "GAME_MODE=1;game_mode=2", &reason) && reason.find("twice") != std::string::npos);
     CHECK(!ValidateSettingValue(hl2, "environment", "VKD3D_DEBUG=\"x\"", &reason));
     CHECK(BuildEffectiveSettings(hl2, nullptr, {{"environment", "VKD3D_DEBUG=warn; VKD3D_LOG_FILE=C:\\vkd3d.log;DXVK_LOG_LEVEL=info"}},
                                  env_kit, &env_settings, &env_error));
@@ -3389,6 +3395,58 @@ int main(int argc, char** argv) {
     CHECK(ApplyBottleRegistryValues(RenderBottleEnvironment(env_settings), env_bottle.string(), 200, "user.reg", &reason));
     text = ReadText(env_bottle / "user.reg");
     CHECK(text.find("VKD3D_DEBUG") == std::string::npos && text.find("\"VKD3D_CONFIG\"=\"no_upload_hvv\"") != std::string::npos);
+  }
+  // Any other variable reaches the game's Windows programs through the same key, never the profile, and leaves the
+  // bottle once the row drops it: the bottle records the names it was given.
+  {
+    const auto env_bottle = root / "env-windows-bottle";
+    std::filesystem::create_directory(env_bottle);
+    std::filesystem::permissions(env_bottle, std::filesystem::perms::owner_all);
+    const std::string hive = "WINE REGISTRY Version 2\n;; All keys relative to REGISTRY\\\\User\\\\S-1-5-21-0-0-0-1000\n\n#arch=win64\n"
+                             "\n[Environment] 1\n\"TEMP\"=\"C:\\\\users\\\\temp\"\n";
+    std::ofstream(env_bottle / "user.reg") << hive;
+    ::chmod((env_bottle / "user.reg").c_str(), 0600);
+    KitCapabilities env_kit;
+    env_kit.environment = true;
+    EffectiveSettings env_settings;
+    SettingsError env_error;
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"environment", "MyGame_Mode=safe;GAME_PATH=C:\\game;DXVK_LOG_LEVEL=info"}},
+                                 env_kit, &env_settings, &env_error));
+    ProsperoProfile env_profile;
+    CHECK(RenderProsperoProfile(hl2, env_settings, target, &env_profile, &reason));
+    CHECK(env_profile.text.find("MyGame_Mode") == std::string::npos && env_profile.text.find("DXVK_LOG_LEVEL") != std::string::npos);
+    CHECK(ApplyBottleEnvironment(env_settings, env_bottle.string(), 300, &reason));
+    auto text = ReadText(env_bottle / "user.reg");
+    CHECK(text.find("\"MyGame_Mode\"=\"safe\"\n") != std::string::npos);
+    CHECK(text.find("\"GAME_PATH\"=\"C:\\\\game\"\n") != std::string::npos);
+    CHECK(text.find("DXVK_LOG_LEVEL") == std::string::npos && text.find("\"TEMP\"=") != std::string::npos);
+    CHECK((BottleEnvironmentNames(text) == std::vector<std::string>{"GAME_PATH", "MyGame_Mode"}));
+    // One taken out leaves; the other stays; Wine's TEMP is never touched.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"environment", "GAME_PATH=C:\\game"}}, env_kit, &env_settings, &env_error));
+    CHECK(ApplyBottleEnvironment(env_settings, env_bottle.string(), 400, &reason));
+    text = ReadText(env_bottle / "user.reg");
+    CHECK(text.find("MyGame_Mode") == std::string::npos && text.find("\"GAME_PATH\"=") != std::string::npos &&
+          text.find("\"TEMP\"=") != std::string::npos);
+    CHECK((BottleEnvironmentNames(text) == std::vector<std::string>{"GAME_PATH"}));
+    // vkd3d-proton's names in any case are those names, written in capitals (Windows compares without case).
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"environment", "GAME_PATH=C:\\game;vkd3d_debug=warn"}}, env_kit, &env_settings, &env_error));
+    {
+      bool written = false;
+      for (const auto& value : RenderBottleEnvironment(env_settings))
+        if (value.name == "VKD3D_DEBUG") written = value.data == "\"warn\"";
+        else CHECK(value.name != "vkd3d_debug");
+      CHECK(written);
+    }
+    // A path can't reach [debug] env: the title's grammar has no backslash or space.
+    CHECK(!ValidateSettingValue(hl2, "environment", "VK_LAYER_PATH=C:\\layers", &reason));
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"environment", "GAME_PATH=C:\\game"}}, env_kit, &env_settings, &env_error));
+    // A names list edited by hand never removes Windows' own variables.
+    CHECK((RenderBottleEnvironment(env_settings, {"TEMP", "PATH", "WINEDEBUG"}).size() == RenderBottleEnvironment(env_settings).size()));
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {}, env_kit, &env_settings, &env_error));
+    CHECK(ApplyBottleEnvironment(env_settings, env_bottle.string(), 500, &reason));
+    text = ReadText(env_bottle / "user.reg");
+    CHECK(text.find("GAME_PATH") == std::string::npos && text.find("EnvironmentNames") == std::string::npos &&
+          text.find("\"TEMP\"=") != std::string::npos);
   }
 
   // An oversized registry file is rejected before backup or replacement.

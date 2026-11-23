@@ -148,7 +148,8 @@ void Rules(const std::string& fixtures) {
   refused("program-drive-letter.json", "not inside the game folder");
   refused("working-folder-outside.json", "starts in ../.., which is not inside the game folder");
   refused("wildcard-override.json", "without a wildcard");
-  refused("unknown-environment.json", "DXVK_CONFIG_FILE is not one Playden sets");
+  // env-wine-variable.json and env-windows-own-variable.json don't even read (the Environment variables row refuses
+  // them): test_community_recipe_check.py checks what the checker says.
   refused("registry-other-program.json", "explorer.exe, which is not one of the recipe's programs");
   refused("locked.json", "locked must be empty");
   refused("export-no-slug-no-title.json", "has no slug");
@@ -156,8 +157,6 @@ void Rules(const std::string& fixtures) {
   CHECK(!Mentions(CommunityRecipeRefusals(Load(fixtures + "/hostile/export-no-slug-no-title.json"), ci), "community.title"));
   refused("kit-not-a-version.json", "tested_kit is not a kit version");
   refused("kit-not-a-version.json", "min_kit is not a kit version");
-  refused("env-vkd3d-log-file.json", "VKD3D_LOG_FILE is not one Playden sets");
-  refused("env-vkd3d-shader-cache-path.json", "VKD3D_SHADER_CACHE_PATH is not one Playden sets");
   refused("env-large-address-aware.json", "share the Address space setting instead");
   refused("env-nsiproxy-disable.json", "share the Network adapters setting instead");
   refused("program-system-msiexec.json", "msiexec.exe, a Windows or Wine system program");
@@ -329,8 +328,7 @@ void Rules(const std::string& fixtures) {
   CHECK(Mentions(CommunityRecipeRefusals(community), "names xinput*"));
   community = good;
   community.recipe.defaults["environment"] = "VKD3D_CONFIG=dxr;PW_MEDIA_DISABLE=1;MESA_GL_VERSION_OVERRIDE=4.5";
-  CHECK(Mentions(CommunityRecipeRefusals(community), "MESA_GL_VERSION_OVERRIDE") &&
-        CommunityRecipeRefusals(community).size() == 1);
+  CHECK(CommunityRecipeRefusals(community).empty());
   // Online can be shared; the sign-in and invites stay each player's own; the emulator's network value can be shared.
   community = good;
   community.recipe.defaults["steam_features"] = "online";
@@ -353,13 +351,11 @@ void Rules(const std::string& fixtures) {
   community.recipe.registry = {{"Software\\Wine\\AppDefaults\\DARKWOOD.EXE\\Direct3D", "VideoMemorySize", "\"4096\""}};
   CHECK(CommunityRecipeRefusals(community).empty() && Mentions(CommunityRecipeFlags(community), "registry: "));
 
-  // Only the variables that take no path; the player's own row and the profile still take all of them.
-  CHECK(!IsPlaydenEnvironmentVariable("VKD3D_LOG_FILE") && !IsPlaydenEnvironmentVariable("VKD3D_SHADER_CACHE_PATH") &&
-        IsPlaydenEnvironmentVariable("VKD3D_CONFIG") && IsPlaydenEnvironmentVariable("PW_MEDIA_DISABLE"));
+  // Any variable the Environment variables row takes may be shared, one a game reads for itself too.
   CHECK(IsBottleEnvironmentEntry("VKD3D_LOG_FILE", "Z:\\x.log"));
-  // The Wine switches GTA V's recipe sets.
-  for (const char* name : {"PW_IMAGE_HEADER_BASE", "PW_IMAGE_WRITECOPY_EXEC", "PW_DEBUG_REGISTERS_ZERO", "PW_SUBPAGE_FIXES"})
-    CHECK(IsPlaydenEnvironmentVariable(name));
+  community = good;
+  community.recipe.defaults["environment"] = "WINE_PS5_CACHED_FILES=0;DXVK_CONFIG_FILE=dxvk.conf;MyGame_Mode=safe";
+  CHECK(CommunityRecipeRefusals(community).empty());
   community = good;
   community.recipe.defaults["environment"] = "PW_DEBUG_REGISTERS_ZERO=1;PW_SUBPAGE_FIXES=1";
   CHECK(CommunityRecipeRefusals(community).empty());

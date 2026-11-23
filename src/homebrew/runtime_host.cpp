@@ -1789,17 +1789,16 @@ void RuntimeHost::SaveFoldersStep(Composition& c, const GameFiles& files) {
   Log(line);
 }
 
-// Generic step: vkd3d-proton's variables reach the game through the bottle's Environment key. Some change how
-// it draws, so a bottle that exists but cannot take them stops the start; one not made yet gets them on the
-// next Play.
+// Generic step: vkd3d-proton's variables and the other Windows variables Environment variables lists reach the game
+// through the bottle's Environment key. Some change how it draws, so a bottle that exists but cannot take them stops
+// the start; one not made yet gets them on the next Play.
 std::string RuntimeHost::BottleEnvironmentStep(const GameFiles& files) {
   struct stat hive {};
   std::string reason;
   if (::lstat((files.prefix + "/user.reg").c_str(), &hive) == 0 &&
-      !rt::ApplyBottleRegistryValues(rt::RenderBottleEnvironment(files.settings), files.prefix, config_.unix_time(),
-                                     "user.reg", &reason)) {
+      !rt::ApplyBottleEnvironment(files.settings, files.prefix, config_.unix_time(), &reason)) {
     Log("bottle environment app=" + std::to_string(files.record.runtime_number) + " failed=" + reason);
-    return "The game's vkd3d-proton variables could not be written: " + reason + ".";
+    return "The game's environment variables could not be written: " + reason + ".";
   }
   return {};
 }

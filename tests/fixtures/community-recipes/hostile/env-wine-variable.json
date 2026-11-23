@@ -27,7 +27,7 @@
     "refresh": "120",
     "resolution": "3840x2160",
     "steam_features": "emulate",
-    "environment": "DXVK_CONFIG_FILE=/data/playden/user/evil.conf"
+    "environment": "WINEDEBUG=+relay"
   },
   "locked": [],
   "executable": "Darkwood.exe",

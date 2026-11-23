@@ -424,10 +424,14 @@ Playden checks them again on the console:
   same rules as a launch entry's program and folder. Its `arguments`, `extra_arguments`, `dll_overrides`,
   `architecture` and `graphics` defaults are refused (see [Settings-only recipes](#settings-only-recipes-format_version-2)).
 - **Library overrides:** named libraries only, no wildcards (`*`).
-- **Environment:** the `environment` row may set only the variables Playden itself sets or documents:
-  `WINE_CPU_TOPOLOGY`, `DXVK_FRAME_RATE`, `MESA_EXTENSION_MAX_YEAR`, `PW_MEDIA_DISABLE` and vkd3d-proton's
-  `VKD3D_*` variables (`IsPlaydenEnvironmentVariable`, `src/runtime/prospero_profile.h`), except the two that take
-  a path, `VKD3D_LOG_FILE` and `VKD3D_SHADER_CACHE_PATH`. Other variables still work in your own Game settings.
+- **Environment:** the `environment` row may set any variable the Environment variables row takes, since one may be
+  what makes a game work. Names starting with `DXVK_`, `MESA_`, `RADV_`, `SDL_`, `VK_`, `ZINK_`, `GALLIUM_` or `PW_`,
+  and `WINE_CPU_TOPOLOGY`, `WINE_PS5_PARK_FILES` and `WINE_PS5_CACHED_FILES`, reach Wine and the drivers through the
+  game's profile. Any other name reaches the game's Windows programs through the bottle's
+  `HKEY_CURRENT_USER\Environment` key. Other `WINE…` names (Wine reads them before the game starts) and Windows' own
+  variables (`PATH`, `TEMP`, `SystemRoot`…) are refused, and so are `WINE_LARGE_ADDRESS_AWARE` and
+  `PW_NSIPROXY_DISABLE`, which the Address space and Network adapters settings carry. A Playden from before this
+  rule refuses a recipe that sets a variable it didn't know and offers the game's other recipes.
 - **Registry:** `Software\Wine\AppDefaults\<program>\…` only for one of the recipe's own programs.
   A publisher key (`Software\<publisher>\…`) is allowed, but I review it before it is merged. Every
   `AppDefaults` key is listed in the review items too.
@@ -508,7 +512,7 @@ needs go instead:
 | `Software\Wine\AppDefaults\<program>\DllOverrides`, `Software\Wine\DllOverrides` | Game settings would not show these overrides. | `dll_overrides` |
 | `Version` under `AppDefaults\<program>`, `Control Panel\Desktop` `LogPixels` | Game settings writes them on every start. | The Windows version and text scale rows in `defaults` |
 | Other `Software\Wine\…` keys (for example `Drivers`, `Direct3D`) | They change Wine for the whole bottle, including what the kit checks (`Drivers\Audio`). | A section under `AppDefaults\<program>` |
-| `Environment` | It would get around the environment allow-list. | The `environment` row in `defaults` |
+| `Environment` | Game settings would not show these variables, or remove them. | The `environment` row in `defaults` |
 | `Software\Microsoft`, `Software\Classes`, `Software\Policies`, `Control Panel`, other roots | Windows' own keys, not the game's. | Ask in an issue first. |
 | `HKEY_LOCAL_MACHINE` values | The field writes `HKEY_CURRENT_USER` only. | Playden applies the game's Steam install scripts (the files its depots mark as install scripts), including their `HKEY_LOCAL_MACHINE` values. Ask in an issue if a game needs more. |
 

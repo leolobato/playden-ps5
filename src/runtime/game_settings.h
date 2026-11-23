@@ -557,11 +557,13 @@ void SetControllerLayout(GameSettingsRecord* record, const std::string& text, co
 // layout, the player's empty value keeps that one off too.
 void ResetControllerLayout(GameSettingsRecord* record, const GameRecipe& recipe, const SettingsPreset* preset);
 
-// The variables Environment variables accepts (IsProsperoEnvironmentEntry, IsProsperoDebugEnvEntry and
-// IsBottleEnvironmentEntry), as the setting's description and a refusal tell the player.
+// The variables Environment variables accepts (IsProsperoEnvironmentEntry, IsProsperoDebugEnvEntry,
+// IsBottleEnvironmentEntry and IsWindowsEnvironmentEntry), as the setting's description and a refusal tell the player.
 inline constexpr char kEnvironmentNamesHint[] =
-    "Allowed names start with DXVK_, MESA_, RADV_, SDL_, VK_, VKD3D_, ZINK_, GALLIUM_ or PW_, or are WINE_CPU_TOPOLOGY, "
-    "WINE_LARGE_ADDRESS_AWARE, WINE_PS5_PARK_FILES or WINE_PS5_CACHED_FILES.";
+    "Names starting with DXVK_, MESA_, RADV_, SDL_, VK_, ZINK_, GALLIUM_ or PW_, and WINE_CPU_TOPOLOGY, "
+    "WINE_LARGE_ADDRESS_AWARE, WINE_PS5_PARK_FILES and WINE_PS5_CACHED_FILES, reach Wine and the drivers. Any other "
+    "name reaches the game's Windows programs only; other WINE names and Windows' own variables (PATH, TEMP...) are "
+    "refused.";
 
 // Checks one player value for one setting; used by the UI before saving an override.
 bool ValidateSettingValue(const GameRecipe& recipe, std::string_view id, std::string_view value, std::string* reason);
@@ -773,9 +775,29 @@ std::vector<RegistryValue> RenderRegistryValues(const EffectiveSettings& setting
 // to the environment of the program it starts.
 bool IsBottleEnvironmentEntry(std::string_view name, std::string_view value);
 
+// Any other variable Environment variables takes: a name no profile section carries (none of the families above,
+// and not WINE...), for the game's Windows programs, which see it through the same Environment key. Wine and the
+// drivers don't. Windows' and Wine's own variables (PATH, TEMP, SystemRoot...) are refused: the bottle needs them.
+// Names compare without case, as Windows does.
+bool IsWindowsEnvironmentEntry(std::string_view name, std::string_view value);
+
+// Where the bottle keeps the names of the Windows variables Playden wrote (';' separated), so a variable taken out of
+// the row is removed on the next start even though its name is no fixed one.
+inline constexpr char kBottleEnvironmentNamesKey[] = "Software\\Playden";
+inline constexpr char kBottleEnvironmentNamesValue[] = "EnvironmentNames";
+
 // The bottle's Environment values for those variables: each one Environment variables lists is set, every other one
-// is removed, so a variable taken out of the row leaves the bottle as well.
-std::vector<RegistryValue> RenderBottleEnvironment(const EffectiveSettings& settings);
+// is removed, so a variable taken out of the row leaves the bottle as well. previous_names: the Windows variables
+// written last time (kBottleEnvironmentNamesKey), removed unless the row still lists them; the list is rewritten.
+std::vector<RegistryValue> RenderBottleEnvironment(const EffectiveSettings& settings,
+                                                   const std::vector<std::string>& previous_names = {});
+
+// The names kBottleEnvironmentNamesKey holds in a user.reg text; none when it isn't there.
+std::vector<std::string> BottleEnvironmentNames(const std::string& user_reg);
+
+// Writes RenderBottleEnvironment to the stopped bottle's user.reg, with the names the bottle recorded last time.
+bool ApplyBottleEnvironment(const EffectiveSettings& settings, const std::string& prefix_dir, std::int64_t unix_time,
+                            std::string* reason);
 
 // Applies values to Wine's user.reg text, keeping every other line. Sections Playden adds
 // carry the given Unix time. Returns false for text that is not a Wine registry file.

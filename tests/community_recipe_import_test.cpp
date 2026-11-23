@@ -103,7 +103,7 @@ void Refused() {
   std::string error;
   // The strict rules still apply.
   CHECK(!community::PrepareImportedRecipe(Read("hostile/program-absolute.json"), &error) && !error.empty());
-  CHECK(!community::PrepareImportedRecipe(Read("hostile/env-vkd3d-log-file.json"), &error) && !error.empty());
+  CHECK(!community::PrepareImportedRecipe(Read("hostile/env-wine-variable.json"), &error) && !error.empty());
   // Not a recipe.
   CHECK(!community::PrepareImportedRecipe("", &error) && !error.empty());
   CHECK(!community::PrepareImportedRecipe("{\"hello\":1}", &error) && !error.empty());

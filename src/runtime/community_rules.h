@@ -37,8 +37,8 @@ struct CommunityCheckOptions {};
 //   (program, program_folder, program_arguments, launch_option), checked as launch entries are; the arguments,
 //   extra_arguments, dll_overrides, architecture and graphics rows are not defaults (graphics is the recipe's field);
 // - library overrides: named libraries only, no wildcard;
-// - environment: only the variables Playden itself sets that take no path (IsPlaydenEnvironmentVariable), and not
-//   WINE_LARGE_ADDRESS_AWARE, which the Address space setting carries;
+// - environment: any variable the Environment variables row takes, but not WINE_LARGE_ADDRESS_AWARE or
+//   PW_NSIPROXY_DISABLE, which the Address space and Network adapters settings carry;
 // - registry: Software\Wine\AppDefaults\<one of the recipe's own programs>\..., or a publisher key
 //   (reported by CommunityRecipeFlags, not refused).
 std::vector<std::string> CommunityRecipeRefusals(const CommunityRecipe& community,

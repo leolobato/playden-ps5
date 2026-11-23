@@ -27,7 +27,7 @@
     "refresh": "120",
     "resolution": "3840x2160",
     "steam_features": "emulate",
-    "environment": "VKD3D_SHADER_CACHE_PATH=Z:\\data\\playden\\user"
+    "environment": "PATH=C:\\evil"
   },
   "locked": [],
   "executable": "Darkwood.exe",
