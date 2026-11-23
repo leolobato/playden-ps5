@@ -1487,7 +1487,13 @@ int main(int argc, char** argv) {
     // The reported GPU is a dxvk.conf option and CPU cores a Wine variable in [environment]: no runtime change.
     CHECK(BuildEffectiveSettings(hl2, nullptr, {{"reported_gpu", "nvidia"}, {"cpu_topology", "4"}}, every, &settings, &error));
     CHECK(settings.values.at("reported_gpu").available && settings.values.at("cpu_topology").available);
+    // AMD and NVIDIA name only the maker: the device ID stays DXVK's, which its own game profiles set for some games.
     CHECK(RenderDxvkConfig(settings).find("\ndxgi.customVendorId = 10de\nd3d9.customVendorId = 10de\n") != std::string::npos);
+    CHECK(RenderDxvkConfig(settings).find("customDeviceId") == std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"reported_gpu", "amd"}}, every, &settings, &error));
+    CHECK(RenderDxvkConfig(settings).find("\ndxgi.customVendorId = 1002\nd3d9.customVendorId = 1002\n") != std::string::npos);
+    CHECK(RenderDxvkConfig(settings).find("customDeviceId") == std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"reported_gpu", "nvidia"}, {"cpu_topology", "4"}}, every, &settings, &error));
     CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
     CHECK(profile.text.find("\n[environment]\nWINE_CPU_TOPOLOGY = 4:0,1,2,3\n") != std::string::npos);
     CHECK(BuildEffectiveSettings(hl2, nullptr, {{"cpu_topology", "4"}}, KitCapabilities{}, &settings, &error));
@@ -2888,8 +2894,8 @@ int main(int argc, char** argv) {
   std::vector<SettingsPreset> loaded_presets;
   std::vector<GameRecipe> loaded_recipes;
   CHECK(LoadSettingsData((source / "runtime").string(), &loaded_presets, &loaded_recipes, &reason));
-  CHECK(loaded_presets.size() == 4 && loaded_recipes.size() == 11 && loaded_recipes.front().app_id == 220 &&
-        loaded_recipes.back().id == "steam-2909400-ff7rebirth-v1");
+  CHECK(loaded_presets.size() == 4 && loaded_recipes.size() == 12 && loaded_recipes.front().app_id == 220 &&
+        loaded_recipes.back().id == "steam-1659420-uncharted-v1");
   CHECK(!LoadSettingsData((source / "missing").string(), &loaded_presets, &loaded_recipes, &reason));
   // FINAL FANTASY VII REBIRTH (#1297): Steam starts it with -dx11, which stops with a fatal error, and with -dx12 it asks
   // D3D12CreateDevice for feature level 12_2. Its recipe starts -dx12 on vkd3d-proton at 12_2; every other vkd3d-proton
@@ -2986,6 +2992,27 @@ int main(int argc, char** argv) {
     // A value outside the list is ignored, as for any row.
     CHECK(BuildEffectiveSettings(*expedition, nullptr, {{"d3d12_feature_level", "13_0"}}, kit, &other, &error));
     CHECK(feature_level(other) == "\"12_0\"");
+    // UNCHARTED: Legacy of Thieves Collection (#1298) turns down an AMD card it can't open through its own AGS library
+    // ("A GPU supporting D3D_FEATURE_LEVEL_12_0 or higher is required"), and asks on every start whether to reset its
+    // graphics settings while the card's device ID reads 0. Its recipe reports an Intel card with a real device ID.
+    const auto* uncharted = shipped(1659420);
+    CHECK(uncharted && uncharted->launch_entries.size() == 1 && uncharted->launch_entries[0].executable == "u4.exe");
+    auto conf_kit = kit;
+    conf_kit.dxvk_config = true;
+    EffectiveSettings intel;
+    CHECK(uncharted && BuildEffectiveSettings(*uncharted, nullptr, {}, conf_kit, &intel, &error));
+    CHECK(intel.vkd3d_proton && intel.architecture == "pe64" && feature_level(intel) == "\"12_0\"");
+    CHECK(intel.values.at("reported_gpu").value == "intel" && intel.values.at("reported_gpu").available &&
+          intel.values.at("reported_gpu").locked);
+    CHECK(intel.values.at("steam_features").value == "emulate");
+    // Graphics is locked too: a preset that picks OpenGL (Old 3D game) would turn the row off with it.
+    CHECK(intel.values.at("graphics").value == "dxvk" && intel.values.at("graphics").locked);
+    EffectiveSettings opengl;
+    CHECK(uncharted && BuildEffectiveSettings(*uncharted, nullptr, {{"graphics", "opengl"}}, conf_kit, &opengl, &error));
+    CHECK(opengl.values.at("graphics").value == "dxvk" && opengl.values.at("reported_gpu").available &&
+          RenderDxvkConfig(opengl).find("dxgi.customDeviceId = 56a0") != std::string::npos);
+    CHECK(RenderDxvkConfig(intel).find("\ndxgi.customVendorId = 8086\nd3d9.customVendorId = 8086\n"
+                                       "dxgi.customDeviceId = 56a0\nd3d9.customDeviceId = 56a0\n") != std::string::npos);
   }
 
   // ApplyGameSettings writes the profile and a Playden dxvk.conf, removes it when nothing is

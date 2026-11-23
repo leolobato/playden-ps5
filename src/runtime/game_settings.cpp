@@ -318,7 +318,8 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         "game", 2));
   list.push_back(Choice("reported_gpu", "Reported graphics card", "Which GPU maker the game is told it runs on.",
                         "dxgi.customVendorId", G::kGraphics,
-                        {{"game", "DXVK default", ""}, {"amd", "AMD", ""}, {"nvidia", "NVIDIA", ""}, {"intel", "Intel", ""}},
+                        {{"game", "DXVK default", ""}, {"amd", "AMD", ""}, {"nvidia", "NVIDIA", ""},
+                         {"intel", "Intel", "An Arc A770."}},
                         "game", 2));
   list.push_back(Choice("reported_vram", "Reported video memory", "How much VRAM the game is told it has. Does not add memory.",
                         "dxgi.maxDeviceMemory · d3d9.maxAvailableMemory", G::kGraphics,
@@ -2149,6 +2150,11 @@ std::string RenderDxvkConfig(const EffectiveSettings& settings) {
   if (gpu.available && gpu.value != "game") {
     const char* vendor = gpu.value == "amd" ? "1002" : gpu.value == "nvidia" ? "10de" : "8086";
     text += std::string("dxgi.customVendorId = ") + vendor + "\nd3d9.customVendorId = " + vendor + "\n";
+    // Intel comes with one of its cards (Arc A770): the PS5's driver reports device ID 0, and UNCHARTED: Legacy of
+    // Thieves Collection (#1298) saves the ID in screeninfo.cfg and, when it reads back 0, asks in a Windows box on
+    // every start whether to reset its graphics settings. AMD and NVIDIA keep the device ID DXVK picks, which its
+    // own game profiles set for some games (Halo: Combat Evolved's).
+    if (gpu.value == "intel") text += "dxgi.customDeviceId = 56a0\nd3d9.customDeviceId = 56a0\n";
   }
   const auto& vram = option("reported_vram");
   if (vram.available && vram.value != "game")

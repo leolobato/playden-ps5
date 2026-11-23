@@ -1,0 +1,20 @@
+{
+  "recipe_id": "steam-1659420-uncharted-v1",
+  "recipe_version": 1,
+  "app_id": 1659420,
+  "name": "UNCHARTED: Legacy of Thieves Collection",
+  "launch_entries": [
+    {"id": "game", "label": "UNCHARTED: Legacy of Thieves Collection", "executable": "u4.exe"}
+  ],
+  "dll_overrides": "d3d8,d3d9,d3d10core,d3d11,dxgi=n",
+  "architecture": "pe64",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "dxvk",
+  "defaults": {
+    "d3d12": "vkd3d-proton",
+    "reported_gpu": "intel",
+    "steam_features": "emulate"
+  },
+  "locked": ["graphics", "reported_gpu"]
+}
