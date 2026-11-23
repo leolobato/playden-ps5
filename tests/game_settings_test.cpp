@@ -3056,25 +3056,34 @@ int main(int argc, char** argv) {
     // A value outside the list is ignored, as for any row.
     CHECK(BuildEffectiveSettings(*expedition, nullptr, {{"d3d12_feature_level", "13_0"}}, kit, &other, &error));
     CHECK(feature_level(other) == "\"12_0\"");
-    // UNCHARTED: Legacy of Thieves Collection (#1298) turns down an AMD card it can't open through its own AGS library
-    // ("A GPU supporting D3D_FEATURE_LEVEL_12_0 or higher is required"), and asks on every start whether to reset its
-    // graphics settings while the card's device ID reads 0. Its recipe reports an Intel card with a real device ID.
+    // UNCHARTED: Legacy of Thieves Collection (#1298) asks AMD's driver about the GPU through its own amd_ags_x64.dll,
+    // which never answers on the PS5, and then stops with "A GPU supporting D3D_FEATURE_LEVEL_12_0 or higher is
+    // required". Its recipe uses the runtime kit's AMD GPU Services instead, locked.
     const auto* uncharted = shipped(1659420);
     CHECK(uncharted && uncharted->launch_entries.size() == 1 && uncharted->launch_entries[0].executable == "u4.exe");
+    auto ags_kit = kit;
+    ags_kit.amd_ags = true;
+    EffectiveSettings ags;
+    CHECK(uncharted && BuildEffectiveSettings(*uncharted, nullptr, {}, ags_kit, &ags, &error));
+    CHECK(ags.vkd3d_proton && ags.architecture == "pe64" && feature_level(ags) == "\"12_0\"");
+    CHECK(ags.values.at("amd_gpu_services").value == "runtime" && ags.values.at("amd_gpu_services").available &&
+          ags.values.at("amd_gpu_services").locked);
+    CHECK(ags.values.at("steam_features").value == "emulate" && Value(ags, "reported_gpu") == "game");
+    CHECK(ProfileDllOverrides(*uncharted, ags) == ags.dll_overrides + ";amd_ags_x64=b,n");
+    // Graphics stays locked: the game draws only with vkd3d-proton.
+    CHECK(ags.values.at("graphics").value == "dxvk" && ags.values.at("graphics").locked);
+    // A player can't turn it back to the game's own library.
+    CHECK(uncharted && BuildEffectiveSettings(*uncharted, nullptr, {{"amd_gpu_services", "game"}}, ags_kit, &ags, &error));
+    CHECK(Value(ags, "amd_gpu_services") == "runtime");
+    // A runtime kit without the library can't run it: the row says so and the profile gets nothing.
+    CHECK(uncharted && BuildEffectiveSettings(*uncharted, nullptr, {}, kit, &ags, &error));
+    CHECK(!ags.values.at("amd_gpu_services").available && ProfileDllOverrides(*uncharted, ags) == ags.dll_overrides);
+    // Reported graphics card = Intel comes with a real device ID: the PS5's driver reported 0, which UNCHARTED saved and
+    // then asked on every start whether to reset its graphics settings.
     auto conf_kit = kit;
     conf_kit.dxvk_config = true;
     EffectiveSettings intel;
-    CHECK(uncharted && BuildEffectiveSettings(*uncharted, nullptr, {}, conf_kit, &intel, &error));
-    CHECK(intel.vkd3d_proton && intel.architecture == "pe64" && feature_level(intel) == "\"12_0\"");
-    CHECK(intel.values.at("reported_gpu").value == "intel" && intel.values.at("reported_gpu").available &&
-          intel.values.at("reported_gpu").locked);
-    CHECK(intel.values.at("steam_features").value == "emulate");
-    // Graphics is locked too: a preset that picks OpenGL (Old 3D game) would turn the row off with it.
-    CHECK(intel.values.at("graphics").value == "dxvk" && intel.values.at("graphics").locked);
-    EffectiveSettings opengl;
-    CHECK(uncharted && BuildEffectiveSettings(*uncharted, nullptr, {{"graphics", "opengl"}}, conf_kit, &opengl, &error));
-    CHECK(opengl.values.at("graphics").value == "dxvk" && opengl.values.at("reported_gpu").available &&
-          RenderDxvkConfig(opengl).find("dxgi.customDeviceId = 56a0") != std::string::npos);
+    CHECK(uncharted && BuildEffectiveSettings(*uncharted, nullptr, {{"reported_gpu", "intel"}}, conf_kit, &intel, &error));
     CHECK(RenderDxvkConfig(intel).find("\ndxgi.customVendorId = 8086\nd3d9.customVendorId = 8086\n"
                                        "dxgi.customDeviceId = 56a0\nd3d9.customDeviceId = 56a0\n") != std::string::npos);
   }

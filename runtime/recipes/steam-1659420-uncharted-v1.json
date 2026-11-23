@@ -13,8 +13,8 @@
   "graphics": "dxvk",
   "defaults": {
     "d3d12": "vkd3d-proton",
-    "reported_gpu": "intel",
+    "amd_gpu_services": "runtime",
     "steam_features": "emulate"
   },
-  "locked": ["graphics", "reported_gpu"]
+  "locked": ["graphics", "amd_gpu_services"]
 }
