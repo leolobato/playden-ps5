@@ -19971,7 +19971,7 @@ std::optional<rt::CommunityRecipe> Simulation::build_shared_recipe(GameId id, bo
 }
 
 std::string Simulation::share_changes(GameId id, const std::optional<cm::RecipeRef>& base, bool* differs,
-                                      bool* program_or_graphics, bool* program_changed) const {
+                                      bool* program_or_graphics, bool* program_changed, bool program_path) const {
     *differs = false;
     *program_or_graphics = false;
     if (program_changed) *program_changed = false;
@@ -20007,7 +20007,9 @@ std::string Simulation::share_changes(GameId id, const std::optional<cm::RecipeR
     std::vector<std::string> items;
     const auto program = [](const rt::EffectiveSettings& values) { return values.launch ? values.launch->executable : std::string(); };
     if (BottlePath(program(before)) != BottlePath(program(after))) {
-        items.push_back("Program " + file_name(program(after)));
+        auto shown = program(after);
+        std::replace(shown.begin(), shown.end(), '\\', '/');
+        items.push_back("Program " + (program_path ? shown : file_name(shown)));
         *program_or_graphics = true;
     }
     // Library overrides as the player or the recipe set them, without the entries that follow Graphics and Direct3D 12.
@@ -20638,7 +20640,7 @@ void Simulation::send_feedback() {
     if (base.preset_id == "mouse") request.controls.push_back("mouse-preset");
     else if (base.preset_id == "arrows") request.controls.push_back("arrow-keys-preset");
     bool differs = false, launch = false;
-    request.settings = share_changes(id, std::nullopt, &differs, &launch);
+    request.settings = share_changes(id, std::nullopt, &differs, &launch, nullptr, true);
     request.settings = cm::ReportSettingsText(request.settings);
     if (const auto community = build_community_recipe(id)) {
             auto shared = *community;

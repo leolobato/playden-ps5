@@ -2007,6 +2007,25 @@ void report_library_overrides(const std::filesystem::path& base) {
           "Direct3D 12 back to Wine leaves the player's override");
 }
 
+// A report names a program the player chose by its path in the game folder, so a recipe made from the report can name
+// it too (a file name alone matches no program in a subfolder: Crysis 2's Bin32/Crysis2.exe).
+void report_program_path(const std::filesystem::path& base) {
+    using namespace overrides_text;
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    set_up_model(model, base, false, "dxvk");
+    std::map<GameId, playden::homebrew::LiveGameSetup> setups;
+    setups[kGame].scanned = true;
+    setups[kGame].programs = {{"Darkwood.exe", "pe64", "", false, ""}, {"Bin/Tool.exe", "pe64", "", false, ""}};
+    model.SetGameSetups(setups);
+    open_game_settings(model);
+    activate(model, "setting-launch_option");
+    activate(model, "program-1");
+    check(model.state().game_settings.at(kGame).overrides.count("program"), "the player chose Bin/Tool.exe");
+    const auto settings = report_settings(model);
+    if (!contains(settings, "Program Bin/Tool.exe")) std::fprintf(stderr, "report settings: %s\n", settings.c_str());
+    check(contains(settings, "Program Bin/Tool.exe"), "the report names the program with its folder");
+}
+
 // A report on a publisher game names its pack status ("Publisher pack": "Rockstar Games: untested"), so reports from
 // games nobody had tested are easy to find; the row survives a full list of the logs' facts.
 void report_publisher_pack_status(const std::filesystem::path& base) {
@@ -2128,6 +2147,7 @@ int main() {
     community_keep(base / "keep");
     report_with_logs(base / "report");
     report_library_overrides(base / "report-overrides");
+    report_program_path(base / "report-program-path");
     report_publisher_pack_status(base / "report-publisher-pack");
     report_recipe_dxvk_overrides(base / "report-recipe-overrides");
     account_link(base / "account");

@@ -2176,9 +2176,10 @@ private:
     std::optional<playden::runtime::CommunityRecipe> build_shared_recipe(GameId id, bool settings_only) const;
     // The Changes list between the game's base (Playden default without one) and its effective settings,
     // and whether anything, or the program or graphics, differs; program_changed: whether the player changed a row
-    // that chooses the program or how it starts (runtime::IsProgramRow).
+    // that chooses the program or how it starts (runtime::IsProgramRow). program_path: the program by its path in the
+    // game folder (a report, which a recipe is made from) rather than its file name (the Share sheet).
     std::string share_changes(GameId id, const std::optional<playden::community::RecipeRef>& base, bool* differs,
-                              bool* program_or_graphics, bool* program_changed = nullptr) const;
+                              bool* program_or_graphics, bool* program_changed = nullptr, bool program_path = false) const;
     [[nodiscard]] std::string community_title(GameId id, const std::string& recipe_id, const std::string& revision) const;
     [[nodiscard]] std::string vote_words(const playden::community::CastVote* vote) const;
     [[nodiscard]] std::vector<std::string> share_actions() const;
