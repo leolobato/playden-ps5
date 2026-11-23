@@ -27,6 +27,7 @@
     "cpu": "",
     "cpu_topology": "",
     "d3d12": "",
+    "d3d12_feature_level": "0.13.0",
     "dll_overrides": "",
     "environment": "",
     "extra_arguments": "",

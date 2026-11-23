@@ -14,8 +14,8 @@
   "graphics": "dxvk",
   "defaults": {
     "d3d12": "vkd3d-proton",
-    "environment": "VKD3D_FEATURE_LEVEL=12_2",
+    "d3d12_feature_level": "12_2",
     "steam_features": "emulate"
   },
-  "locked": ["d3d12", "environment"]
+  "locked": ["d3d12", "d3d12_feature_level"]
 }

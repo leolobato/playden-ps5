@@ -282,6 +282,25 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"wine", "Wine", "Wine's own Direct3D 12."},
                          {"vkd3d-proton", "vkd3d-proton", "Direct3D 12 on Vulkan, as in Proton. Experimental."}},
                         "wine"));
+  // The PS5's RADV has no PRT, so vkd3d-proton offers tiled resources tier 1 and stops at feature level 11_1; a game
+  // that asks D3D12CreateDevice for more gets nothing (#118, #1297). The row is the level vkd3d-proton reports
+  // (VKD3D_FEATURE_LEVEL in the bottle's Environment, RenderBottleEnvironment): each level above 11_1 claims the
+  // features it needs whether the GPU has them or not.
+  {
+    auto level = Choice("d3d12_feature_level", "Reported feature level",
+                        "The Direct3D 12 feature level vkd3d-proton tells the game. Above 11_1 it is faked: the PS5's GPU "
+                        "lacks some features it claims. Raise it only if a game says your GPU isn't supported.",
+                        "VKD3D_FEATURE_LEVEL", G::kGraphics,
+                        {{"11_1", "11_1", "What the GPU really supports. Try it if a game draws wrong or crashes at 12_0."},
+                         {"12_0", "12_0", "Fakes tiled resources tier 2. Most Unreal Engine 5 games need it to start."},
+                         {"12_1", "12_1", "12_0 plus the features the GPU really has for 12_1."},
+                         {"12_2", "12_2",
+                          "Also fakes variable-rate shading, mesh shaders and sampler feedback. A game can start, then "
+                          "crash later."}},
+                        "12_0");
+    level.since = "0.13.0";
+    list.push_back(std::move(level));
+  }
   // RADV runs pixel shaders in wave64 on the PS5's GPU by default; some never finish there and the console freezes
   // (Stray). Wave32 ran the same as wave64 in every game tested, so it is the default. A saved "auto" (the earlier
   // Automatic choice) is dropped when the record loads (RecordFromValue).
@@ -766,6 +785,7 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
     if (!kit.vkd3d_proton) return "Needs a runtime kit with vkd3d-proton.";
     if (!dxvk) return "Only available with DXVK.";
   }
+  if (id == "d3d12_feature_level" && !vkd3d_proton) return "Needs Direct3D 12 = vkd3d-proton.";
   if (id == "refresh") {
     if (!display_graphics) return "Only with DXVK or OpenGL.";
     if (kit.display_120hz_needs_update) return kAppliesAfterKitUpdate;
@@ -1621,6 +1641,15 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
   }
   // vkd3d-proton's entry follows the Direct3D 12 row the same way, whoever wrote the list.
   out.vkd3d_proton = out.values["d3d12"].value == "vkd3d-proton";
+  // A VKD3D_FEATURE_LEVEL typed in Environment variables is what the bottle gets (RenderBottleEnvironment), so
+  // Reported feature level says so rather than show a level the game never sees.
+  if (auto level = out.values.find("d3d12_feature_level"); level != out.values.end() && level->second.available) {
+    const auto& environment = out.values["environment"];
+    if (environment.available && EnvironmentSetsName(environment.value, "VKD3D_FEATURE_LEVEL")) {
+      level->second.available = false;
+      level->second.reason = "Environment variables set VKD3D_FEATURE_LEVEL.";
+    }
+  }
   // It also brings DXVK's dxgi, which it presents through, when no other entry names dxgi.
   if (out.vkd3d_proton || overrides_row.value.find(kVkd3dProtonOverrides) != std::string::npos ||
       overrides_row.value.find(kVkd3dProtonDxgiOverrides) != std::string::npos) {
@@ -4003,8 +4032,14 @@ std::vector<RegistryValue> RenderBottleEnvironment(const EffectiveSettings& sett
       if (IsBottleEnvironmentEntry(name, item)) listed[name] = item;
     }
   // The PS5 GPU has only Tier 1 tiled resources, so vkd3d-proton stops at feature level 11_1, and games that ask
-  // for 12_0 (most Unreal 5 games) say Direct3D 12 is not supported. A value typed in Environment variables wins.
-  if (settings.vkd3d_proton && !listed.count("VKD3D_FEATURE_LEVEL")) listed["VKD3D_FEATURE_LEVEL"] = "12_0";
+  // for 12_0 (most Unreal 5 games) say Direct3D 12 is not supported. Reported feature level picks the level (12_0
+  // unless changed; 11_1 is written too, so it is exactly what the player chose). A value typed in Environment
+  // variables wins.
+  if (settings.vkd3d_proton && !listed.count("VKD3D_FEATURE_LEVEL")) {
+    const auto row = settings.values.find("d3d12_feature_level");
+    listed["VKD3D_FEATURE_LEVEL"] =
+        row != settings.values.end() && row->second.available && !row->second.value.empty() ? row->second.value : "12_0";
+  }
   // A Frame limit on a display-120hz runtime replaces a VKD3D_FRAME_RATE typed in Environment variables: the display
   // paces the cap, or, for 30 at 120 Hz output, vkd3d-proton's own limiter does.
   if (FrameLimitOwnsCap(settings)) {

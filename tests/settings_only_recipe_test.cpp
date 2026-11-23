@@ -357,6 +357,25 @@ void Share() {
     const auto plain_share = BuildSettingsOnlyRecipe(base, plain, plain, playden::GameRef::Steam(274520), "Darkwood");
     CHECK(!plain_share.recipe.defaults.count("system_locale") && !plain_share.recipe.defaults.count("locale"));
   }
+  // Reported feature level (#1297) is shared once a player picks a level; left at Playden's 12_0 it stays out, so the
+  // share still loads in a Playden from before the row.
+  {
+    auto vkd3d_kit = kit;
+    vkd3d_kit.vkd3d_proton = true;
+    auto d3d12_base = Read("\"d3d12\": \"vkd3d-proton\", \"program\": \"Bin/Old.exe\"");
+    auto d3d12_filled = d3d12_base;
+    FillSettingsOnlyRecipe(&d3d12_filled.recipe, own, copy);
+    EffectiveSettings plain, raised;
+    CHECK(BuildEffectiveSettings(d3d12_filled.recipe, nullptr, {}, vkd3d_kit, &plain, &error));
+    CHECK(plain.vkd3d_proton && plain.values.at("d3d12_feature_level").available);
+    CHECK(BuildEffectiveSettings(d3d12_filled.recipe, nullptr, {{"d3d12_feature_level", "12_2"}}, vkd3d_kit, &raised,
+                                 &error));
+    const auto untouched_level = BuildSettingsOnlyRecipe(d3d12_base, plain, plain, playden::GameRef::Steam(274520), "Darkwood");
+    CHECK(!untouched_level.recipe.defaults.count("d3d12_feature_level"));
+    const auto raised_level = BuildSettingsOnlyRecipe(d3d12_base, plain, raised, playden::GameRef::Steam(274520), "Darkwood");
+    CHECK(raised_level.recipe.defaults.at("d3d12_feature_level") == "12_2" &&
+          raised_level.recipe.defaults.at("d3d12") == "vkd3d-proton");
+  }
   // Online is shared; the sign-in and invites stay each player's own; Offline emulation and its Steam network value
   // are shared.
   SetOnlineSteamEnabled(true);

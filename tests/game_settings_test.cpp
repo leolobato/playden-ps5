@@ -144,7 +144,7 @@ int main(int argc, char** argv) {
         "pointer_stick", "pointer_speed", "rumble",
         "volume", "microphone",
         "start_check",
-        "graphics", "d3d12", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
+        "graphics", "d3d12", "d3d12_feature_level", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
         "steam_library_path", "steam_network", "steam_input", "windows_version", "text_scale",
         "locale", "system_locale", "cpu_topology", "address_space", "cpu", "network_adapters", "logging",
         "environment", "program_folder", "program_arguments", "arguments", "architecture", "dll_overrides",
@@ -2917,23 +2917,61 @@ int main(int argc, char** argv) {
     CHECK(settings.arguments == "-dx12" && settings.architecture == "pe64" && settings.vkd3d_proton);
     CHECK(settings.values.at("d3d12").value == "vkd3d-proton" && settings.values.at("d3d12").locked);
     CHECK(feature_level(settings) == "\"12_2\"");
+    CHECK(settings.values.at("d3d12_feature_level").value == "12_2" && settings.values.at("d3d12_feature_level").locked);
     // It quits with "Please launch the game via the Steam client" on its own Steam library.
     CHECK(settings.values.at("steam_features").value == "emulate" && !settings.values.at("steam_features").locked);
-    // Environment variables is locked: a player's own variables replace the row, and the game then gets 12_0 again.
-    CHECK(settings.values.at("environment").locked);
+    // The player's own Environment variables leave the reported level alone.
+    CHECK(!settings.values.at("environment").locked);
     EffectiveSettings typed;
     CHECK(rebirth && BuildEffectiveSettings(*rebirth, nullptr, {{"environment", "VKD3D_DEBUG=warn"}}, kit, &typed, &error));
     CHECK(feature_level(typed) == "\"12_2\"");
-    // A share of these settings carries the recipe's feature level; another game's share has no Environment row.
+    // The locked row keeps its value until "Change anyway".
+    CHECK(rebirth && BuildEffectiveSettings(*rebirth, nullptr, {{"d3d12_feature_level", "12_0"}}, kit, &typed, &error));
+    CHECK(feature_level(typed) == "\"12_2\"");
+    // A share of these settings carries the recipe's level.
     const auto share = BuildCommunityRecipe(*rebirth, settings, playden::GameRef::Steam(2909400), "FINAL FANTASY VII REBIRTH");
-    CHECK(share.recipe.defaults.count("environment") &&
-          share.recipe.defaults.at("environment") == "VKD3D_FEATURE_LEVEL=12_2");
+    CHECK(share.recipe.defaults.count("d3d12_feature_level") && share.recipe.defaults.at("d3d12_feature_level") == "12_2");
+
+    // Every other vkd3d-proton game reports 12_0 unless the player picks another level, and a share names the row only
+    // then: an older Playden refuses a recipe that names a row it doesn't know.
     const auto* expedition = shipped(1903340);
     EffectiveSettings other;
     CHECK(expedition && BuildEffectiveSettings(*expedition, nullptr, {}, kit, &other, &error));
     CHECK(other.vkd3d_proton && feature_level(other) == "\"12_0\"");
-    CHECK(!BuildCommunityRecipe(*expedition, other, playden::GameRef::Steam(1903340), "Clair Obscur: Expedition 33")
-               .recipe.defaults.count("environment"));
+    CHECK(other.values.at("d3d12_feature_level").available && other.values.at("d3d12_feature_level").value == "12_0");
+    const auto expedition_ref = playden::GameRef::Steam(1903340);
+    CHECK(!BuildCommunityRecipe(*expedition, other, expedition_ref, "Clair Obscur: Expedition 33")
+               .recipe.defaults.count("d3d12_feature_level"));
+    for (const auto* level : {"11_1", "12_0", "12_1", "12_2"}) {
+      CHECK(BuildEffectiveSettings(*expedition, nullptr, {{"d3d12_feature_level", level}}, kit, &other, &error));
+      CHECK(feature_level(other) == "\"" + std::string(level) + "\"");
+    }
+    CHECK(BuildEffectiveSettings(*expedition, nullptr, {{"d3d12_feature_level", "12_1"}}, kit, &other, &error));
+    CHECK(BuildCommunityRecipe(*expedition, other, expedition_ref, "Clair Obscur: Expedition 33")
+              .recipe.defaults.at("d3d12_feature_level") == "12_1");
+    // A level typed in Environment variables wins over the row.
+    CHECK(BuildEffectiveSettings(*expedition, nullptr,
+                                 {{"d3d12_feature_level", "12_1"}, {"environment", "VKD3D_FEATURE_LEVEL=11_0"}}, kit, &other,
+                                 &error));
+    CHECK(feature_level(other) == "\"11_0\"");
+    CHECK(!other.values.at("d3d12_feature_level").available &&
+          other.values.at("d3d12_feature_level").reason == "Environment variables set VKD3D_FEATURE_LEVEL.");
+    // So does FF7's locked row: the sheet never shows 12_2 while the game gets another level.
+    CHECK(rebirth && BuildEffectiveSettings(*rebirth, nullptr, {{"environment", "VKD3D_FEATURE_LEVEL=11_1"}}, kit, &typed,
+                                            &error));
+    CHECK(feature_level(typed) == "\"11_1\"" && !typed.values.at("d3d12_feature_level").available);
+    // Only for vkd3d-proton: Wine's Direct3D 12, or a runtime kit without vkd3d-proton, gets no level at all.
+    CHECK(BuildEffectiveSettings(*expedition, nullptr, {{"d3d12", "wine"}}, kit, &other, &error));
+    CHECK(!other.values.at("d3d12_feature_level").available &&
+          other.values.at("d3d12_feature_level").reason == "Needs Direct3D 12 = vkd3d-proton.");
+    CHECK(feature_level(other).empty());
+    KitCapabilities no_vkd3d;
+    no_vkd3d.environment = true;
+    CHECK(BuildEffectiveSettings(*expedition, nullptr, {}, no_vkd3d, &other, &error));
+    CHECK(!other.values.at("d3d12_feature_level").available && feature_level(other).empty());
+    // A value outside the list is ignored, as for any row.
+    CHECK(BuildEffectiveSettings(*expedition, nullptr, {{"d3d12_feature_level", "13_0"}}, kit, &other, &error));
+    CHECK(feature_level(other) == "\"12_0\"");
   }
 
   // ApplyGameSettings writes the profile and a Playden dxvk.conf, removes it when nothing is
