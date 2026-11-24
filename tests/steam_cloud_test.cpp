@@ -1029,6 +1029,30 @@ void MapsLeadingSeparatorPaths() {
 // and syncs, and the Mac client's Cloud files are left alone.
 // #714: the folders Playden makes in a new bottle before the first start are the Cloud save locations inside the
 // Windows user folder, and only those.
+void MapsAccountTokensInAnyCase() {
+  // UNCHARTED: Legacy of Thieves Collection (1659420) writes the token as {Steam3AccountId}; Steam matches it
+  // whatever the case, so the location maps like {Steam3AccountID}.
+  const auto info = ParseAppInfo(kApp, UfsAppInfo(
+      "\t\t\t\"2\" { \"root\" \"WinSavedGames\" \"path\" \"Uncharted Legacy of Thieves Collection/users/{Steam3AccountId}/\""
+      " \"pattern\" \"*\" \"recursive\" \"1\" }\n"));
+  CHECK(info && info->cloud.declared);
+  const auto mapping = BuildSaveMapping(info->cloud, kApp, kSteamId);
+  CHECK(mapping.usable() && mapping.unresolved.empty());
+  const auto account = std::to_string(kSteamId & 0xffffffffULL);
+  const auto local = SavePaths(mapping).LocalFor("%WinSavedGames%Uncharted Legacy of Thieves Collection/users/" +
+                                                 account + "/SAVEDATA/save1.sav");
+  CHECK(local && local->root == SaveRoot::kPrefix &&
+        local->path == "drive_c/users/prospero/Saved Games/Uncharted Legacy of Thieves Collection/users/" + account +
+                           "/SAVEDATA/save1.sav");
+  // Without an account it asks for one, as {Steam3AccountID} does, instead of calling the location unsupported.
+  const auto unsigned_mapping = BuildSaveMapping(info->cloud, kApp, 0);
+  CHECK(unsigned_mapping.unresolved == std::vector<std::string>{"Sign in to resolve this game's account save folder."});
+  // {64bitsteamid} in any case too.
+  const auto lower = ParseAppInfo(kApp, UfsAppInfo(
+      "\t\t\t\"0\" { \"root\" \"WinAppDataRoaming\" \"path\" \"Game/{64bitsteamid}\" \"pattern\" \"*\" }\n"));
+  CHECK(lower && BuildSaveMapping(lower->cloud, kApp, kSteamId).usable());
+}
+
 void ProfileSaveFoldersStayInUserFolder() {
   const auto folders_of = [](const std::string& savefiles) {
     const auto info = ParseAppInfo(kApp, UfsAppInfo(savefiles));
@@ -1223,6 +1247,7 @@ int main() {
   ParsesUfsAndMaps();
   SkipsOtherPlatformLocations();
   MapsLeadingSeparatorPaths();
+  MapsAccountTokensInAnyCase();
   ProfileSaveFoldersStayInUserFolder();
   SyncEndToEnd();
   DamagedCloudCopyDoesNotBlockUploads();

@@ -19,10 +19,18 @@ std::string Join(const std::string& left, const std::string& right) {
   return left + "/" + right;
 }
 
-std::string Replace(std::string text, const std::string& find, const std::string& replace) {
-  for (std::size_t at = text.find(find); at != std::string::npos; at = text.find(find, at + replace.size()))
-    text.replace(at, find.size(), replace);
+// Steam matches the account tokens whatever their case: UNCHARTED: Legacy of Thieves Collection (1659420) writes
+// {Steam3AccountId}.
+std::string ReplaceToken(std::string text, const std::string& token, const std::string& replace) {
+  const auto lower_token = Lower(token);
+  for (std::size_t at = Lower(text).find(lower_token); at != std::string::npos;
+       at = Lower(text).find(lower_token, at + replace.size()))
+    text.replace(at, token.size(), replace);
   return text;
+}
+
+bool HasToken(const std::string& text, const std::string& token) {
+  return Lower(text).find(Lower(token)) != std::string::npos;
 }
 
 // Path segments must be plain names: no empty, "." or ".." parts and no characters that would
@@ -52,13 +60,13 @@ std::optional<std::string> RelativePath(std::string path, std::uint64_t steam_id
   if (!path.empty() && path.front() == '/') path.erase(path.begin());
   if (!path.empty() && path.front() == '/') return std::nullopt;
   while (!path.empty() && path.back() == '/') path.pop_back();
-  if (path.find("{64BitSteamID}") != std::string::npos || path.find("{Steam3AccountID}") != std::string::npos) {
+  if (HasToken(path, "{64BitSteamID}") || HasToken(path, "{Steam3AccountID}")) {
     if (steam_id == 0) {
       *needs_account = true;
       return std::nullopt;
     }
-    path = Replace(path, "{64BitSteamID}", std::to_string(steam_id));
-    path = Replace(path, "{Steam3AccountID}", std::to_string(steam_id & 0xffffffffULL));
+    path = ReplaceToken(path, "{64BitSteamID}", std::to_string(steam_id));
+    path = ReplaceToken(path, "{Steam3AccountID}", std::to_string(steam_id & 0xffffffffULL));
   }
   if (!SafeComponents(path)) return std::nullopt;
   return path;
