@@ -1025,10 +1025,6 @@ void MapsLeadingSeparatorPaths() {
   std::filesystem::remove_all(base);
 }
 
-// A save location Steam lists for macOS beside the Windows one (Cat Quest) is the Mac client's: the Windows one maps
-// and syncs, and the Mac client's Cloud files are left alone.
-// #714: the folders Playden makes in a new bottle before the first start are the Cloud save locations inside the
-// Windows user folder, and only those.
 void MapsAccountTokensInAnyCase() {
   // UNCHARTED: Legacy of Thieves Collection (1659420) writes the token as {Steam3AccountId}; Steam matches it
   // whatever the case, so the location maps like {Steam3AccountID}.
@@ -1053,6 +1049,10 @@ void MapsAccountTokensInAnyCase() {
   CHECK(lower && BuildSaveMapping(lower->cloud, kApp, kSteamId).usable());
 }
 
+// A save location Steam lists for macOS beside the Windows one (Cat Quest) is the Mac client's: the Windows one maps
+// and syncs, and the Mac client's Cloud files are left alone.
+// #714: the folders Playden makes in a new bottle before the first start are the Cloud save locations inside the
+// Windows user folder, and only those.
 void ProfileSaveFoldersStayInUserFolder() {
   const auto folders_of = [](const std::string& savefiles) {
     const auto info = ParseAppInfo(kApp, UfsAppInfo(savefiles));
