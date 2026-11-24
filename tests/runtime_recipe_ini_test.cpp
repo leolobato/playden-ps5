@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -126,6 +127,46 @@ int main() {
     CHECK(!result.ok && result.message.find("Config/Game.ini") != std::string::npos);
     CHECK(Read(root / "Config/Game.ini") == "[A]\n");
     ::chmod((root / "Config").c_str(), 0755);
+  }
+
+  // A flat key=value file (UNCHARTED's screeninfo.cfg): only the key's value changes, every other byte stays.
+  {
+    const std::string screen = "DisplayMode=1\nResolutionWidth=1920\nDeviceId=56a0\nMonitor=0\nDLSS=0\n";
+    std::string text = screen;
+    std::optional<std::string> held;
+    CHECK(ReplaceKeyValue(&text, "DeviceId", "13fe", &held) && held == std::string("56a0"));
+    CHECK(text == "DisplayMode=1\nResolutionWidth=1920\nDeviceId=13fe\nMonitor=0\nDLSS=0\n");
+    // The same value, in another case, is left as it is; so is a file without the key.
+    text = "deviceid = 13FE\r\nMonitor=0\r\n";
+    CHECK(!ReplaceKeyValue(&text, "DeviceId", "13fe", &held) && held == std::string("13FE") &&
+          text == "deviceid = 13FE\r\nMonitor=0\r\n");
+    text = "Monitor=0\nDeviceIdOld=0\n";
+    CHECK(!ReplaceKeyValue(&text, "DeviceId", "13fe", &held) && !held && text == "Monitor=0\nDeviceIdOld=0\n");
+    // Spaces around the old value and the CRLF ending: the value goes after '=', the line ending stays.
+    text = "DeviceId = 0 \r\nMonitor=0\r\n";
+    CHECK(ReplaceKeyValue(&text, "DeviceId", "13fe", &held) && held == std::string("0") &&
+          text == "DeviceId =13fe\r\nMonitor=0\r\n");
+    // The last line, with no line ending.
+    text = "Monitor=0\nDeviceId=0";
+    CHECK(ReplaceKeyValue(&text, "DeviceId", "13fe", &held) && text == "Monitor=0\nDeviceId=13fe");
+
+    fs::remove_all(root);
+    Write(root / "Uncharted4_data/screeninfo.cfg", screen);
+    ::chmod((root / "Uncharted4_data/screeninfo.cfg").c_str(), 0666);
+    auto saved = ReplaceGameFileValue(root.string(), "uncharted4_data/ScreenInfo.cfg", "DeviceId", "13fe");
+    CHECK(saved.ok && saved.found && saved.changed && saved.previous == "56a0");
+    CHECK(Read(root / "Uncharted4_data/screeninfo.cfg") == "DisplayMode=1\nResolutionWidth=1920\nDeviceId=13fe\nMonitor=0\nDLSS=0\n");
+    struct stat info {};
+    CHECK(::stat((root / "Uncharted4_data/screeninfo.cfg").c_str(), &info) == 0 && (info.st_mode & 0777) == 0666);
+    saved = ReplaceGameFileValue(root.string(), "Uncharted4_data/screeninfo.cfg", "DeviceId", "13fe");
+    CHECK(saved.ok && saved.found && !saved.changed && saved.previous == "13fe");
+    // No file (a copy never started), or a link: left for the game.
+    saved = ReplaceGameFileValue(root.string(), "Uncharted4_data/missing.cfg", "DeviceId", "13fe");
+    CHECK(saved.ok && !saved.found && !saved.changed);
+    Write(root / "outside.cfg", "DeviceId=0\n");
+    fs::create_symlink(root / "outside.cfg", root / "Uncharted4_data/linked.cfg");
+    saved = ReplaceGameFileValue(root.string(), "Uncharted4_data/linked.cfg", "DeviceId", "13fe");
+    CHECK(saved.ok && !saved.found && Read(root / "outside.cfg") == "DeviceId=0\n");
   }
 
   fs::remove_all(root);

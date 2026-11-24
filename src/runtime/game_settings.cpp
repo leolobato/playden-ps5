@@ -2270,13 +2270,45 @@ std::string RenderDxvkConfig(const EffectiveSettings& settings) {
     // Thieves Collection (#1298) saves the ID in screeninfo.cfg and, when it reads back 0, asks in a Windows box on
     // every start whether to reset its graphics settings. AMD and NVIDIA keep the device ID DXVK picks, which its
     // own game profiles set for some games (Halo: Combat Evolved's).
-    if (gpu.value == "intel") text += "dxgi.customDeviceId = 56a0\nd3d9.customDeviceId = 56a0\n";
+    if (gpu.value == "intel")
+      text += std::string("dxgi.customDeviceId = ") + kIntelReportedDeviceId + "\nd3d9.customDeviceId = " +
+              kIntelReportedDeviceId + "\n";
   }
   const auto& vram = option("reported_vram");
   if (vram.available && vram.value != "game")
     text += "dxgi.maxDeviceMemory = " + vram.value + "\nd3d9.maxAvailableMemory = " + vram.value + "\n";
   if (text.empty()) return text;
   return std::string(kDxvkHeader) + " Changes here are replaced on the next launch.\n" + text;
+}
+
+std::optional<std::string> ReportedGpuDeviceId(const EffectiveSettings& settings, const std::string& dxvk_config,
+                                               bool radv_reports_id) {
+  const auto& environment = OptionalValue(settings, "environment");
+  if (environment.available && EnvironmentSetsName(environment.value, "DXVK_CONFIG_FILE")) return std::nullopt;
+  // DXVK's own reading: "name = value" lines, '#' comments; the last line for a name wins.
+  std::string vendor, device;
+  for (std::size_t begin = 0; begin < dxvk_config.size();) {
+    auto end = dxvk_config.find('\n', begin);
+    if (end == std::string::npos) end = dxvk_config.size();
+    std::string line = dxvk_config.substr(begin, end - begin);
+    begin = end + 1;
+    if (const auto hash = line.find('#'); hash != std::string::npos) line.erase(hash);
+    const auto equals = line.find('=');
+    if (equals == std::string::npos) continue;
+    const auto trim = [](std::string text) {
+      while (!text.empty() && (text.back() == ' ' || text.back() == '\t' || text.back() == '\r')) text.pop_back();
+      while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) text.erase(0, 1);
+      return LowerAscii(text);
+    };
+    const auto name = trim(line.substr(0, equals));
+    if (name == "dxgi.customdeviceid") device = trim(line.substr(equals + 1));
+    if (name == "dxgi.customvendorid") vendor = trim(line.substr(equals + 1));
+  }
+  // DXVK takes the ID as hex, with or without 0x; games save it without.
+  if (device.rfind("0x", 0) == 0) device.erase(0, 2);
+  if (!device.empty()) return device;
+  if (vendor == "10de" || !radv_reports_id) return std::nullopt;
+  return std::string(kRadvDeviceId);
 }
 
 std::string SettingsLogSummary(const EffectiveSettings& settings) {

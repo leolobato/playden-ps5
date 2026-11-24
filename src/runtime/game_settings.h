@@ -599,6 +599,19 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
 // dxvk.conf for the game folder; empty when no DXVK option differs from DXVK's default.
 std::string RenderDxvkConfig(const EffectiveSettings& settings);
 
+// The PCI device IDs a game's DXGI adapter reports, in lower-case hex as games save them. Reported graphics card =
+// Intel writes kIntelReportedDeviceId to dxvk.conf. RADV reports kRadvDeviceId (an AMD BC-250, the GPU its PS5 support
+// copies) from runtime kit 0.36, the kit that also brought the built-in AMD GPU Services; older kits reported 0.
+inline constexpr const char* kIntelReportedDeviceId = "56a0";
+inline constexpr const char* kRadvDeviceId = "13fe";
+
+// The device ID a start reports through DXGI, from the dxvk.conf text DXVK will read (empty when there is none): its
+// dxgi.customDeviceId, else RADV's when radv_reports_id (a title runtime with the built-in AMD GPU Services: the two
+// came in the same runtime kit). Nothing when it can't be known: NVIDIA's vendor ID (DXVK may pick a device ID with it),
+// an older RADV, or the player's own DXVK_CONFIG_FILE in the Environment row, which names another file.
+std::optional<std::string> ReportedGpuDeviceId(const EffectiveSettings& settings, const std::string& dxvk_config,
+                                               bool radv_reports_id);
+
 // One runtime log line's worth of the settings a launch runs with: whether the performance overlay is on (and its
 // detail), then every row the player or the chosen preset set, as id=value ("chosen=-" when none). Text rows (Extra
 // arguments, a program, environment variables) may hold anything the player typed, so only their id is named

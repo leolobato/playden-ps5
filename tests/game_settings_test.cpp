@@ -3177,6 +3177,31 @@ int main(int argc, char** argv) {
     CHECK(uncharted && BuildEffectiveSettings(*uncharted, nullptr, {{"reported_gpu", "intel"}}, conf_kit, &intel, &error));
     CHECK(RenderDxvkConfig(intel).find("\ndxgi.customVendorId = 8086\nd3d9.customVendorId = 8086\n"
                                        "dxgi.customDeviceId = 56a0\nd3d9.customDeviceId = 56a0\n") != std::string::npos);
+    // The device ID a start reports, which Playden puts in UNCHARTED's saved settings so it doesn't ask about a GPU
+    // change: Intel's from dxvk.conf, RADV's on a title runtime with the built-in AMD GPU Services (the runtime kit that
+    // brought it also made RADV report one), and nothing it can't know.
+    // It reads the dxvk.conf DXVK will read: Intel's ID, RADV's on a title runtime that reports one (none on an older
+    // one), and nothing for NVIDIA's vendor or the player's own DXVK_CONFIG_FILE.
+    CHECK(ReportedGpuDeviceId(intel, RenderDxvkConfig(intel), true) == std::optional<std::string>("56a0"));
+    CHECK(ReportedGpuDeviceId(intel, RenderDxvkConfig(intel), false) == std::optional<std::string>("56a0"));
+    CHECK(uncharted && BuildEffectiveSettings(*uncharted, nullptr, {}, ags_kit, &ags, &error));
+    CHECK(ReportedGpuDeviceId(ags, RenderDxvkConfig(ags), true) == std::optional<std::string>("13fe"));
+    CHECK(ReportedGpuDeviceId(ags, "", true) == std::optional<std::string>("13fe"));
+    CHECK(!ReportedGpuDeviceId(ags, "", false));
+    // A copy whose dxvk.conf still carries the Intel recipe's lines reports Intel's ID until it is published again.
+    CHECK(ReportedGpuDeviceId(ags, "# Playden\ndxgi.customVendorId = 8086\ndxgi.customDeviceId = 56a0\n", true) ==
+          std::optional<std::string>("56a0"));
+    CHECK(ReportedGpuDeviceId(ags, "dxgi.customDeviceId = 0x13FE # mine\r\n", false) == std::optional<std::string>("13fe"));
+    CHECK(ReportedGpuDeviceId(ags, "#dxgi.customDeviceId = 56a0\ndxgi.customVendorId = 1002\n", true) ==
+          std::optional<std::string>("13fe"));
+    CHECK(!ReportedGpuDeviceId(ags, "dxgi.customVendorId = 10de\n", true));
+    auto env_kit = ags_kit;
+    env_kit.environment = true;
+    CHECK(uncharted && BuildEffectiveSettings(*uncharted, nullptr, {{"environment", "DXVK_CONFIG_FILE=C:\\mine.conf"}},
+                                              env_kit, &ags, &error));
+    CHECK(ags.values.at("environment").available && !ReportedGpuDeviceId(ags, "", true));
+    CHECK(uncharted && BuildEffectiveSettings(*uncharted, nullptr, {{"environment", "DXVK_HUD=fps"}}, env_kit, &ags, &error));
+    CHECK(ReportedGpuDeviceId(ags, "", true) == std::optional<std::string>("13fe"));
   }
 
   // ApplyGameSettings writes the profile and a Playden dxvk.conf, removes it when nothing is

@@ -6749,6 +6749,141 @@ void ShippedRecipeWritesGameIni(bool language_chosen) {
   host.Shutdown();
 }
 
+// UNCHARTED: Legacy of Thieves Collection saves the GPU's device ID in screeninfo.cfg and asks, in a Windows box the
+// controller can't answer, whether to reset its graphics settings when the ID it reads at start differs (#1298). The
+// ID changed with Playden (Intel's 56a0 from the old recipe, 0 from older runtime kits), so Playden puts the one this
+// start reports in the file before every start and keeps the rest: the published dxvk.conf's, else RADV's on a title
+// runtime that reports one. An older title runtime with no dxvk.conf ID leaves the file alone.
+void UnchartedSavedGpuIdFollowsRuntime(bool amd_ags) {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  auto kit = SyntheticKit(fixture.root / "kit");
+  if (amd_ags) kit.capabilities.push_back(kKitAmdAgs);
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  std::vector<std::string> logged;
+  std::mutex log_mutex;
+  config.log = [&](const std::string& line) {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    if (line.rfind("saved gpu id ", 0) == 0) logged.push_back(line);
+  };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/1659420";
+  Write(game / "u4.exe", "existing-game", 0644);
+  const auto screen = [](const std::string& device) {
+    return "DisplayMode=1\nResolutionWidth=1920\nResolutionHeight=1080\nAspectRatioMode=0\nWindowX=0\nWindowY=0\n"
+           "DeviceId=" + device + "\nMonitor=0\nDLSS=0\nFSR2=4\nAdvDisplayPreset=4\n";
+  };
+  const auto saved = game / "Uncharted4_data/screeninfo.cfg";
+  Write(saved, screen("56a0"), 0666);
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare({1659420, "/data/homebrew/FAKE77031/games/1659420", "internal", "UNCHARTED: Legacy of Thieves Collection"});
+  const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(1659420) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  if (done.refusals.count(1659420)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(1659420).c_str());
+  CHECK(!done.refusals.count(1659420) && done.installs.size() == 1);
+  CHECK(Read(config.state_root / "installs.json").find("\"recipe_id\":\"steam-1659420-uncharted-v1\"") != std::string::npos);
+  CHECK(Read(saved) == screen(amd_ags ? "13fe" : "56a0"));
+  // An older runtime kit wrote 0, and a player who started the game there comes back: Play puts the ID right again.
+  Write(saved, screen("0"), 0666);
+  host.Play(1659420);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.plays_handled > 0; }, 30);
+  CHECK(Read(saved) == screen(amd_ags ? "13fe" : "0"));
+  // A copy still published with the Intel recipe's dxvk.conf reports Intel's ID until it is published again: that is
+  // the one it gets.
+  Write(game / "dxvk.conf", "# Playden\ndxgi.customVendorId = 8086\nd3d9.customVendorId = 8086\n"
+                            "dxgi.customDeviceId = 56a0\nd3d9.customDeviceId = 56a0\n", 0644);
+  Write(saved, screen("0"), 0666);
+  host.Play(1659420);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.plays_handled > 1; }, 30);
+  CHECK(Read(saved) == screen("56a0"));
+  host.Shutdown();
+  std::lock_guard<std::mutex> lock(log_mutex);
+  if (amd_ags)
+    CHECK(logged == (std::vector<std::string>{
+                        "saved gpu id app=1659420 Uncharted4_data/screeninfo.cfg 56a0 -> 13fe",
+                        "saved gpu id app=1659420 Uncharted4_data/screeninfo.cfg 0 -> 13fe",
+                        "saved gpu id app=1659420 Uncharted4_data/screeninfo.cfg 0 -> 56a0"}));
+  else
+    CHECK(logged == (std::vector<std::string>{"saved gpu id app=1659420 Uncharted4_data/screeninfo.cfg 0 -> 56a0"}));
+}
+
+// A Play that publishes new settings runs the preparation steps before the publication rewrites dxvk.conf. The saved
+// GPU follows the dxvk.conf the publication leaves: Reported graphics card = Intel, then back to the default.
+void UnchartedSavedGpuIdFollowsPublishedConfig() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  auto kit = SyntheticKit(fixture.root / "kit");
+  kit.capabilities.push_back(kKitAmdAgs);
+  kit.capabilities.push_back(kKitDxvkConfig);
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  GameSettingsRecord saved;
+  saved.revision = 1;
+  saved.overrides = {{"reported_gpu", "intel"}};
+  std::mutex saved_mutex;
+  config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> {
+    std::lock_guard<std::mutex> lock(saved_mutex);
+    return saved;
+  };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/1659420";
+  Write(game / "u4.exe", "existing-game", 0644);
+  const auto screen = [](const std::string& device) { return "DisplayMode=1\nDeviceId=" + device + "\nMonitor=0\n"; };
+  const auto file = game / "Uncharted4_data/screeninfo.cfg";
+  Write(file, screen("13fe"), 0666);
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare({1659420, "/data/homebrew/FAKE77031/games/1659420", "internal", "UNCHARTED: Legacy of Thieves Collection"});
+  const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(1659420) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  if (done.refusals.count(1659420)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(1659420).c_str());
+  CHECK(!done.refusals.count(1659420) && done.installs.size() == 1);
+  CHECK(Read(game / "dxvk.conf").find("dxgi.customDeviceId = 56a0") != std::string::npos);
+  CHECK(Read(file) == screen("56a0"));
+  // Back to the default: Play publishes a dxvk.conf without Intel's ID, and the saved one becomes RADV's.
+  {
+    std::lock_guard<std::mutex> lock(saved_mutex);
+    saved.revision = 2;
+    saved.overrides.clear();
+  }
+  fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+  host.Play(1659420);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.plays_handled > 0; }, 60);
+  CHECK(!fs::exists(game / "dxvk.conf") || Read(game / "dxvk.conf").find("customDeviceId") == std::string::npos);
+  CHECK(Read(file) == screen("13fe"));
+  host.Shutdown();
+}
+
 // A copy of Arkham Asylum prepared before Playden shipped its recipe keeps the recipe Playden generated, and still
 // gets the shipped recipe's INI values the next time it is played.
 void GeneratedRecipeGetsShippedIni() {
@@ -12302,6 +12437,9 @@ int main(int argc, char** argv) {
   ShippedRecipeWritesGameIni(false);
   ShippedRecipeWritesGameIni(true);
   GeneratedRecipeGetsShippedIni();
+  UnchartedSavedGpuIdFollowsRuntime(true);
+  UnchartedSavedGpuIdFollowsRuntime(false);
+  UnchartedSavedGpuIdFollowsPublishedConfig();
   GeneratedRecipeGetsShippedSteamApiCopy();
   GeneratedRecipeGetsShippedGameFile();
   RunsSetupProgramOnce();

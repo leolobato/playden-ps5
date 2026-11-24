@@ -1010,6 +1010,10 @@ class RuntimeHost {
   // removes what the earlier recipe wrote and left; idempotent.
   std::string RecipeRegistryStep(Composition& composition, const GameFiles& files);
   std::string RecipeIniStep(const GameFiles& files);
+  void SavedGpuIdStep(const GameFiles& files);
+  void SavedGpuIdAfterPublish(Composition& c, const runtime::RuntimeInstall& record);
+  void SyncSavedGpuId(const runtime::RuntimeInstall& record, const std::filesystem::path& root,
+                      const runtime::EffectiveSettings& settings, const runtime::KitCapabilities& kit);
   void GogScriptStep(const GameFiles& files);  // never stops the start
   std::string RecipeFilesStep(const GameFiles& files);
   std::string DotnetHeapStep(const GameFiles& files);

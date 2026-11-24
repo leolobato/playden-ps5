@@ -225,4 +225,45 @@ RecipeIniResult ApplyRecipeIniValues(const std::string& game_root, const std::ve
   return result;
 }
 
+bool ReplaceKeyValue(std::string* text, const std::string& key, const std::string& value,
+                     std::optional<std::string>* previous) {
+  if (previous) previous->reset();
+  for (const auto& line : Lines(*text)) {
+    const std::string_view view(text->data() + line.begin, line.end - line.begin);
+    const auto equals = view.find('=');
+    if (equals == std::string_view::npos || !SameIgnoringCase(Trim(view.substr(0, equals)), key)) continue;
+    const auto held = Trim(view.substr(equals + 1));
+    if (previous) *previous = std::string(held);
+    if (SameIgnoringCase(held, value)) return false;
+    // The held value with the spaces around it, up to the line ending.
+    const auto at = line.begin + equals + 1;
+    text->replace(at, line.end - at, value);
+    return true;
+  }
+  return false;
+}
+
+GameFileValueResult ReplaceGameFileValue(const std::string& game_root, const std::string& relative,
+                                         const std::string& key, const std::string& value) {
+  GameFileValueResult result;
+  bool linked = false;
+  const auto path = FindIgnoringCase(game_root, relative, &linked);
+  if (!path) return result;
+  std::string bytes;
+  mode_t mode = 0644;
+  if (!ReadSmall(*path, &bytes, &mode) || bytes.find('\0') != std::string::npos) return result;
+  std::optional<std::string> held;
+  const bool changed = ReplaceKeyValue(&bytes, key, value, &held);
+  result.found = held.has_value();
+  result.previous = held.value_or(std::string());
+  if (!changed) return result;
+  if (!WriteAtomic(*path, bytes, mode)) {
+    result.ok = false;
+    result.message = "could not write " + relative;
+    return result;
+  }
+  result.changed = true;
+  return result;
+}
+
 }  // namespace playden::runtime

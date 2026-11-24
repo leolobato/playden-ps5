@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -32,5 +33,25 @@ struct RecipeIniResult {
 // through a synced temporary file renamed over it, with the original's permissions. Idempotent; the game must be
 // stopped.
 RecipeIniResult ApplyRecipeIniValues(const std::string& game_root, const std::vector<IniValue>& values);
+
+// Puts value after the '=' of the first line of a flat key=value file (no sections) whose key matches, ignoring case
+// and the spaces around it, when that line holds another value (compared ignoring case: hex digits). *previous gets
+// the value it held, and stays empty when no line has the key: such a file is left as it is. Every other byte is kept.
+// Returns whether the text changed.
+bool ReplaceKeyValue(std::string* text, const std::string& key, const std::string& value,
+                     std::optional<std::string>* previous);
+
+struct GameFileValueResult {
+  bool ok = true;
+  std::string message;   // on failure: why the file could not be written
+  bool found = false;    // the file and its key are there
+  bool changed = false;  // the file was rewritten
+  std::string previous;  // the value the key held
+};
+
+// Applies ReplaceKeyValue to a plain text file of the game folder at game_root, found as ApplyRecipeIniValues finds
+// one (ignoring case, never through a link) and written the same way. A missing file or key is left for the game.
+GameFileValueResult ReplaceGameFileValue(const std::string& game_root, const std::string& relative,
+                                         const std::string& key, const std::string& value);
 
 }  // namespace playden::runtime

@@ -1043,6 +1043,8 @@ std::string RuntimeHost::KitReplaced(const Composition& c) const {
 
 // What a game's preparation steps work from: its recipe and effective settings, its folder, the bottle
 // and the programs that may start.
+static std::string WorkingFolder(const std::string& working, std::string program, bool in_install_root);
+
 struct RuntimeHost::GameFiles {
   const rt::RuntimeInstall& record;
   const rt::GameRecipe* recipe = nullptr;
@@ -1060,6 +1062,8 @@ struct RuntimeHost::GameFiles {
   const std::vector<std::string>* steam_api_copies = nullptr;
   // Likewise, the files Playden ships for the game, and the recipe that names them.
   const rt::GameRecipe* game_files_recipe = nullptr;
+  // What the game's title runtime can do (TitleKit).
+  rt::KitCapabilities kit;
 };
 
 namespace {
@@ -2479,6 +2483,64 @@ std::string RuntimeHost::RecipeIniStep(const GameFiles& files) {
   return applied.ok ? std::string() : applied.message;
 }
 
+// UNCHARTED: Legacy of Thieves Collection saves the GPU's device ID in its game folder's screeninfo.cfg. When the one
+// DXGI reports at start differs, it asks in a Windows box, before its first frame, whether to reset its graphics
+// settings; the box takes no controller input, so the game never gets past it (#1298). On the PS5 the ID changes with
+// Playden, not with the GPU: Reported graphics card = Intel reports kIntelReportedDeviceId, runtime kits before 0.36
+// reported 0, and later ones kRadvDeviceId. Before each start the saved ID becomes the one this start reports, and
+// the player's settings stay. Logged, never a refusal: the box is all that goes wrong, and the next Play tries again.
+// A Play that publishes new settings runs the preparation steps before the publication writes dxvk.conf, so it runs
+// this again once the publication has committed (SavedGpuIdAfterPublish).
+void RuntimeHost::SavedGpuIdStep(const GameFiles& files) {
+  SyncSavedGpuId(files.record, files.root, files.settings, files.kit);
+}
+
+void RuntimeHost::SavedGpuIdAfterPublish(Composition& c, const rt::RuntimeInstall& record) {
+  const auto* recipe = RecipeOf(c, record);
+  if (!recipe) return;
+  auto saved = config_.settings_record ? config_.settings_record(GameOf(record)) : std::nullopt;
+  const auto resolved = saved ? RecordPreset(c, &*saved) : std::nullopt;
+  static const std::map<std::string, std::string> none;
+  rt::EffectiveSettings settings;
+  rt::SettingsError error;
+  const auto kit = TitleKit(c, record);
+  if (!rt::BuildEffectiveSettings(*recipe, resolved ? &*resolved : nullptr, saved ? saved->overrides : none, kit,
+                                  &settings, &error))
+    return;
+  SyncSavedGpuId(record, HostPath(record.install_path), settings, kit);
+}
+
+void RuntimeHost::SyncSavedGpuId(const rt::RuntimeInstall& record, const std::filesystem::path& root,
+                                 const rt::EffectiveSettings& settings, const rt::KitCapabilities& kit) {
+  struct SavedGpuIdFile {
+    std::uint32_t steam_app;
+    const char* path;
+    const char* key;
+  };
+  static constexpr SavedGpuIdFile kFiles[] = {{1659420, "Uncharted4_data/screeninfo.cfg", "DeviceId"}};
+  if (GameOf(record).store != Store::kSteam) return;
+  const auto entry = std::find_if(std::begin(kFiles), std::end(kFiles),
+                                  [&](const SavedGpuIdFile& item) { return item.steam_app == record.runtime_number; });
+  if (entry == std::end(kFiles)) return;
+  // The dxvk.conf this start reads, as published: a copy that hasn't been republished since its recipe changed (the
+  // Intel one wrote 56a0 there) still reports what its file says.
+  std::string dxvk_config;
+  const auto config = root / WorkingFolder(record.launch_working_directory, record.launch_path,
+                                                 record.launch_in_install_root) / "dxvk.conf";
+  if (const int fd = ::open(config.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC); fd >= 0) {
+    char chunk[4096];
+    for (ssize_t count; dxvk_config.size() < 64 * 1024 && (count = ::read(fd, chunk, sizeof(chunk))) > 0;)
+      dxvk_config.append(chunk, static_cast<std::size_t>(count));
+    ::close(fd);
+  }
+  const auto device = rt::ReportedGpuDeviceId(settings, dxvk_config, kit.amd_ags);
+  if (!device) return;
+  const auto saved = rt::ReplaceGameFileValue(root.string(), entry->path, entry->key, *device);
+  if (saved.changed || !saved.ok)
+    Log("saved gpu id app=" + std::to_string(record.runtime_number) + " " + entry->path + " " + saved.previous + " -> " +
+        *device + (saved.ok ? std::string() : " failed=" + saved.message));
+}
+
 // GOG step: the setIni and folder steps of each installed product's goggame-<id>.script, before every start, as the
 // install ran them. `{app}` is the game folder as Wine sees it (the console path, which a move changes: ScummVM's game
 // `path`). The script's copies ran once at install and never again: they could overwrite the player's files. A
@@ -2601,6 +2663,7 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   if (!rt::BuildEffectiveSettings(*files.recipe, preset, files.saved ? files.saved->overrides : none, kit, &files.settings,
                                   &error))
     return {};  // publication reports invalid settings
+  files.kit = kit;
   files.root = config_.host_namespace_prefix.empty()
       ? std::filesystem::path(record.install_path)
       : config_.host_namespace_prefix / std::filesystem::path(record.install_path).relative_path();
@@ -2649,6 +2712,7 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   if (auto refused = RecipeRegistryStep(c, files); !refused.empty()) return refused;
   if (auto refused = GogRegistryStep(files); !refused.empty()) return refused;
   if (auto refused = RecipeIniStep(files); !refused.empty()) return refused;
+  SavedGpuIdStep(files);
   GogScriptStep(files);
   if (auto refused = RecipeFilesStep(files); !refused.empty()) return refused;
   return DotnetHeapStep(files);
@@ -3784,6 +3848,9 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   }
   if (published) *published = true;
   RemoveFinishedRequests(c);
+  // The steps ran before this publication rewrote dxvk.conf; the saved GPU follows the file it left.
+  if (!switching)
+    if (const auto current = c.records.Find(record.install_id)) SavedGpuIdAfterPublish(c, *current);
   if (switching) {
     // The record names the new recipe now: the owner markers follow it, then the bottle and the game's
     // files get what the new recipe asks for (its registry values, the earlier recipe's removed). A
