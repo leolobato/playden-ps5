@@ -654,8 +654,8 @@ int main() {
     plain.defaults.erase("cpu");
     plain.detected = "unknown graphics=auto";
     plain.launch_entries.front().executable = "Plain.exe";
-    // It takes "unknown"'s revision 2 once (no launcher in front of it, no Ren'Py), and nothing else.
-    CHECK(RefreshRecipeDefaults(root.string(), kit, &plain) && !plain.defaults.count("cpu") && plain.defaults_revision == 2);
+    // It takes "unknown"'s revision 3 once (no launcher in front of it, no Ren'Py or MonoGame), and nothing else.
+    CHECK(RefreshRecipeDefaults(root.string(), kit, &plain) && !plain.defaults.count("cpu") && plain.defaults_revision == 3);
     CHECK(!RefreshRecipeDefaults(root.string(), kit, &plain));
     auto x64 = plain;
     x64.launch_entries.front().executable = "falloutwHR.exe";
@@ -1581,7 +1581,7 @@ int main() {
     // A copy set up before the web-view rule: Steam's launcher first, no engine, defaults revision 0. Its next Play
     // starts the game's own program and keeps Steam's after it; then it's left alone.
     const auto picked = recipe;
-    CHECK(DefaultsRevision("unknown graphics=auto") == 2);
+    CHECK(DefaultsRevision("unknown graphics=auto") == 3);
     CHECK(GenerateGameRecipe(312840, "Fahrenheit: Indigo Prophecy Remastered", {{"", "", "Fahrenheit.exe", "", ""}},
                              root.string(), &recipe, &reason, {}));
     auto old = recipe;
@@ -1602,7 +1602,7 @@ int main() {
     mine.detected = "unknown graphics=auto";
     mine.defaults_revision = 0;
     CHECK(RefreshRecipeDefaults(root.string(), {}, &mine));
-    CHECK(mine.launch_entries[0].executable == "Fahrenheit.exe" && mine.defaults_revision == 2 &&
+    CHECK(mine.launch_entries[0].executable == "Fahrenheit.exe" && mine.defaults_revision == 3 &&
           mine.detected == "unknown graphics=auto" && mine.graphics == picked.graphics);
     CHECK(!RefreshRecipeDefaults(root.string(), {}, &mine));
 
@@ -1630,11 +1630,13 @@ int main() {
     tool.arguments = "-old";
     CHECK(tool.detected.rfind("unknown", 0) == 0);
     CHECK(RefreshRecipeDefaults(widgets.string(), {}, &tool));
-    CHECK(tool.launch_entries[0].executable == "Tool.exe" && tool.arguments == "-old" && tool.defaults_revision == 2);
+    CHECK(tool.launch_entries[0].executable == "Tool.exe" && tool.arguments == "-old" && tool.defaults_revision == 3);
     CHECK(!RefreshRecipeDefaults(widgets.string(), {}, &tool));
-    // Set up at revision 1, it isn't read for a launcher again, and takes revision 2 the same way.
-    tool.defaults_revision = 1;
-    CHECK(RefreshRecipeDefaults(widgets.string(), {}, &tool) && tool.arguments == "-old" && tool.defaults_revision == 2);
+    // Set up at revision 1 or 2, it isn't read for a launcher again, and takes revision 3 the same way.
+    for (const int revision : {1, 2}) {
+      tool.defaults_revision = revision;
+      CHECK(RefreshRecipeDefaults(widgets.string(), {}, &tool) && tool.arguments == "-old" && tool.defaults_revision == 3);
+    }
   }
   {  // A Ren'Py game set up before Ren'Py was detected (Roadwarden, #960): no engine, DXVK. Its next Play takes OpenGL.
     const auto root = fresh();
@@ -1646,7 +1648,7 @@ int main() {
     CHECK(GenerateGameRecipe(1155970, "Roadwarden", {{"", "", "Roadwarden.exe", "", ""}}, root.string(), &recipe,
                              &reason, {}));
     CHECK(recipe.graphics == "opengl" && recipe.detected == "renpy graphics=opengl" && recipe.defaults_revision == 0);
-    for (const int revision : {0, 1}) {
+    for (const int revision : {0, 1, 2}) {
       auto old = recipe;
       old.graphics = "dxvk";
       old.detected = "unknown graphics=dxvk";
@@ -1656,11 +1658,11 @@ int main() {
             old.launch_entries.size() == 1 && old.launch_entries[0].executable == "Roadwarden.exe");
       CHECK(!RefreshRecipeDefaults(root.string(), {}, &old));
     }
-    // Set up since revision 2 with no engine, it is left alone: the files said nothing then either.
+    // Set up since revision 3 with no engine, it is left alone: the files said nothing then either.
     auto current = recipe;
     current.graphics = "dxvk";
     current.detected = "unknown graphics=dxvk";
-    current.defaults_revision = 2;
+    current.defaults_revision = 3;
     CHECK(!RefreshRecipeDefaults(root.string(), {}, &current) && current.graphics == "dxvk");
   }
 
@@ -1676,7 +1678,7 @@ int main() {
                              &reason, {}));
     CHECK(recipe.graphics == "opengl" && recipe.detected == "monogame graphics=opengl" &&
           recipe.defaults_revision == 0);
-    for (const int revision : {0, 1}) {
+    for (const int revision : {0, 1, 2}) {
       auto old = recipe;
       old.graphics = "dxvk";
       old.detected = "unknown graphics=dxvk";

@@ -3535,7 +3535,7 @@ bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilitie
   // A program with no engine and nothing it draws (DefaultsRevision 1): one that imports a Qt web view only starts the
   // game (Fahrenheit Remastered's Aspyr launcher, #1197), so it's read once for the game's own program to start
   // first. Ren'Py's games had no engine either (DefaultsRevision 2: Roadwarden, #960): one takes Ren'Py's defaults, and
-  // MonoGame's DesktopGL build its own (Stardew Valley, #1224). Any other keeps what it was set up with and takes the
+  // MonoGame's DesktopGL build its own (DefaultsRevision 3: Stardew Valley, #1224). Any other keeps what it was set up with and takes the
   // revision.
   std::optional<GameProbe> probed;
   if (!current && engine == "unknown") {

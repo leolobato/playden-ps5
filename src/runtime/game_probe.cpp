@@ -889,9 +889,9 @@ int DefaultsRevision(std::string_view engine) {
   // 1: a program that draws nothing and imports a Qt web view only starts the game (Fahrenheit Remastered, #1197), so a
   // game set up before with no engine is read once for the game's own program. 2: Ren'Py is detected (it names no
   // graphics library, so it got DXVK and stopped with "No matching GL pixel format available": Roadwarden, #960, #1232),
-  // so a game set up before with no engine is read once more for it, and so is MonoGame's DesktopGL build (Stardew
-  // Valley, #1224).
-  if (engine == "unknown") return 2;
+  // so a game set up before with no engine is read once more for it. 3: MonoGame's DesktopGL build is detected (Stardew
+  // Valley, #1224); a game set up at 2 (Ren'Py's) had no engine either, so it is read once more for MonoGame.
+  if (engine == "unknown") return 3;
   return 0;
 }
 
