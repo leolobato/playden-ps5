@@ -6097,6 +6097,83 @@ void PreparesUdkGameWithEulaAccepted() {
   host.Shutdown();
 }
 
+// #1329: a Source game with an add-on installer (Left 4 Dead 2) runs bin\addoninstaller.exe /register when .vpk
+// files aren't registered, and the PS5 cannot start it; preparing the game registers them in system.reg instead, once.
+void PreparesSourceGameWithVpkRegistered() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  config.session_data_root = fixture.root / "data";
+  std::vector<std::string> lines;
+  std::mutex lines_mutex;
+  config.log = [&](const std::string& line) {
+    std::lock_guard<std::mutex> lock(lines_mutex);
+    lines.push_back(line);
+  };
+  const auto addon_lines = [&] {
+    std::lock_guard<std::mutex> lock(lines_mutex);
+    std::vector<std::string> found;
+    for (const auto& line : lines)
+      if (line.rfind("source addons ", 0) == 0) found.push_back(line);
+    return found;
+  };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/550";
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x4c; pe[0x45] = 0x01; pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x01;
+  Write(game / "left4dead2.exe", pe, 0644);
+  Write(game / "bin/engine.dll", "MZ", 0644);
+  Write(game / "bin/addoninstaller.exe", "MZ", 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  RuntimePrepareRequest request{550, "/data/homebrew/FAKE77031/games/550", "internal", "Left 4 Dead 2"};
+  request.launches = {{"", "Play", "left4dead2.exe", "", ""}};
+
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(request);
+  const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(550) ||
+        (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  if (done.refusals.count(550)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(550).c_str());
+  CHECK(!done.refusals.count(550) && done.installs.size() == 1);
+  const auto bottle = fixture.root / "data/playden/games/steam-550/library/prefixes/game";
+  const auto system_reg = Read(bottle / "system.reg");
+  CHECK(system_reg.find("[Software\\\\Classes\\\\.vpk] 1760000000\n@=\"sourceaddonfile\"\n") != std::string::npos);
+  CHECK(system_reg.find("[Software\\\\Classes\\\\sourceaddonfile\\\\shell\\\\open\\\\command] 1760000000\n"
+                        "@=\"Z:\\\\data\\\\homebrew\\\\FAKE77031\\\\games\\\\550\\\\bin\\\\addoninstaller.exe %1\"\n") !=
+        std::string::npos);
+  auto logged = addon_lines();
+  CHECK(logged.size() == 1 && logged.front() == "source addons app=550 registered .vpk");
+
+  // Repair runs the fixups again: the values are already there, so nothing is rewritten or logged.
+  fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+  const auto before = host.Snapshot().maintenance_handled;
+  host.Maintain(550, RuntimeMaintenance::kRepair);
+  const auto repaired = WaitFor(host, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
+  if (!repaired.maintenance.at(550).ok) std::fprintf(stderr, "repair: %s\n", repaired.maintenance.at(550).message.c_str());
+  CHECK(repaired.maintenance.at(550).ok);
+  CHECK(Read(bottle / "system.reg") == system_reg);
+  CHECK(addon_lines().size() == 1);
+  host.Shutdown();
+}
+
 // A Windows DLL that imports one other DLL: a PE32 or PE32+ header, one section, an import table.
 std::string ImportingDll(bool pe64, const std::string& import) {
   std::string bytes(0x600, '\0');
@@ -12187,6 +12264,7 @@ int main(int argc, char** argv) {
   PreparesSteamProgramChosenAfterDownload();
   SteamEntryWithoutFolderStartsInInstallRoot();
   PreparesUdkGameWithEulaAccepted();
+  PreparesSourceGameWithVpkRegistered();
   PlayInstallsMfcForGameThatImportsIt();
   PlayInstallsMfcFromSteamsSharedDepots();
   ResumesInterruptedCaptureFromSavedRequest();

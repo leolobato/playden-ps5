@@ -2240,6 +2240,89 @@ int main(int argc, char** argv) {
     std::filesystem::remove_all(eula_root);
   }
 
+  {
+    // #1329: Left 4 Dead 2 runs bin\addoninstaller.exe /register when HKCR\.vpk isn't "sourceaddonfile", and the
+    // console can't start it, so Playden writes what /register writes.
+    const auto addon_root = std::filesystem::canonical(std::filesystem::temp_directory_path()) /
+                            ("playden-source-addon-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(addon_root);
+    const auto game = addon_root / "game", bottle = addon_root / "bottle";
+    std::filesystem::create_directories(game / "bin");
+    std::filesystem::create_directories(bottle);
+    std::filesystem::permissions(addon_root, std::filesystem::perms::owner_all);
+    std::filesystem::permissions(bottle, std::filesystem::perms::owner_all);
+    const std::string system_reg = "WINE REGISTRY Version 2\n;; All keys relative to REGISTRY\\\\Machine\n\n#arch=win64\n\n"
+                                   "[Software\\\\Classes\\\\.txt] 1791227731\n@=\"txtfile\"\n";
+    std::ofstream(bottle / "system.reg") << system_reg;
+    ::chmod((bottle / "system.reg").c_str(), 0600);
+    const std::string folder = "Z:\\mnt\\ext1\\playden\\games\\550";
+    // Another Source game (no add-on installer) is left alone.
+    std::ofstream(game / "bin/engine.dll") << "MZ";
+    auto addon = RegisterSourceAddonFiles(game.string(), {"left4dead2.exe"}, folder, bottle.string(), 1791500000);
+    CHECK(!addon.found && addon.ok && !addon.written);
+    CHECK(ReadText(bottle / "system.reg") == system_reg && !std::filesystem::exists(bottle / "system.reg.playden-backup"));
+    std::ofstream(game / "bin/addoninstaller.exe") << "MZ";
+    // Without a Windows path for the game folder nothing is written, and it says so.
+    addon = RegisterSourceAddonFiles(game.string(), {"left4dead2.exe"}, "", bottle.string(), 1791500000);
+    CHECK(addon.found && !addon.ok && !addon.written && ReadText(bottle / "system.reg") == system_reg);
+    addon = RegisterSourceAddonFiles(game.string(), {"left4dead2.exe"}, folder + "\\", bottle.string(), 1791500000);
+    CHECK(addon.found && addon.ok && addon.written);
+    const auto registered = ReadText(bottle / "system.reg");
+    CHECK(registered.find("\n[Software\\\\Classes\\\\.vpk] 1791500000\n@=\"sourceaddonfile\"\n") != std::string::npos);
+    CHECK(registered.find("\n[Software\\\\Classes\\\\sourceaddonfile] 1791500000\n@=\"Source Game Add-on\"\n") !=
+          std::string::npos);
+    CHECK(registered.find("\n[Software\\\\Classes\\\\sourceaddonfile\\\\DefaultIcon] 1791500000\n"
+                          "@=\"Z:\\\\mnt\\\\ext1\\\\playden\\\\games\\\\550\\\\bin\\\\addoninstaller.exe,0\"\n") !=
+          std::string::npos);
+    CHECK(registered.find("\n[Software\\\\Classes\\\\sourceaddonfile\\\\shell\\\\open\\\\command] 1791500000\n"
+                          "@=\"Z:\\\\mnt\\\\ext1\\\\playden\\\\games\\\\550\\\\bin\\\\addoninstaller.exe %1\"\n") !=
+          std::string::npos);
+    CHECK(registered.find("Wow6432Node") == std::string::npos);
+    CHECK(registered.compare(0, system_reg.size(), system_reg) == 0);
+    CHECK(ReadText(bottle / "system.reg.playden-backup") == system_reg);
+    // Again: already registered, so neither the hive nor its backup is rewritten.
+    addon = RegisterSourceAddonFiles(game.string(), {"left4dead2.exe"}, folder, bottle.string(), 1791600000);
+    CHECK(addon.found && addon.ok && !addon.written);
+    CHECK(ReadText(bottle / "system.reg") == registered && ReadText(bottle / "system.reg.playden-backup") == system_reg);
+    // A game moved to another drive gets its new paths.
+    addon = RegisterSourceAddonFiles(game.string(), {"left4dead2.exe"}, "Z:\\data\\playden-games\\550", bottle.string(), 1791700000);
+    CHECK(addon.found && addon.ok && addon.written);
+    const auto moved = ReadText(bottle / "system.reg");
+    CHECK(moved.find("@=\"Z:\\\\data\\\\playden-games\\\\550\\\\bin\\\\addoninstaller.exe %1\"\n") != std::string::npos);
+    CHECK(moved.find("ext1") == std::string::npos);
+    // An imported folder with the game one level down: found beside its launch program, and its paths name that folder.
+    const auto nested = addon_root / "nested";
+    std::filesystem::create_directories(nested / "L4D2/bin");
+    std::ofstream(nested / "L4D2/bin/engine.dll") << "MZ";
+    std::ofstream(nested / "L4D2/bin/addoninstaller.exe") << "MZ";
+    addon = RegisterSourceAddonFiles(nested.string(), {"left4dead2.exe"}, folder, bottle.string(), 1791800000);
+    CHECK(!addon.found && !addon.written);
+    for (const char* program : {"../L4D2/left4dead2.exe", "/L4D2/left4dead2.exe"}) {
+      addon = RegisterSourceAddonFiles(nested.string(), {program}, folder, bottle.string(), 1791800000);
+      CHECK(!addon.found && !addon.written);
+    }
+    addon = RegisterSourceAddonFiles(nested.string(), {"L4D2\\left4dead2.exe"}, folder, bottle.string(), 1791800000);
+    CHECK(addon.found && addon.ok && addon.written);
+    CHECK(ReadText(bottle / "system.reg").find("@=\"Z:\\\\mnt\\\\ext1\\\\playden\\\\games\\\\550\\\\L4D2\\\\bin\\\\addoninstaller.exe %1\"\n") !=
+          std::string::npos);
+    // Names in another letter case are the same files to Wine (and to the game probe).
+    const auto cased = addon_root / "cased";
+    std::filesystem::create_directories(cased / "Bin");
+    std::ofstream(cased / "Bin/Engine.dll") << "MZ";
+    std::ofstream(cased / "Bin/AddonInstaller.EXE") << "MZ";
+    addon = RegisterSourceAddonFiles(cased.string(), {"left4dead2.exe"}, "Z:\\cased", bottle.string(), 1791850000);
+    CHECK(addon.found && addon.ok && addon.written);
+    CHECK(ReadText(bottle / "system.reg").find("@=\"Z:\\\\cased\\\\bin\\\\addoninstaller.exe %1\"\n") != std::string::npos);
+    // A bin folder that is a link to another game's is not this game's layout.
+    const auto linked = addon_root / "linked";
+    std::filesystem::create_directories(linked);
+    std::filesystem::create_directory_symlink(game / "bin", linked / "bin");
+    const auto hive = ReadText(bottle / "system.reg");
+    addon = RegisterSourceAddonFiles(linked.string(), {"left4dead2.exe"}, "Z:\\other", bottle.string(), 1791900000);
+    CHECK(!addon.found && !addon.written && ReadText(bottle / "system.reg") == hive);
+    std::filesystem::remove_all(addon_root);
+  }
+
   // Wine REG_BINARY continuations form one logical assignment. Equal values keep their original bytes.
   std::string binary_hive = "WINE REGISTRY Version 2\n\n[Software\\\\Classes\\\\Media]\n"
       "\"FilterData\"=hex:01,02,\\\n  03,04\n\"keep\"=\"yes\"\n";

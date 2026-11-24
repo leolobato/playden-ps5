@@ -1000,6 +1000,7 @@ class RuntimeHost {
   // Generic steps.
   void MediaStep(Composition& composition, const runtime::RuntimeInstall& record);
   std::string Ue3EulaStep(const GameFiles& files);
+  void SourceAddonStep(const GameFiles& files);  // never stops the start
   std::string Direct3D12Step(Composition& composition, const GameFiles& files);
   void KitMonoStep(Composition& composition, const runtime::RuntimeInstall& record, const char* when);  // never stops the start
   void VcRuntimeStep(const GameFiles& files);  // never stops the start

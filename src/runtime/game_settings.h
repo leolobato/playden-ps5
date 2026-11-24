@@ -865,6 +865,23 @@ struct Ue3EulaResult {
 Ue3EulaResult AcceptUe3Eula(const std::string& game_root, const std::vector<std::string>& programs,
                             const std::string& prefix_dir, std::int64_t unix_time);
 
+// A Source game with an add-on installer (bin/engine.dll and bin/addoninstaller.exe: Left 4 Dead 2) checks at start
+// that HKEY_CLASSES_ROOT\.vpk is "sourceaddonfile", and otherwise runs bin\addoninstaller.exe /register, which the PS5
+// cannot start: the game then says "Unable to set VPK Association" at every start. This writes what /register writes
+// (HKLM\Software\Classes\.vpk and sourceaddonfile, its icon and open command under install_dir, the game folder's
+// Windows path) into the stopped bottle's system.reg, backing the hive up first. Idempotent; found is false for other
+// games, which are left alone. The layout is looked for in the game folder, then in each launch program's folder
+// (programs relative to the game folder, '/' or '\\'), and the paths name the folder where it was found.
+struct SourceAddonResult {
+  bool found = false;
+  bool ok = true;
+  bool written = false;
+  std::string message;  // on failure
+};
+SourceAddonResult RegisterSourceAddonFiles(const std::string& game_root, const std::vector<std::string>& programs,
+                                           const std::string& install_dir, const std::string& prefix_dir,
+                                           std::int64_t unix_time);
+
 // A prospero-win-profiles sidecar (sidecars/<id>.json, schema_version 1) as a preset for
 // the game it describes: "Community · <name>", its newest console check as the hint, and
 // only the settings this build knows and accepts. Returns false for other schema versions.

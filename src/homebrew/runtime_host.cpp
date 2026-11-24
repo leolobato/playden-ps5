@@ -1744,6 +1744,20 @@ std::string RuntimeHost::Ue3EulaStep(const GameFiles& files) {
   return {};
 }
 
+// Generic step: a Source game with an add-on installer (Left 4 Dead 2) registers .vpk files through a second program
+// the PS5 cannot start, and says "Unable to set VPK Association" at every start when that fails (#1329). Logged, never
+// a refusal: the notice is all that goes wrong, and the next Play tries again. A bottle not made yet is left for later.
+void RuntimeHost::SourceAddonStep(const GameFiles& files) {
+  struct stat hive {};
+  if (::lstat((files.prefix + "/system.reg").c_str(), &hive) != 0) return;
+  const auto install_dir = rt::ProsperoWindowsPath(files.record.install_path);
+  const auto addon = rt::RegisterSourceAddonFiles(files.root.string(), files.programs, install_dir.value_or(""), files.prefix,
+                                                  config_.unix_time());
+  if (addon.written || !addon.ok)
+    Log("source addons app=" + std::to_string(files.record.runtime_number) +
+        (addon.ok ? std::string(" registered .vpk") : " failed=" + addon.message));
+}
+
 // Generic step: Direct3D 12 through vkd3d-proton: its DLLs go into the bottle, where the profile's overrides
 // load them.
 std::string RuntimeHost::Direct3D12Step(Composition& c, const GameFiles& files) {
@@ -2621,6 +2635,7 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   // are left as they are.
   if (const auto publisher = StagePublisher(c, record); !publisher.empty()) return publisher;
   if (auto refused = Ue3EulaStep(files); !refused.empty()) return refused;
+  SourceAddonStep(files);
   if (auto refused = Direct3D12Step(c, files); !refused.empty()) return refused;
   KitMonoStep(c, record, "prepare");
   if (auto refused = BottleEnvironmentStep(files); !refused.empty()) return refused;

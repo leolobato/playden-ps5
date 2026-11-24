@@ -4782,6 +4782,94 @@ Ue3EulaResult AcceptUe3Eula(const std::string& game_root, const std::vector<std:
   return result;
 }
 
+SourceAddonResult RegisterSourceAddonFiles(const std::string& game_root, const std::vector<std::string>& programs,
+                                           const std::string& install_dir, const std::string& prefix_dir,
+                                           std::int64_t unix_time) {
+  SourceAddonResult result;
+  // The game folder, else the folder of a launch program (an imported folder may hold the game one level down).
+  std::vector<std::string> candidates{""};
+  for (auto program : programs) {
+    std::replace(program.begin(), program.end(), '\\', '/');
+    const auto slash = program.rfind('/');
+    if (slash == std::string::npos) continue;
+    const auto folder = program.substr(0, slash);
+    const auto parts = std::filesystem::path(folder);
+    if (folder.empty() || folder.front() == '/' ||
+        std::any_of(parts.begin(), parts.end(), [](const std::filesystem::path& part) { return part == ".."; }))
+      continue;
+    if (std::find(candidates.begin(), candidates.end(), folder) == candidates.end()) candidates.push_back(folder);
+  }
+  // An entry of a folder by name in any letter case, as Wine finds it (and the game probe's Find): a real folder or
+  // a regular file, never a link.
+  const auto entry = [](const std::filesystem::path& folder, std::string_view wanted,
+                        bool directory) -> std::optional<std::filesystem::path> {
+    std::error_code error;
+    for (std::filesystem::directory_iterator it(folder, error), end; !error && it != end; it.increment(error)) {
+      auto name = it->path().filename().string();
+      std::transform(name.begin(), name.end(), name.begin(), AsciiLower);
+      if (name != wanted) continue;
+      struct stat info {};
+      if (::lstat(it->path().c_str(), &info) == 0 && (directory ? S_ISDIR(info.st_mode) : S_ISREG(info.st_mode)))
+        return it->path();
+    }
+    return std::nullopt;
+  };
+  // Both markers regular files in a real bin folder, not one a link points at.
+  const auto source_layout = [&](const std::string& relative) {
+    const auto bin = entry(std::filesystem::path(game_root) / relative, "bin", true);
+    return bin && entry(*bin, "engine.dll", false) && entry(*bin, "addoninstaller.exe", false);
+  };
+  const auto match = std::find_if(candidates.begin(), candidates.end(), source_layout);
+  if (match == candidates.end()) return result;
+  result.found = true;
+  auto folder = install_dir;
+  while (!folder.empty() && folder.back() == '\\') folder.pop_back();
+  if (!folder.empty() && !match->empty()) {
+    auto relative = *match;
+    std::replace(relative.begin(), relative.end(), '/', '\\');
+    folder += "\\" + relative;
+  }
+  // Playden's game folders are printable ASCII; anything else is not guessed at in Wine's text form.
+  const bool printable = std::all_of(folder.begin(), folder.end(), [](char c) { return c >= 0x20 && c < 0x7f; });
+  if (folder.empty() || !printable) {
+    result.ok = false;
+    result.message = "the game folder has no usable Windows path";
+    return result;
+  }
+  // Wine's text form of a REG_SZ: quoted, with backslashes and quotes escaped.
+  const auto text = [](const std::string& value) {
+    std::string out = "\"";
+    for (const char c : value) {
+      if (c == '\\' || c == '"') out += '\\';
+      out += c;
+    }
+    return out + "\"";
+  };
+  // gameui.dll reads only the .vpk value; the rest is what addoninstaller.exe /register writes on Windows, with the
+  // program path unquoted as it writes it. File extension keys are shared by both registry views, so there is no
+  // Wow6432Node copy (a 32-bit Left 4 Dead 2 on Windows leaves none).
+  const auto installer = folder + "\\bin\\addoninstaller.exe";
+  const std::vector<RegistryValue> values{
+      {"Software\\Classes\\.vpk", "", text("sourceaddonfile"), true},
+      {"Software\\Classes\\sourceaddonfile", "", text("Source Game Add-on"), true},
+      {"Software\\Classes\\sourceaddonfile\\DefaultIcon", "", text(installer + ",0"), true},
+      {"Software\\Classes\\sourceaddonfile\\shell\\open\\command", "", text(installer + " %1"), true}};
+  std::string before, reason;
+  {
+    auto directory = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kOpenTree);
+    if (directory) ReadRegularAt(*directory, "system.reg", 32u * 1024u * 1024u, &before, nullptr, true);
+  }
+  auto intended = before;
+  if (!before.empty() && ApplyRegistryValues(&intended, values, unix_time, nullptr) && intended == before) return result;
+  if (!ApplyRegistryFileValues(values, prefix_dir, unix_time, &reason, "system.reg")) {
+    result.ok = false;
+    result.message = reason;
+    return result;
+  }
+  result.written = true;
+  return result;
+}
+
 }  // namespace playden::runtime
 
 namespace playden::runtime {
