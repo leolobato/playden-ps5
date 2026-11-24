@@ -4742,6 +4742,52 @@ bool RaiseVcRuntimeVersion(const std::string& prefix_dir, std::int64_t unix_time
   return true;
 }
 
+bool DescribeProcessors(const std::string& prefix_dir, const ProcessorDescription& processor, std::int64_t unix_time,
+                        bool* changed, std::string* reason) {
+  const auto fail = [&](std::string why) {
+    if (reason) *reason = std::move(why);
+    return false;
+  };
+  *changed = false;
+  // Windows numbers at most 64 processors in one group; a bigger count is not a console's.
+  if (processor.mhz == 0 || processor.count == 0 || processor.count > 64) return true;
+  constexpr std::size_t kMaxRegistryBytes = 32u * 1024u * 1024u;
+  auto bottle = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kPrivateTraversable);
+  if (!bottle) return errno == ENOENT ? true : fail("cannot open the bottle");
+  std::string system_reg;
+  const auto state = ReadRegularAt(*bottle, "system.reg", kMaxRegistryBytes, &system_reg, nullptr, true);
+  if (state == RelativeRead::kMissing) return true;  // the bottle comes later
+  if (state != RelativeRead::kPresent) return fail("cannot read the bottle's system.reg");
+  const auto quoted = [](const std::string& text) {
+    std::string data = "\"";
+    for (const char c : text) {
+      if (c == '\\' || c == '"') data += '\\';
+      if (static_cast<unsigned char>(c) >= 0x20) data += c;
+    }
+    return data + "\"";
+  };
+  char mhz[16];
+  std::snprintf(mhz, sizeof(mhz), "dword:%08x", static_cast<unsigned>(processor.mhz));
+  std::vector<RegistryValue> values;
+  for (unsigned index = 0; index < processor.count; ++index) {
+    const auto key = "Hardware\\Description\\System\\CentralProcessor\\" + std::to_string(index);
+    const std::pair<const char*, std::string> wanted[] = {
+        {"~MHz", mhz},
+        {"VendorIdentifier", processor.vendor.empty() ? std::string() : quoted(processor.vendor)},
+        {"Identifier", processor.identifier.empty() ? std::string() : quoted(processor.identifier)},
+        {"ProcessorNameString", processor.name.empty() ? std::string() : quoted(processor.name)},
+    };
+    for (const auto& [name, data] : wanted) {
+      if (data.empty() || RegistryData(system_reg, key, name) == data) continue;
+      values.push_back({key, name, data});
+    }
+  }
+  if (values.empty()) return true;
+  if (!ApplyRegistryFileValues(values, prefix_dir, unix_time, reason, "system.reg")) return false;
+  *changed = true;
+  return true;
+}
+
 bool ParseUe3InstallGuid(std::string_view install_info, std::string* guid) {
   static constexpr std::string_view open = "<InstallGuidString>", close = "</InstallGuidString>";
   const auto start = install_info.find(open);

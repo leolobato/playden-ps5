@@ -3410,6 +3410,42 @@ int main(int argc, char** argv) {
           std::string::npos);
     CHECK(partial.find("\"Version\"=\"14.50.35719.0\"") != std::string::npos);
     CHECK(RaiseVcRuntimeVersion((root / "vc-no-bottle").string(), 1791600000, &changed, &reason) && !changed);
+
+    // The CentralProcessor keys wineboot would write: one per processor, rewritten only when they differ.
+    const auto cpu_bottle = root / "cpu-bottle";
+    std::filesystem::create_directories(cpu_bottle);
+    std::filesystem::permissions(cpu_bottle, std::filesystem::perms::owner_all);
+    std::ofstream(cpu_bottle / "system.reg", std::ios::trunc) << head + wbem;
+    ::chmod((cpu_bottle / "system.reg").c_str(), 0600);
+    ProcessorDescription cpu{1596, 2, "AuthenticAMD", "AMD64 Family 23 Model 71 Stepping 0", "AMD \"Custom\" APU"};
+    CHECK(DescribeProcessors(cpu_bottle.string(), cpu, 1791600000, &changed, &reason) && changed);
+    const auto described = ReadText(cpu_bottle / "system.reg");
+    CHECK(described.find(wbem) != std::string::npos);
+    for (const char* index : {"0", "1"}) {
+      const auto key = std::string("[Hardware\\\\Description\\\\System\\\\CentralProcessor\\\\") + index + "]";
+      const auto at = described.find(key);
+      CHECK(at != std::string::npos);
+      const auto section = described.substr(at, described.find("\n\n", at) - at);
+      CHECK(section.find("\"~MHz\"=dword:0000063c") != std::string::npos);
+      CHECK(section.find("\"VendorIdentifier\"=\"AuthenticAMD\"") != std::string::npos);
+      CHECK(section.find("\"Identifier\"=\"AMD64 Family 23 Model 71 Stepping 0\"") != std::string::npos);
+      CHECK(section.find("\"ProcessorNameString\"=\"AMD \\\"Custom\\\" APU\"") != std::string::npos);
+    }
+    CHECK(described.find("CentralProcessor\\\\2]") == std::string::npos);
+    CHECK(DescribeProcessors(cpu_bottle.string(), cpu, 1791600000, &changed, &reason) && !changed);
+    CHECK(ReadText(cpu_bottle / "system.reg") == described);
+    cpu.mhz = 1600;
+    CHECK(DescribeProcessors(cpu_bottle.string(), cpu, 1791600000, &changed, &reason) && changed);
+    CHECK(ReadText(cpu_bottle / "system.reg").find("\"~MHz\"=dword:00000640") != std::string::npos);
+    CHECK(ReadText(cpu_bottle / "system.reg").find("dword:0000063c") == std::string::npos);
+    // No rate, no count, no bottle: nothing changes.
+    const auto before = ReadText(cpu_bottle / "system.reg");
+    CHECK(DescribeProcessors(cpu_bottle.string(), ProcessorDescription{0, 2, "", "", ""}, 1791600000, &changed, &reason) &&
+          !changed);
+    CHECK(DescribeProcessors(cpu_bottle.string(), ProcessorDescription{1596, 0, "", "", ""}, 1791600000, &changed,
+                             &reason) && !changed);
+    CHECK(ReadText(cpu_bottle / "system.reg") == before);
+    CHECK(DescribeProcessors((root / "cpu-no-bottle").string(), cpu, 1791600000, &changed, &reason) && !changed);
   }
 
   // vkd3d-proton's DLLs go into both windows folders of the bottle and come out again, replaced by the template's,

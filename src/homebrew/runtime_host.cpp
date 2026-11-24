@@ -1808,6 +1808,22 @@ void RuntimeHost::VcRuntimeStep(const GameFiles& files) {
         (ok ? std::string(" version=") + rt::kVcRuntimeVersion : " failed=" + reason));
 }
 
+// Generic step: the bottle describes the console's processor under HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor,
+// as wineboot would at every Wine start (kit bottles never run it). A game that times with the time-stamp counter
+// reads its rate from ~MHz there. Logged, never a refusal: the next Play tries again.
+void RuntimeHost::ProcessorStep(const GameFiles& files) {
+  if (!config_.processor) return;
+  const auto processor = config_.processor();
+  if (!processor) return;
+  bool changed = false;
+  std::string reason;
+  const auto ok = rt::DescribeProcessors(files.prefix, *processor, config_.unix_time(), &changed, &reason);
+  if (changed || !ok)
+    Log("processor app=" + std::to_string(files.record.runtime_number) +
+        (ok ? " mhz=" + std::to_string(processor->mhz) + " count=" + std::to_string(processor->count)
+            : " failed=" + reason));
+}
+
 // Steam-file step: the folders of the game's Steam Cloud saves in the Windows user folder, which its download recorded
 // (SteamworksIdentity::save_folders), are made in the bottle when missing, as Steam makes them on Windows before a game
 // starts: Leaf It Alone watches its Saves folder at start-up and stops when it isn't there. Logged, never a refusal.
@@ -2709,6 +2725,7 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   SteamLibraryStep(c, files);
   // After the redistributables (install scripts, MFC): one that writes an older runtime key doesn't stay.
   VcRuntimeStep(files);
+  ProcessorStep(files);
   if (auto refused = RecipeRegistryStep(c, files); !refused.empty()) return refused;
   if (auto refused = GogRegistryStep(files); !refused.empty()) return refused;
   if (auto refused = RecipeIniStep(files); !refused.empty()) return refused;
