@@ -229,8 +229,8 @@
     "kit_id": "playden-kit",
     "published": false,
     "status": "Kit 0.36, installed as playden-kit. Kit 0.35 with Wine and the any-title shell of prospero-win e67c78c and libvulkan.prx built with RADV from PS5_Mesa 1abf9bf. Wine 1041 tells a game when a controller comes or goes (a second player who signs in after the game started, #1279; ntoskrnl.exe and sechost.dll), Wine 1042 adds a built-in amd_ags_x64.dll that the AMD GPU Services row puts before the game's own (capability wine-amd-ags, #1298; amd_ags_x64.dll and setupapi.dll), and RADV reports PCI device ID 0x13fe instead of 0 (#1298). Bottles need no Recreate.",
-    "manifest_sha256": "724456bce4929230c35c2100f9ce0ddd070a231defdd6e1180f49be36de6c7c8",
-    "files_sha256": "4dcfb02c3b00ca94fbbe2cd0d846bd351f983c6a421b7ae1b564f6948781d99d",
+    "manifest_sha256": "0d507cd316ea874f913d156857d8ad3462142d69e7b771b7a7f49c2bcc35b190",
+    "files_sha256": "a59e12be0490faa183a720eda8e9723fdad58355acfafc5b39eec7341143f1de",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"
@@ -277,7 +277,7 @@
     ],
     "wrapper_revision": "e67c78c731b9ac1ac90f26347472790185184361",
     "runtime_artifact_revision": "e67c78c-kit-0.36",
-    "runtime_inventory_source": "Kit 0.36: staged by kits/kit-0.36/stage.py in the kit archive: kit 0.35 with the modules that differ in a release cross build of e67c78c with RADV from PS5_Mesa 1abf9bf (scripts/build-kit-cross.sh --no-reuse, kit-h/work/wine-ps5-036-1): libvulkan.prx, ntoskrnl.exe, setupapi.dll and sechost.dll for both architectures (also in the template's system32 and syswow64) and the new x86-64 amd_ags_x64.dll; PE modules compared with kit 0.35's own cross build of 1608ac5 (wine-ps5-035-dev-2). The any-title shell is built from a clean clone of e67c78c. Earlier kits: see this file's git history.",
+    "runtime_inventory_source": "Kit 0.36: staged by kits/kit-0.36/stage.py in the kit archive: kit 0.35 with the modules that differ in a release cross build of e67c78c with RADV from PS5_Mesa 1abf9bf (scripts/build-kit-cross.sh --no-reuse, kit-h/work/wine-ps5-036-1): libvulkan.prx, ntoskrnl.exe, setupapi.dll and sechost.dll for both architectures (also in the template's system32 and syswow64) and the new x86-64 amd_ags_x64.dll; PE modules compared with kit 0.35's own cross build of 1608ac5 (wine-ps5-035-dev-2). The any-title shell is built from a clean clone of e67c78c. The built-in recipe is kit 0.35's steam-220-hl2-v1.json byte for byte: every install records its hash, and Play updates a game in place only while it is unchanged; the Touchpad hold change (d69e4b45) reaches players through the app's runtime/recipes. Earlier kits: see this file's git history.",
     "wine_mono": {
       "version": "11.3.0",
       "url": "https://dl.winehq.org/wine/wine-mono/11.3.0/wine-mono-11.3.0-x86.tar.xz",
