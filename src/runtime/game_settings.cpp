@@ -831,6 +831,16 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   return {};
 }
 
+// Whether a summary (GameDefaults::summary) lists `fact` among its facts, before " graphics=".
+bool SummaryHasFact(std::string_view summary, std::string_view fact) {
+  summary = summary.substr(0, summary.find(' '));
+  for (std::size_t start = 0; start <= summary.size();) {
+    const auto end = std::min(summary.find(',', start), summary.size());
+    if (summary.substr(start, end - start) == fact) return true;
+    start = end + 1;
+  }
+  return false;
+}
 }  // namespace
 
 const std::map<std::string, std::map<std::string, std::string>>& ControllerPresetInputs() {
@@ -1642,10 +1652,13 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
     required.source = recipe.arguments.empty() ? ValueSource::kPlayden : ValueSource::kRecipe;
   }
   // The row shows what the game is started with, so these swaps rewrite the recipe's value itself.
-  // Godot 4 cannot open its OpenGL window under Mesa's WGL/Zink on the PS5 (Slay the Spire 2), but its Vulkan
-  // renderer runs on RADV directly, at full rate. Generated recipes for Godot ask for opengl3; on a Zink kit they
-  // get Vulkan instead, also in arguments the player typed. A player's Extra arguments still come last and win.
-  if (kit.opengl_zink && recipe.detected.rfind("godot", 0) == 0)
+  // A Godot 4 project on Forward+ or Mobile told to use opengl3 runs on the Compatibility renderer instead, which
+  // didn't open its window under Mesa's WGL/Zink on the PS5 (Slay the Spire 2); its Vulkan renderer runs on RADV
+  // directly, at full rate. Generated recipes for Godot ask for opengl3; on a Zink kit they get Vulkan instead, also
+  // in arguments the player typed. A project on the Compatibility renderer keeps opengl3: Vulkan makes Godot use
+  // Forward+, and the game quits at once (MONOMOON, #1328). A player's Extra arguments still come last and win.
+  if (kit.opengl_zink && recipe.detected.rfind("godot", 0) == 0 &&
+      !SummaryHasFact(recipe.detected, "godot-compatibility"))
     ReplaceAll(&required.value, "--rendering-driver opengl3", "--rendering-driver vulkan");
   // Generated recipes ask Unity and Unreal for Direct3D 11, which DXVK draws. With Direct3D 12 on vkd3d-proton they
   // ask for Direct3D 12 instead (CULTIC stays black on 11). Arguments the player typed are left as they are.
@@ -3407,16 +3420,6 @@ std::optional<std::string> ProgramInsteadOfSteamDefault(const GameRecipe& recipe
 }
 
 namespace {
-// Whether a summary (GameDefaults::summary) lists `fact` among its facts, before " graphics=".
-bool SummaryHasFact(std::string_view summary, std::string_view fact) {
-  summary = summary.substr(0, summary.find(' '));
-  for (std::size_t start = 0; start <= summary.size();) {
-    const auto end = std::min(summary.find(',', start), summary.size());
-    if (summary.substr(start, end - start) == fact) return true;
-    start = end + 1;
-  }
-  return false;
-}
 
 // A 32-bit program linked by Watcom gets Translator from DefaultsFor, but only recipes set up since then have it: one
 // set up before keeps Native and crashes at start (Fallout). Only "cpu" is added, so the engine's other defaults stay

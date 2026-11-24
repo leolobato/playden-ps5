@@ -1113,6 +1113,12 @@ int main(int argc, char** argv) {
         settings.values.at("arguments").value == "--rendering-driver vulkan");
   CHECK(BuildEffectiveSettings(godot, nullptr, {}, KitCapabilities{}, &settings, &error));
   CHECK(settings.arguments == "--rendering-driver opengl3");
+  // A project on the Compatibility renderer keeps opengl3 on a Zink kit: with Vulkan, Godot uses Forward+ and the game
+  // quits at once (MONOMOON, #1328).
+  godot.detected = "godot,godot-compatibility,d3d12,dxgi,opengl,vulkan graphics=opengl";
+  CHECK(BuildEffectiveSettings(godot, nullptr, {}, zink, &settings, &error));
+  CHECK(settings.arguments == "--rendering-driver opengl3" &&
+        settings.values.at("arguments").value == "--rendering-driver opengl3");
   // An XNA game drawn with OpenGL turns Wine's d3d11 off in its profile, so FNA3D draws with OpenGL: on Wine's own
   // Direct3D 11 TowerFall plays its music on a black screen (#1151). The rows and a shared recipe don't show it.
   {

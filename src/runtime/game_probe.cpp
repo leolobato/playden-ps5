@@ -594,7 +594,122 @@ bool MonoGameDesktopGL(const std::vector<std::pair<std::string, bool>>& here) {
   });
 }
 
+// Godot's pack reader (core/io/file_access_pack.cpp), read back from a positioned file: a chunk at a time, so a
+// directory of many thousand files never sits in memory at once.
+class PackCursor {
+ public:
+  PackCursor(const Program& file, std::uint64_t at) : file_(file), at_(at) {}
+  bool Bytes(void* out, std::size_t size) {
+    if (size > kChunk) return false;
+    if (at_ < start_ || at_ + size > start_ + chunk_.size()) {
+      chunk_.resize(kChunk);  // heap: console worker stacks are small
+      chunk_.resize(file_.ReadSome(at_, chunk_.data(), kChunk));
+      start_ = at_;
+      if (chunk_.size() < size) return false;
+    }
+    std::memcpy(out, chunk_.data() + (at_ - start_), size);
+    at_ += size;
+    read_ += size;
+    return true;
+  }
+  bool U32(std::uint32_t* out) {
+    unsigned char bytes[4];
+    if (!Bytes(bytes, sizeof(bytes))) return false;
+    *out = runtime::U32(bytes);
+    return true;
+  }
+  bool U64(std::uint64_t* out) {
+    std::uint32_t low = 0, high = 0;
+    if (!U32(&low) || !U32(&high)) return false;
+    *out = low | (static_cast<std::uint64_t>(high) << 32);
+    return true;
+  }
+  std::uint64_t read() const { return read_; }
+
+ private:
+  static constexpr std::size_t kChunk = 256 * 1024;
+  const Program& file_;
+  std::uint64_t at_;
+  std::uint64_t start_ = 0;
+  std::uint64_t read_ = 0;
+  std::vector<unsigned char> chunk_;
+};
+
+// rendering/renderer/rendering_method from a Godot project's project.binary (ConfigFile's binary form: "ECFG", a
+// count, then each key and its value as an encoded Variant). A project that doesn't set it uses Godot's default,
+// Forward+. Empty when the file can't be read or holds another kind of value.
+std::string ProjectRenderingMethod(const std::vector<unsigned char>& data) {
+  constexpr std::string_view kKey = "rendering/renderer/rendering_method";
+  constexpr std::uint32_t kVariantString = 4;  // Variant::STRING, in the low byte of the value's header
+  if (data.size() < 8 || std::memcmp(data.data(), "ECFG", 4) != 0) return {};
+  const auto count = U32(data.data() + 4);
+  std::size_t at = 8;
+  const auto field = [&](std::string_view* out) {
+    if (data.size() - at < 4) return false;
+    const auto size = U32(data.data() + at);
+    at += 4;
+    if (size > data.size() - at) return false;
+    *out = std::string_view(reinterpret_cast<const char*>(data.data() + at), size);
+    at += size;
+    return true;
+  };
+  for (std::uint32_t i = 0; i < count; ++i) {
+    std::string_view key, value;
+    if (!field(&key) || !field(&value)) return {};
+    if (key != kKey) continue;
+    if (value.size() < 8 || (U32(reinterpret_cast<const unsigned char*>(value.data())) & 0xFF) != kVariantString)
+      return {};
+    const auto size = U32(reinterpret_cast<const unsigned char*>(value.data()) + 4);
+    if (size > value.size() - 8) return {};
+    const std::string method(value.substr(8, size));
+    return method == "forward_plus" || method == "mobile" || method == "gl_compatibility" ? method : std::string();
+  }
+  return "forward_plus";
+}
+
 }  // namespace
+
+std::string GodotRenderingMethod(const std::string& pck) {
+  constexpr std::uint32_t kMagic = 0x43504447;  // "GDPC"
+  constexpr std::uint32_t kDirectoryEncrypted = 1u << 0, kSparseBundle = 1u << 2;
+  constexpr std::uint32_t kFileEncrypted = 1u << 0, kFileRemoved = 1u << 1;
+  constexpr std::uint32_t kMostFiles = 1000000;
+  constexpr std::uint64_t kMostDirectoryBytes = 64ull * 1024 * 1024;
+  constexpr std::uint64_t kMostProjectBytes = 4ull * 1024 * 1024;
+  Program file(pck);
+  unsigned char head[40] = {};
+  if (!file.ReadAt(0, head, sizeof(head)) || U32(head) != kMagic) return {};
+  // Pack format 2 is Godot 4.0 to 4.3 (the directory right after the header), 3 and 4 are Godot 4.4 on (the header
+  // says where the directory is). Godot 3's format 1 has no --rendering-driver to choose.
+  const auto version = U32(head + 4);
+  if (version < 2 || version > 4 || U32(head + 8) != 4) return {};
+  const auto flags = U32(head + 20);
+  if (flags & (kDirectoryEncrypted | kSparseBundle)) return {};
+  // Offsets relative to the pack or to the file are the same in a standalone pack, which starts at 0.
+  const auto file_base = U32(head + 24) | (static_cast<std::uint64_t>(U32(head + 28)) << 32);
+  const auto directory = version == 2 ? 32 + 16 * 4 : U32(head + 32) | (static_cast<std::uint64_t>(U32(head + 36)) << 32);
+  PackCursor cursor(file, directory);
+  std::uint32_t count = 0;
+  if (!cursor.U32(&count) || count > kMostFiles) return {};
+  for (std::uint32_t i = 0; i < count && cursor.read() < kMostDirectoryBytes; ++i) {
+    std::uint32_t length = 0, entry_flags = 0;
+    std::uint64_t offset = 0, size = 0;
+    unsigned char md5[16];
+    if (!cursor.U32(&length) || length > 4096) return {};
+    std::string path(length, '\0');
+    if (!cursor.Bytes(path.data(), length) || !cursor.U64(&offset) || !cursor.U64(&size) || !cursor.Bytes(md5, 16) ||
+        !cursor.U32(&entry_flags))
+      return {};
+    path.erase(path.find_last_not_of('\0') + 1);  // padded to 4 bytes
+    if (path != "res://project.binary" && path != "project.binary") continue;
+    if (entry_flags & kFileRemoved) continue;
+    if ((entry_flags & kFileEncrypted) || size > kMostProjectBytes) return {};
+    std::vector<unsigned char> data(static_cast<std::size_t>(size));
+    if (!file.ReadAt(file_base + offset, data.data(), data.size())) return {};
+    return ProjectRenderingMethod(data);
+  }
+  return {};
+}
 
 MfcImports FindMfcImports(const std::string& install_root) {
   MfcImports out;
@@ -825,8 +940,9 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
     probe.engine = "source";
   } else if (Find(here, "data.win", false)) {
     probe.engine = "gamemaker";
-  } else if (Find(here, Lower(stem) + ".pck", false)) {
+  } else if (const auto pck = Find(here, Lower(stem) + ".pck", false)) {
     probe.engine = "godot";
+    probe.godot_compatibility = GodotRenderingMethod((root / folder / *pck).string()) == "gl_compatibility";
   } else if (Find(here, "libhl.dll", false) || Find(here, "hlboot.dat", false)) {
     // HashLink (Heaps: Dead Cells) loads its graphics library at run time, from a .hdll next to the program.
     probe.engine = "hashlink";
@@ -886,6 +1002,9 @@ int DefaultsRevision(std::string_view engine) {
   // 1: Unreal needs Unreal's own folders beside Engine (UnrealLayout), so a game set up before is read again: another
   // engine's root program beside an "engine" folder (Cyberpunk 2077's REDprelauncher.exe, #1163) is not Unreal's.
   if (engine == "unreal" || engine == "unreal5") return 1;
+  // 1: a Godot 4 project on the Compatibility renderer is told apart (godot-compatibility), so it stays on OpenGL
+  // instead of being sent to Vulkan, which makes Godot use Forward+ and quit (MONOMOON, #1328).
+  if (engine == "godot") return 1;
   // 1: a program that draws nothing and imports a Qt web view only starts the game (Fahrenheit Remastered, #1197), so a
   // game set up before with no engine is read once for the game's own program. 2: Ren'Py is detected (it names no
   // graphics library, so it got DXVK and stopped with "No matching GL pixel format available": Roadwarden, #960, #1232),
@@ -997,6 +1116,7 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
   if (LegacyDirect3D9(probe)) facts += "-legacy";
   else if (probe.legacy_unity) facts += "-legacy5";
   if (!probe.engine_version.empty()) facts += "," + probe.engine + "-" + probe.engine_version;
+  if (probe.godot_compatibility) facts += ",godot-compatibility";
   for (const auto& api : probe.apis) facts += (facts.empty() ? "" : ",") + api;
   // An Unreal 5 game names both renderers; this says which one it starts on.
   if (probe.unreal5) facts += out.d3d12.empty() ? ",dx11" : ",dx12";

@@ -52,7 +52,15 @@ struct GameProbe {
   // The program imports a Qt web view (Qt5WebKit, QtWebEngine): with nothing it draws itself, a launcher showing a
   // web page in front of the game (Aspyr's, which starts the game as a child process).
   bool web_view = false;
+  // A Godot 4 project on the Compatibility renderer (OpenGL), read from its .pck (GodotRenderingMethod). False for
+  // Forward+ and Mobile, and when the pack can't be read.
+  bool godot_compatibility = false;
 };
+
+// rendering/renderer/rendering_method of the Godot 4 project in a standalone .pck: "gl_compatibility", "forward_plus"
+// (also when the project leaves it unset) or "mobile". Empty when it can't be told: Godot 3's pack, an encrypted
+// directory or project file, a pack split over files, a format this doesn't know or a file cut short.
+std::string GodotRenderingMethod(const std::string& pck);
 
 inline constexpr unsigned long long kProbeScanBytes = 256ull * 1024ull * 1024ull;
 // At most this much of a library's resources is read for its version.

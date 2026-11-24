@@ -139,6 +139,69 @@ void Touch(const fs::path& path) {
   std::ofstream(path) << "x";
 }
 
+// A Godot project.binary: "ECFG", a count, then each key and its value as an encoded Variant (a String's, or an int's).
+std::string ProjectBinary(const std::vector<std::pair<std::string, std::string>>& strings, bool with_int = true) {
+  std::string out = "ECFG" + std::string(4, '\0');
+  const auto add = [&](const std::string& key, const std::string& value) {
+    std::string field(4, '\0');
+    Put32(&field, 0, static_cast<std::uint32_t>(key.size()));
+    out += field + key;
+    Put32(&field, 0, static_cast<std::uint32_t>(value.size()));
+    out += field + value;
+  };
+  std::uint32_t count = 0;
+  if (with_int) {
+    std::string value(8, '\0');
+    Put32(&value, 0, 2);  // Variant::INT
+    Put32(&value, 4, 1280);
+    add("display/window/size/viewport_width", value), ++count;
+  }
+  for (const auto& [key, text] : strings) {
+    std::string value(8, '\0');
+    Put32(&value, 0, 4);  // Variant::STRING
+    Put32(&value, 4, static_cast<std::uint32_t>(text.size()));
+    value += text;
+    value.resize((value.size() + 3) / 4 * 4, '\0');
+    add(key, value), ++count;
+  }
+  Put32(&out, 4, count);
+  return out;
+}
+
+// A standalone Godot pack (core/io/pck_packer.cpp): format 2 has its directory right after the header, 3 and 4 after
+// the files. Godot 3 (format 1) has neither flags nor a file base.
+std::string GodotPack(std::uint32_t format, std::uint32_t major, const std::vector<std::pair<std::string, std::string>>& files,
+                      std::uint32_t pack_flags = 2, std::uint32_t file_flags = 0) {
+  const std::size_t header = format == 2 ? 96 : 104;
+  std::string data, directory(4, '\0');
+  Put32(&directory, 0, static_cast<std::uint32_t>(files.size()));
+  for (const auto& [name, bytes] : files) {
+    auto path = (format == 2 ? "res://" : "") + name;
+    path.resize((path.size() + 3) / 4 * 4, '\0');
+    std::string entry(4, '\0');
+    Put32(&entry, 0, static_cast<std::uint32_t>(path.size()));
+    entry += path;
+    std::string numbers(36, '\0');
+    Put32(&numbers, 0, static_cast<std::uint32_t>(data.size()));  // offset from the file base, then the size
+    Put32(&numbers, 8, static_cast<std::uint32_t>(bytes.size()));
+    Put32(&numbers, 32, file_flags);
+    directory += entry + numbers;
+    data += bytes;
+  }
+  std::string out(header, '\0');
+  Put32(&out, 0, 0x43504447);
+  Put32(&out, 4, format);
+  Put32(&out, 8, major);
+  Put32(&out, 20, pack_flags);
+  if (format == 2) {
+    Put32(&out, 24, static_cast<std::uint32_t>(header + directory.size()));
+    return out + directory + data;
+  }
+  Put32(&out, 24, static_cast<std::uint32_t>(header));
+  Put32(&out, 32, static_cast<std::uint32_t>(header + data.size()));
+  return out + data + directory;
+}
+
 }  // namespace
 
 int main() {
@@ -400,10 +463,57 @@ int main() {
     Touch(root / "win/garagerally.pck");
     const auto godot = DefaultsFor(ProbeGame(root.string(), "win/garagerally.exe"));
     CHECK(godot.graphics == "opengl" && godot.arguments == "--rendering-driver opengl3");
+    CHECK(godot.summary.find("godot-compatibility") == std::string::npos);  // a pack that can't be read: Vulkan, as before
     WritePe(root / "hl2.exe", {false, {"KERNEL32.dll"}});
     WritePe(root / "bin/engine.dll", {false, {"d3d9.dll"}});
     const auto source = DefaultsFor(ProbeGame(root.string(), "hl2.exe"));
     CHECK(source.graphics == "dxvk" && source.resolution_arguments == "-w {w} -h {h}");
+  }
+  {  // A Godot 4 project's renderer, from project.binary in its pack (MONOMOON, #1328). Only the Compatibility renderer
+    // keeps OpenGL; anything Playden can't read stays as before.
+    const auto root = fresh();
+    const auto pck = (root / "Game.pck").string();
+    const std::string monomoon_files = "x";
+    const auto compatibility = ProjectBinary({{"application/config/name", "MONOMOON"},
+                                              {"rendering/renderer/rendering_method", "gl_compatibility"}});
+    for (const std::uint32_t format : {2u, 3u, 4u}) {
+      Write(pck, GodotPack(format, 4, {{"icon.png", monomoon_files}, {"project.binary", compatibility}}));
+      CHECK(GodotRenderingMethod(pck) == "gl_compatibility");
+    }
+    WritePe(root / "Game.exe", {true, {"KERNEL32.dll", "d3d12.dll", "dxgi.dll", "OPENGL32.dll"}, false, false, "vulkan-1.dll"});
+    auto probe = ProbeGame(root.string(), "Game.exe");
+    CHECK(probe.engine == "godot" && probe.godot_compatibility);
+    auto defaults = DefaultsFor(probe);
+    CHECK(defaults.graphics == "opengl" && defaults.arguments == "--rendering-driver opengl3" &&
+          defaults.summary.rfind("godot,godot-compatibility,", 0) == 0);
+    CHECK(DetectedLabel(defaults.summary) == "Godot \xC2\xB7 OpenGL");
+    // Forward+ (Slay the Spire 2), also when only the mobile override names the Compatibility renderer, and Mobile.
+    Write(pck, GodotPack(4, 4, {{"project.binary", ProjectBinary({{"rendering/renderer/rendering_method.mobile",
+                                                                    "gl_compatibility"},
+                                                                   {"rendering/renderer/rendering_method", "forward_plus"}})}}));
+    CHECK(GodotRenderingMethod(pck) == "forward_plus" && !ProbeGame(root.string(), "Game.exe").godot_compatibility);
+    Write(pck, GodotPack(2, 4, {{"project.binary", ProjectBinary({{"rendering/renderer/rendering_method.mobile",
+                                                                    "gl_compatibility"}})}}));
+    CHECK(GodotRenderingMethod(pck) == "forward_plus");  // not set: Godot's default
+    Write(pck, GodotPack(3, 4, {{"project.binary", ProjectBinary({{"rendering/renderer/rendering_method", "mobile"}})}}));
+    CHECK(GodotRenderingMethod(pck) == "mobile");
+    // What can't be read stays on Vulkan: an encrypted directory or project file, a pack split over files, Godot 3's
+    // pack, an unknown format, a file cut short, a value that isn't a renderer's name.
+    const auto unread = [&](const std::string& bytes) {
+      Write(pck, bytes);
+      return GodotRenderingMethod(pck).empty() && !ProbeGame(root.string(), "Game.exe").godot_compatibility;
+    };
+    CHECK(unread(GodotPack(4, 4, {{"project.binary", compatibility}}, 2 | 1)));
+    CHECK(unread(GodotPack(4, 4, {{"project.binary", compatibility}}, 2 | 4)));
+    CHECK(unread(GodotPack(4, 4, {{"project.binary", compatibility}}, 2, 1)));
+    CHECK(unread(GodotPack(1, 3, {{"project.binary", compatibility}})));
+    CHECK(unread(GodotPack(5, 4, {{"project.binary", compatibility}})));
+    const auto whole = GodotPack(4, 4, {{"project.binary", compatibility}});
+    CHECK(unread(whole.substr(0, whole.size() - 10)));
+    CHECK(unread(GodotPack(4, 4, {{"project.binary", compatibility.substr(0, compatibility.size() - 4)}})));
+    CHECK(unread(GodotPack(4, 4, {{"project.binary", ProjectBinary({{"rendering/renderer/rendering_method", "vulkan"}})}})));
+    CHECK(unread(GodotPack(4, 4, {{"other.binary", compatibility}})));
+    CHECK(unread("x"));
   }
   {  // HashLink (Dead Cells): the graphics library is a .hdll beside the program, loaded at run time.
     const auto root = fresh();
@@ -1664,6 +1774,34 @@ int main() {
     current.detected = "unknown graphics=dxvk";
     current.defaults_revision = 3;
     CHECK(!RefreshRecipeDefaults(root.string(), {}, &current) && current.graphics == "dxvk");
+  }
+
+  {  // A Godot game on the Compatibility renderer set up before it was told apart (MONOMOON, #1328): its next Play
+    // takes the godot-compatibility fact, so it stays on opengl3. A Forward+ one only takes the revision.
+    const auto root = fresh();
+    WritePe(root / "MONOMOON.exe", {true, {"KERNEL32.dll", "OPENGL32.dll"}, false, false, "vulkan-1.dll"});
+    Write(root / "MONOMOON.pck",
+          GodotPack(4, 4, {{"project.binary", ProjectBinary({{"rendering/renderer/rendering_method", "gl_compatibility"}})}}));
+    GameRecipe recipe;
+    std::string reason;
+    CHECK(GenerateGameRecipe(3285880, "MONOMOON", {{"", "", "MONOMOON.exe", "", ""}}, root.string(), &recipe, &reason, {}));
+    CHECK(recipe.detected.rfind("godot,godot-compatibility,", 0) == 0 && recipe.defaults_revision == 1);
+    CHECK(DefaultsRevision(recipe.detected) == 1);
+    auto old = recipe;
+    old.detected = "godot,opengl,vulkan graphics=opengl";
+    old.defaults_revision = 0;
+    CHECK(RefreshRecipeDefaults(root.string(), {}, &old));
+    CHECK(old.detected == recipe.detected && old.defaults_revision == 1 && old.arguments == "--rendering-driver opengl3");
+    CHECK(!RefreshRecipeDefaults(root.string(), {}, &old));
+    Write(root / "MONOMOON.pck",
+          GodotPack(4, 4, {{"project.binary", ProjectBinary({{"rendering/renderer/rendering_method", "forward_plus"}})}}));
+    auto forward = recipe;
+    forward.detected = "godot,opengl,vulkan graphics=opengl";
+    forward.defaults_revision = 0;
+    CHECK(RefreshRecipeDefaults(root.string(), {}, &forward));
+    CHECK(forward.detected == "godot,opengl,vulkan graphics=opengl" && forward.defaults_revision == 1 &&
+          forward.arguments == "--rendering-driver opengl3");
+    CHECK(!RefreshRecipeDefaults(root.string(), {}, &forward));
   }
 
   {  // A MonoGame DesktopGL game set up before it was detected (Stardew Valley, #1224): no engine, DXVK. Its next Play
