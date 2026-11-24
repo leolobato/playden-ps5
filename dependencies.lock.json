@@ -228,9 +228,9 @@
   "prospero_kit": {
     "kit_id": "playden-kit",
     "published": false,
-    "status": "Kit 0.35, installed as playden-kit. Kit 0.34 with Wine and the any-title shell of prospero-win 1608ac5 and libvulkan.prx built with RADV from PS5_Mesa 98f423c. Wine 1039 drops a message posted to the desktop window (Slay the Spire's pad crash, #1156; win32u.prx), Wine 1040 searches a program's .local folder for its DLLs (Fahrenheit Remastered's launcher, #1197; ntdll), libvulkan.prx draws the performance overlay (`[display] hud`, capability display-hud, #688), and RADV gives host pointers a memory type with unified heaps (RDR2's swapchain, #1218). Bottles need no Recreate.",
-    "manifest_sha256": "d4711be3a79fb57157182a5710dc0ba150ddce2488aced0417f11f2b6e599dd6",
-    "files_sha256": "26f0b3be1aa5d37691747141bc6fa6cedb0177e046df4d796dbdec2b69b8f582",
+    "status": "Kit 0.36, installed as playden-kit. Kit 0.35 with Wine and the any-title shell of prospero-win e67c78c and libvulkan.prx built with RADV from PS5_Mesa 1abf9bf. Wine 1041 tells a game when a controller comes or goes (a second player who signs in after the game started, #1279; ntoskrnl.exe and sechost.dll), Wine 1042 adds a built-in amd_ags_x64.dll that the AMD GPU Services row puts before the game's own (capability wine-amd-ags, #1298; amd_ags_x64.dll and setupapi.dll), and RADV reports PCI device ID 0x13fe instead of 0 (#1298). Bottles need no Recreate.",
+    "manifest_sha256": "724456bce4929230c35c2100f9ce0ddd070a231defdd6e1180f49be36de6c7c8",
+    "files_sha256": "4dcfb02c3b00ca94fbbe2cd0d846bd351f983c6a421b7ae1b564f6948781d99d",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"
@@ -268,15 +268,16 @@
       "touchpad-switch",
       "vkd3d-proton",
       "windows-locale",
+      "wine-amd-ags",
       "wine-driver-threads",
       "wine-large-address-aware",
       "wine-mono",
       "wine-shared-sections",
       "wow64_i386"
     ],
-    "wrapper_revision": "1608ac5b0818379bfdee7a5e01dde18958e3d67d",
-    "runtime_artifact_revision": "1608ac5-kit-0.35",
-    "runtime_inventory_source": "Kit 0.35: staged by kits/kit-0.35/stage.py in the kit archive: dev kit 0.35-dev.20261121.3 (prospero-win 1608ac5 cross build, libvulkan.prx relinked against PS5_Mesa 98f423c) under its release name; every file matches the dev kit's. Earlier kits: see this file's git history.",
+    "wrapper_revision": "e67c78c731b9ac1ac90f26347472790185184361",
+    "runtime_artifact_revision": "e67c78c-kit-0.36",
+    "runtime_inventory_source": "Kit 0.36: staged by kits/kit-0.36/stage.py in the kit archive: kit 0.35 with the modules that differ in a release cross build of e67c78c with RADV from PS5_Mesa 1abf9bf (scripts/build-kit-cross.sh --no-reuse, kit-h/work/wine-ps5-036-1): libvulkan.prx, ntoskrnl.exe, setupapi.dll and sechost.dll for both architectures (also in the template's system32 and syswow64) and the new x86-64 amd_ags_x64.dll; PE modules compared with kit 0.35's own cross build of 1608ac5 (wine-ps5-035-dev-2). The any-title shell is built from a clean clone of e67c78c. Earlier kits: see this file's git history.",
     "wine_mono": {
       "version": "11.3.0",
       "url": "https://dl.winehq.org/wine/wine-mono/11.3.0/wine-mono-11.3.0-x86.tar.xz",
