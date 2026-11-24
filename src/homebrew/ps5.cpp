@@ -818,6 +818,12 @@ int main() {
                 return templates;
             };
             config.log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "runtime.log", line); };
+            config.processor = []() -> std::optional<rt::ProcessorDescription> {
+                static const auto console = playden::ps5::ConsoleProcessorInfo();
+                if (!console) return std::nullopt;
+                return rt::ProcessorDescription{console->tsc_mhz, console->count, console->vendor,
+                                                console->identifier, console->name};
+            };
             config.community_recipe_bytes = playden::homebrew::CommunityRecipeBytes(community_objects);
             config.system_notification = [](const std::string& text) {
                 if (!playden::ps5::PostSystemNotification(text))

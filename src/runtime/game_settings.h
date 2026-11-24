@@ -860,6 +860,24 @@ inline constexpr const char* kVcRuntimeVersion = "14.50.35719.0";
 // changed tells whether system.reg was written.
 bool RaiseVcRuntimeVersion(const std::string& prefix_dir, std::int64_t unix_time, bool* changed, std::string* reason);
 
+// The processor as Windows describes it under HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\<n>.
+struct ProcessorDescription {
+  std::uint32_t mhz = 0;   // ~MHz: the time-stamp counter's rate, which is what games time with it expect
+  unsigned count = 0;      // one key per processor Wine reports
+  std::string vendor;      // VendorIdentifier, e.g. AuthenticAMD
+  std::string identifier;  // Identifier, e.g. AMD64 Family 23 Model 71 Stepping 0
+  std::string name;        // ProcessorNameString
+};
+
+// wineboot writes the CentralProcessor keys at every Wine start, as volatile keys no bottle keeps, and kit bottles
+// never run wineboot, so a game finds no ~MHz there. Death Stranding takes its timer rate from ~MHz * 1000000: with
+// none, every time it measures is infinite and it never gets past its first frame. This writes the keys for
+// processors 0 to count - 1 into the stopped bottle's system.reg, with a system.reg.playden-backup as
+// ApplyBottleRegistryValues does. Values that already match are not rewritten; a bottle not made yet is left for
+// later; a description without a rate or a count changes nothing. changed tells whether system.reg was written.
+bool DescribeProcessors(const std::string& prefix_dir, const ProcessorDescription& processor, std::int64_t unix_time,
+                        bool* changed, std::string* reason);
+
 // The <InstallGuidString> of an Unreal Engine 3 (UDK) Binaries/InstallInfo.xml: exactly one,
 // a 36-character 8-4-4-4-12 hex GUID once surrounding whitespace is trimmed.
 bool ParseUe3InstallGuid(std::string_view install_info, std::string* guid);

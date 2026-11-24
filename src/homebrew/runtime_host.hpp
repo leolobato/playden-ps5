@@ -123,6 +123,9 @@ struct RuntimeHostConfig {
   // secure random source is available. Empty uses /dev/urandom.
   std::function<std::optional<std::string>()> uuid;
   std::function<std::int64_t()> unix_time;
+  // The console's processor, written into each bottle's CentralProcessor keys before a start (wineboot's job, which
+  // kit bottles never run). Empty or nothing: the bottle is left as it is.
+  std::function<std::optional<runtime::ProcessorDescription>()> processor;
   // Diagnostic lines (no credentials): startup, each preparation step and refusals.
   std::function<void(const std::string&)> log;
   // Shows a PS5 system notification (the bubble over any screen, the Home screen included), for
@@ -1004,6 +1007,7 @@ class RuntimeHost {
   std::string Direct3D12Step(Composition& composition, const GameFiles& files);
   void KitMonoStep(Composition& composition, const runtime::RuntimeInstall& record, const char* when);  // never stops the start
   void VcRuntimeStep(const GameFiles& files);  // never stops the start
+  void ProcessorStep(const GameFiles& files);  // never stops the start
   void SaveFoldersStep(Composition& c, const GameFiles& files);  // never stops the start
   std::string BottleEnvironmentStep(const GameFiles& files);
   // The recipe's registry values, tracked per install (runtime::RecipeRegistryState) so a switch
