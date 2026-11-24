@@ -31,12 +31,15 @@ struct WorkshopItem {
   std::uint64_t file_size = 0;
   std::string file_url;        // empty when Steam's URL was longer than Playden keeps (see has_file_url)
   bool has_file_url = false;   // Steam named a URL: a legacy item
+  std::string preview_url;     // the item's preview picture; empty when Steam's URL was longer than Playden keeps
+  std::uint64_t preview_size = 0;
   // hcontent_file: the item's manifest in the game's Workshop depot. For a legacy item it is the file's UGC handle
   // instead, which no depot holds (Left 4 Dead 2, #1319).
   std::uint64_t manifest = 0;
   std::uint32_t time_created = 0;
   std::uint32_t time_updated = 0;
   std::uint32_t consumer_appid = 0;
+  std::uint64_t creator = 0;   // the author's SteamID
   std::uint32_t file_type = 0;
   bool banned = false;  // listed, but never downloaded (see PlanWorkshopSync)
 

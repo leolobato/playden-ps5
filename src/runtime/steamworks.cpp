@@ -300,7 +300,11 @@ fs::path OriginalFor(const fs::path& root, const std::vector<std::string>& found
 }  // namespace
 
 std::vector<std::string> RetiredSteamApiSha256() {
-  return {"4635ee7b204af05b2e6fb2b05c5b884080218e18f3954e95f84d40e51a0e4ae7",   // owned_app_ids test build (7100368e), 32-bit
+  return {"41ae505b73e115afa9b237e49b13d208543a022952ee32c7b6dec5370c089666",   // old-style Workshop test build (0f9543c0), 32-bit
+          "a7cd9c13ce1303e4b3ac8702ca12071e37db21b392811d174651596fb679c0e5",   // old-style Workshop test build (0f9543c0), 64-bit
+          "d778ba3007cc46b7587f23698493c6734752213e34eaec2d5e59a036da11df44",   // owned_app_ids (ca45922c), 32-bit
+          "ca4698c8d8db8270735c3570922748300abd10dc9d16c2f3a95a6a564be144d2",   // owned_app_ids (ca45922c), 64-bit
+          "4635ee7b204af05b2e6fb2b05c5b884080218e18f3954e95f84d40e51a0e4ae7",   // owned_app_ids test build (7100368e), 32-bit
           "a87257fa603f14f172e14c995b55b1c7f69e0fefda0754cc66a3b76a15d1db63",   // owned_app_ids test build (7100368e), 64-bit
           "4007fdef3062f8fa194c64d2286ab4e3d72ca1be189657a3b1a4da8f04f33bbb",   // Steam Input callbacks (509fcb90), 32-bit
           "3c46a4b109a1bd03a2d0255d1cc0e6e72608d4f67d621227701af4d8ad3d5ba9",   // Steam Input callbacks (509fcb90), 64-bit

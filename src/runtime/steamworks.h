@@ -17,8 +17,8 @@ namespace playden::runtime {
 // built as runtime/steamworks/README.md says, pinned below), the original is kept as <dll>.orig, and
 // steam_settings/ beside it tells the emulator who plays and what they own. Every call is
 // idempotent and must run while the game is stopped. Links are never followed.
-inline constexpr const char* kSteamApi32Sha256 = "d778ba3007cc46b7587f23698493c6734752213e34eaec2d5e59a036da11df44";
-inline constexpr const char* kSteamApi64Sha256 = "ca4698c8d8db8270735c3570922748300abd10dc9d16c2f3a95a6a564be144d2";
+inline constexpr const char* kSteamApi32Sha256 = "662ede9482359cc21351c622c8b483e6a0252ec6e5cf6d9315b04886f7ddc763";
+inline constexpr const char* kSteamApi64Sha256 = "5ac3c30cfaf4008f7d03ece2615ab4822e968bcac2e6ae80db17bc3dc5e3a569";
 
 // The online bridge that nightlies put in the game's DLL slot for Steam features = Online before the Steam host
 // replaced it. It is never installed now: a DLL with its marker is Playden's and goes back to the game's own (the
@@ -36,8 +36,8 @@ inline constexpr const char* kSteamOnlineEmulator32Name = "steam_api_gbe.dll";
 // hashes it) or carry Valve's inside their program (Resident Evil 5, behind Enigma Protector), where the emulator can't
 // take the DLL's place.
 inline constexpr const char* kSteamClientFeature = "steamclient";
-inline constexpr const char* kSteamClient32Sha256 = "387130915545bae8aea33c77e5fb78e9f5f22227f71e8974b96a3ac06fecdc2c";
-inline constexpr const char* kSteamClient64Sha256 = "a57def605cc88b035ad7dd6193621bb50cffdc076465c4ad77882e45797ab79a";
+inline constexpr const char* kSteamClient32Sha256 = "79394e018dbfd97b8763d8fffb6c1be1add4bead5841159ef64aa5e3aed6d084";
+inline constexpr const char* kSteamClient64Sha256 = "66ad1128d614b27b602976a3231bd2257c663aec062c3c04273fdc759ca994df";
 // Where they go in the game's bottle, with the steam_settings/ gbe_fork reads beside them in this mode. Never in the game's
 // folder: a game that checks its files finds them as Steam installed them.
 inline constexpr const char* kSteamClientWindowsFolder = "C:\\playden\\steamclient";

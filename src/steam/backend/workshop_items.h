@@ -2,6 +2,7 @@
 #pragma once
 
 #include "steam/backend/depot_installer.h"
+#include "steam/backend/http_client.h"
 #include "steam/backend/workshop_client.h"
 #include "steam/session_store.h"
 
@@ -9,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -74,12 +76,32 @@ std::optional<std::set<std::uint64_t>> ReadWorkshopOff(const std::string& worksh
 // Atomic, as WriteWorkshopState. False for more than kWorkshopMaxItems IDs or a zero ID.
 bool WriteWorkshopOff(const std::string& workshop_folder, std::uint32_t app_id, const std::set<std::uint64_t>& off);
 
+// The file each old-style item Playden holds was saved as (#1319), and its author, kept beside the state file:
+// W/<WorkshopFilesName>, "<id>\t<name>[\t<author SteamID>]\n" per item, sorted by ID. The launch names both in
+// gbe_fork's mods.json (primary_filename, steam_id_owner): it serves the file when the game asks Steam for it, and the
+// game shows who made the item (an author the emulator can't name reads "Unknown User", never the player). Strict:
+// anything else (a zero, a leading zero or repeated ID, a name that isn't a plain file name, a zero author), more than
+// kWorkshopMaxItems lines, makes the whole file invalid.
+struct WorkshopItemFile {
+  std::string name;
+  std::uint64_t owner = 0;  // 0: unknown
+  bool operator==(const WorkshopItemFile& other) const { return name == other.name && owner == other.owner; }
+};
+using WorkshopFiles = std::map<std::uint64_t, WorkshopItemFile>;
+std::string WorkshopFilesName(std::uint32_t app_id);  // ".playden-workshop-<appid>-files"
+std::optional<WorkshopFiles> ParseWorkshopFiles(std::string_view text);
+std::string FormatWorkshopFiles(const WorkshopFiles& files);
+// A missing file is no names; an unreadable or invalid one is none.
+std::optional<WorkshopFiles> ReadWorkshopFiles(const std::string& workshop_folder, std::uint32_t app_id);
+// Atomic, as WriteWorkshopState. An empty map removes the file.
+bool WriteWorkshopFiles(const std::string& workshop_folder, std::uint32_t app_id, const WorkshopFiles& files);
+
 enum class WorkshopAction {
   kDownload,        // subscribed, on, not in the bottle
   kUpdate,          // Playden's copy is of another manifest or time
   kKeep,            // Playden's copy is current
   kRemove,          // Playden's copy of an item turned off or no longer subscribed
-  kSkipLegacy,      // only a file_url: not downloaded
+  kSkipLegacy,      // an old-style item Playden can't fetch (LegacyWorkshopFileOf): not downloaded
   kSkipHandPlaced,  // a folder Playden didn't make holds the item: left alone
   kSkipOff,         // turned off and not in the bottle
 };
@@ -132,10 +154,12 @@ bool WorkshopManifestRefused(const DepotManifest& manifest, std::string* reason 
 
 // DepotInstaller::Run of the item's manifest in `workshop_depot`, asked for under `app_id`, into the staging
 // root. `hooks` as DepotInstaller takes them; their manifest hook is wrapped so a refused manifest stops the
-// download before any chunk is fetched.
-WorkshopDownloader MakeWorkshopDownloader(InstallerHooks hooks, StoredSession session, std::uint32_t app_id,
-                                          std::uint32_t workshop_depot);
+// download before any chunk is fetched. Old-style items go to `legacy` (an HttpClient::Perform), and fail without one.
+WorkshopDownloader MakeWorkshopDownloader(
+    InstallerHooks hooks, StoredSession session, std::uint32_t app_id, std::uint32_t workshop_depot,
+    std::function<HttpResponse(const HttpRequest&, const std::atomic<bool>&)> legacy = {});
 // The same with CmClient and CdnClient (they must outlive the downloader); the manifest is checked the same way.
+// Old-style items (WorkshopItem::legacy) download their one file over HTTPS instead (DownloadLegacyWorkshopItem).
 WorkshopDownloader MakeWorkshopDownloader(CmClient& cm, CdnClient& cdn, StoredSession session, std::uint32_t app_id,
                                           std::uint32_t workshop_depot);
 

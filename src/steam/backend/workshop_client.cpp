@@ -138,6 +138,7 @@ std::optional<std::vector<WorkshopItem>> ParseWorkshopSubscriptions(const std::v
       switch (part.number) {
         case 1: if (varint) result = part.value; break;
         case 2: if (varint) item.id = part.value; break;
+        case 3: if (part.wire_type == proto::WireType::kFixed64) item.creator = part.value; break;
         case 5: if (varint) item.consumer_appid = u32(); break;
         case 7: if (bytes) item.filename = Sanitised(part, kWorkshopFilenameBytes); break;
         case 8: if (varint) item.file_size = part.value; break;
@@ -147,6 +148,8 @@ std::optional<std::vector<WorkshopItem>> ParseWorkshopSubscriptions(const std::v
             if (part.size <= kMaximumUrlBytes) item.file_url = Sanitised(part, kMaximumUrlBytes);
           }
           break;
+        case 9: if (varint) item.preview_size = part.value; break;
+        case 11: if (bytes && part.size <= kMaximumUrlBytes) item.preview_url = Sanitised(part, kMaximumUrlBytes); break;
         case 14: if (part.wire_type == proto::WireType::kFixed64) item.manifest = part.value; break;
         case 16: if (bytes) item.title = Sanitised(part, kWorkshopTitleBytes); break;
         case 19: if (varint) item.time_created = u32(); break;

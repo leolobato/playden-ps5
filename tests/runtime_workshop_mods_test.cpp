@@ -145,6 +145,31 @@ void TestBuild() {
   CHECK(Entry(files, "6").find("primary_filename") == Entry(files, "6").end());
   CHECK(Entry(files, "6").at("primary_filesize").number() == 10.0);
 
+  // A preview picture in the item's folder: named by its full path inside the bottle, as a file:/// URL too. One with
+  // a folder in its name is left out.
+  auto with_preview = Mod(8, "vpk", 100);
+  with_preview.primary_filename = "special.vpk";
+  with_preview.primary_bytes = 100;
+  with_preview.preview_filename = "preview.jpg";
+  with_preview.preview_bytes = 5082057;
+  auto bad_preview = Mod(9, "bad", 10);
+  bad_preview.preview_filename = "..\\x.jpg";
+  const auto previews = Parse(BuildWorkshopModsJson(550, {with_preview, bad_preview}, {}));
+  CHECK(Text(Entry(previews, "8"), "preview_filename") ==
+        "C:\\Program Files (x86)\\Steam\\steamapps\\workshop\\content\\550\\8\\preview.jpg");
+  CHECK(Entry(previews, "8").at("preview_filesize").number() == 5082057.0);
+  CHECK(Text(Entry(previews, "8"), "preview_url") ==
+        "file:///C:/Program Files (x86)/Steam/steamapps/workshop/content/550/8/preview.jpg");
+  CHECK(Entry(previews, "9").find("preview_filename") == Entry(previews, "9").end());
+
+  // The author, when known: gbe_fork names them (or "Unknown User") instead of the player. Big SteamIDs stay exact.
+  auto with_owner = Mod(10, "owned", 10);
+  with_owner.owner = 76561199222093932ull;
+  const auto owned_text = BuildWorkshopModsJson(550, {with_owner, Mod(11, "no owner", 10)}, {});
+  CHECK(owned_text.find("\"steam_id_owner\": 76561199222093932,") != std::string::npos);
+  const auto owned = Parse(owned_text);
+  CHECK(Entry(owned, "11").find("steam_id_owner") == Entry(owned, "11").end());
+
   // Hand-placed folders: an entry with no path (gbe_fork reads steam_settings/mods/<key>), kept by their own name. One
   // with an item's ID wins over it; a second folder for the same number is left out.
   const auto merged_text = BuildWorkshopModsJson(7, {Mod(30, "item"), Mod(40, "other")}, {"0007", "7", "30"});
@@ -171,10 +196,15 @@ void TestPresent(const fs::path& root) {
   Write(root / "outside.pak", "x");
   fs::create_symlink(root / "outside.pak", app / "6/link.pak");
   six.primary_filename = "link.pak";
+  two.preview_filename = "preview.jpg";  // not there: dropped
+  Write(app / "1/preview.jpg", "jpeg");
+  one.preview_filename = "preview.jpg";
   const auto present = PresentWorkshopMods(workshop.string(), 7, {one, two, Mod(3, "gone"), Mod(4, "link"), Mod(5, "file"), six});
   CHECK(present.size() == 3);
   CHECK(present[0].id == 1 && present[0].primary_filename.empty());
+  CHECK(present[0].preview_filename == "preview.jpg" && present[0].preview_bytes == 4);
   CHECK(present[1].id == 2 && present[1].primary_filename == "mod.pak" && present[1].primary_bytes == 5);
+  CHECK(present[1].preview_filename.empty() && present[1].preview_bytes == 0);
   CHECK(present[2].id == 6 && present[2].primary_filename.empty());
   CHECK(PresentWorkshopMods(workshop.string(), 8, {Mod(1, "other app")}).empty());
 }

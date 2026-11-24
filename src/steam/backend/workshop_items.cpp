@@ -2,6 +2,7 @@
 #include "steam/backend/workshop_items.h"
 
 #include "platform/managed_directory.h"
+#include "steam/backend/workshop_legacy.h"
 #include "runtime/workshop_acf.h"
 
 #include <algorithm>
@@ -381,6 +382,80 @@ bool WriteWorkshopOff(const std::string& workshop_folder, std::uint32_t app_id, 
   return folder && WriteFileAtomic(*folder, WorkshopOffName(app_id), FormatWorkshopOff(off));
 }
 
+std::string WorkshopFilesName(std::uint32_t app_id) { return WorkshopStateName(app_id) + "-files"; }
+
+namespace {
+// Each line: an ID of up to 20 digits, a tab, a name of up to 255 bytes, a tab and an author of up to 20 digits, a
+// line end.
+constexpr std::size_t kWorkshopFilesMaxBytes = kWorkshopMaxItems * (21 + 256 + 21);
+
+// A name Windows and Playden accept for a file in the item's folder (as LegacyWorkshopFileOf makes them).
+bool PlainItemFileName(std::string_view name) {
+  if (name.empty() || name == "." || name == ".." || name.size() > 255) return false;
+  if (Lower(std::string(name)).compare(0, 9, kReservedPrefix) == 0) return false;
+  for (const unsigned char c : name)
+    if (c < 0x20 || c == 0x7f || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' ||
+        c == '>' || c == '|')
+      return false;
+  return name.back() != ' ' && name.back() != '.';
+}
+}  // namespace
+
+std::optional<WorkshopFiles> ParseWorkshopFiles(std::string_view text) {
+  if (!text.empty() && text.back() != '\n') return std::nullopt;
+  WorkshopFiles files;
+  std::size_t start = 0;
+  while (start < text.size()) {
+    const auto end = text.find('\n', start);
+    const auto line = text.substr(start, end - start);
+    const auto tab = line.find('\t');
+    std::uint64_t id = 0;
+    if (tab == std::string_view::npos || !ParseNumber(line.substr(0, tab), &id) || id == 0) return std::nullopt;
+    auto rest = line.substr(tab + 1);
+    WorkshopItemFile file;
+    // The author, when there is one, after a second tab (a file name never holds a tab).
+    if (const auto second = rest.find('\t'); second != std::string_view::npos) {
+      if (!ParseNumber(rest.substr(second + 1), &file.owner) || file.owner == 0) return std::nullopt;
+      rest = rest.substr(0, second);
+    }
+    if (!PlainItemFileName(rest)) return std::nullopt;
+    file.name = std::string(rest);
+    if (!files.emplace(id, std::move(file)).second || files.size() > kWorkshopMaxItems) return std::nullopt;
+    start = end + 1;
+  }
+  return files;
+}
+
+std::string FormatWorkshopFiles(const WorkshopFiles& files) {
+  std::string text;
+  for (const auto& [id, file] : files)
+    text += std::to_string(id) + "\t" + file.name + (file.owner ? "\t" + std::to_string(file.owner) : std::string()) + "\n";
+  return text;
+}
+
+std::optional<WorkshopFiles> ReadWorkshopFiles(const std::string& workshop_folder, std::uint32_t app_id) {
+  const auto folder = ManagedDirectory::Open(workshop_folder, kTree);
+  if (!folder) return std::nullopt;
+  bool missing = false;
+  const auto text = ReadSmallFile(*folder, WorkshopFilesName(app_id), kWorkshopFilesMaxBytes, &missing);
+  if (!text) return missing ? std::optional<WorkshopFiles>(WorkshopFiles{}) : std::nullopt;
+  return ParseWorkshopFiles(*text);
+}
+
+bool WriteWorkshopFiles(const std::string& workshop_folder, std::uint32_t app_id, const WorkshopFiles& files) {
+  if (files.size() > kWorkshopMaxItems || files.count(0)) return false;
+  for (const auto& entry : files)
+    if (!PlainItemFileName(entry.second.name)) return false;
+  const auto folder = ManagedDirectory::Open(workshop_folder, kTree);
+  if (!folder) return false;
+  if (files.empty()) {
+    struct stat info{};
+    if (!folder->InspectChild(WorkshopFilesName(app_id), &info)) return errno == ENOENT;
+    return folder->RemoveRegularFile(WorkshopFilesName(app_id)) && folder->Sync();
+  }
+  return WriteFileAtomic(*folder, WorkshopFilesName(app_id), FormatWorkshopFiles(files));
+}
+
 const char* WorkshopActionName(WorkshopAction action) {
   switch (action) {
     case WorkshopAction::kDownload: return "download";
@@ -427,9 +502,9 @@ WorkshopPlan PlanWorkshopSync(const std::vector<WorkshopItem>& subscribed, const
   for (const auto& item : subscribed) {
     if (item.id == 0 || !seen.insert(item.id).second) continue;
     const auto* local = state.Find(item.id);
-    // A legacy item listed with no manifest is a download that never finished (a Playden that took the item's UGC
-    // handle for a manifest, #1319). It holds nothing of Playden's: a folder there was put by hand and is never
-    // removed. The sync drops the entry (UnfinishedLegacyItems).
+    // An old-style item listed with no manifest: a download that never finished (a Playden that took the item's UGC
+    // handle for a manifest, #1319, or a fetch cut short). It holds nothing of Playden's: a folder there was put by
+    // hand and is never removed or replaced. The sync drops the entry; one Playden can fetch downloads again.
     if (local && local->manifest == 0 && item.legacy()) local = nullptr;
     const bool here = present.count(item.id) > 0;
     if (item.banned) {
@@ -439,7 +514,7 @@ WorkshopPlan PlanWorkshopSync(const std::vector<WorkshopItem>& subscribed, const
     } else if (off.count(item.id)) {
       if (local) add(WorkshopAction::kRemove, item, local->bytes);
       else add(WorkshopAction::kSkipOff, item, 0);
-    } else if (item.legacy()) {
+    } else if (item.legacy() && !LegacyWorkshopFileOf(item)) {
       add(local ? WorkshopAction::kKeep : WorkshopAction::kSkipLegacy, item, 0);
     } else if (!local) {
       add(here ? WorkshopAction::kSkipHandPlaced : WorkshopAction::kDownload, item, here ? 0 : item.file_size);
@@ -496,12 +571,14 @@ std::function<InstallError(const DepotManifest&)> RefusingCheck(std::shared_ptr<
 }
 
 WorkshopDownloader RefusingDownloader(std::shared_ptr<DepotInstaller> installer, StoredSession session,
-                                      std::uint32_t app_id, std::uint32_t workshop_depot) {
+                                      std::uint32_t app_id, std::uint32_t workshop_depot, LegacyWorkshopPerform legacy) {
   auto refused = std::make_shared<std::string>();
   installer->SetManifestCheck(RefusingCheck(refused));
-  return [installer, refused, session, app_id, workshop_depot](const WorkshopItem& item, const std::string& staging,
-                                                               const std::atomic<bool>& cancel,
-                                                               const WorkshopProgressFn& progress) {
+  return [installer, refused, session, app_id, workshop_depot, legacy = std::move(legacy)](
+             const WorkshopItem& item, const std::string& staging, const std::atomic<bool>& cancel,
+             const WorkshopProgressFn& progress) {
+    // An old-style item has no manifest to ask for: its one file comes from its URL.
+    if (item.legacy()) return DownloadLegacyWorkshopItem(legacy, item, staging, cancel, progress);
     refused->clear();
     return RunItem(*installer, session, app_id, workshop_depot, item, staging, cancel, progress, refused.get());
   };
@@ -510,14 +587,21 @@ WorkshopDownloader RefusingDownloader(std::shared_ptr<DepotInstaller> installer,
 }  // namespace
 
 WorkshopDownloader MakeWorkshopDownloader(InstallerHooks hooks, StoredSession session, std::uint32_t app_id,
-                                          std::uint32_t workshop_depot) {
+                                          std::uint32_t workshop_depot,
+                                          std::function<HttpResponse(const HttpRequest&, const std::atomic<bool>&)> legacy) {
   return RefusingDownloader(std::make_shared<DepotInstaller>(std::move(hooks)), std::move(session), app_id,
-                            workshop_depot);
+                            workshop_depot, std::move(legacy));
 }
 
 WorkshopDownloader MakeWorkshopDownloader(CmClient& cm, CdnClient& cdn, StoredSession session, std::uint32_t app_id,
                                           std::uint32_t workshop_depot) {
-  return RefusingDownloader(std::make_shared<DepotInstaller>(cm, cdn), std::move(session), app_id, workshop_depot);
+  // Its own HTTPS client, with the CDN's CA bundle: the downloader runs on the install worker, one item at a time.
+  auto http = std::make_shared<HttpClient>(cdn.ca_bundle());
+  LegacyWorkshopPerform legacy = [http](const HttpRequest& request, const std::atomic<bool>& cancel) {
+    return http->Perform(request, cancel);
+  };
+  return RefusingDownloader(std::make_shared<DepotInstaller>(cm, cdn), std::move(session), app_id, workshop_depot,
+                            std::move(legacy));
 }
 
 std::size_t AdoptSteamClientItems(const std::string& workshop_folder, std::uint32_t app_id,
@@ -586,6 +670,15 @@ WorkshopSyncResult SyncWorkshopItems(const WorkshopSyncRequest& request, const s
   const auto downloads = workshop->OpenChild(kWorkshopDownloadDir, kTree, true, 0700);
   if (!app || !downloads) return fail(InstallError::kStorage, "cannot open workshop folders");
   const auto save = [&] { return WriteWorkshopState(request.workshop_folder, request.app_id, state); };
+  // The names old-style items were saved as. A list that can't be read starts afresh: the launch then names no
+  // file for those items until they download again.
+  WorkshopFiles files;
+  if (auto read = ReadWorkshopFiles(request.workshop_folder, request.app_id)) files = std::move(*read);
+  else log("workshop sync files list unreadable: starting empty");
+  const auto save_files = [&] {
+    for (auto entry = files.begin(); entry != files.end();) entry = state.Find(entry->first) ? std::next(entry) : files.erase(entry);
+    if (!WriteWorkshopFiles(request.workshop_folder, request.app_id, files)) log("workshop sync files list not written");
+  };
   // The game must not run while the items folder changes: asked before each change, told after it.
   const auto may_change = [&request] { return !request.may_apply || request.may_apply(); };
   const auto changed = [&request] { if (request.applied) request.applied(); };
@@ -656,8 +749,32 @@ WorkshopSyncResult SyncWorkshopItems(const WorkshopSyncRequest& request, const s
                                        [&](const WorkshopLocalItem& local) { return unfinished.count(local.id) > 0; }),
                         state.items.end());
       if (!save()) return fail(InstallError::kStorage, "cannot write workshop state");
+      save_files();
       log("workshop sync dropped-unfinished-legacy=" + std::to_string(unfinished.size()));
     }
+  }
+  // An old-style item Playden holds whose file has no name in the list (a list that couldn't be written, or an item
+  // adopted from Valve's client): named again when its file is there, so the launch can serve it. One listed without
+  // its author gets Steam's.
+  {
+    bool named = false;
+    for (const auto& entry : result.plan.entries) {
+      if (entry.action != WorkshopAction::kKeep || !state.Find(entry.item.id)) continue;
+      if (const auto listed = files.find(entry.item.id); listed != files.end()) {
+        if (listed->second.owner == 0 && entry.item.creator != 0 && entry.item.legacy()) {
+          listed->second.owner = entry.item.creator;
+          named = true;
+        }
+        continue;
+      }
+      const auto legacy = entry.item.legacy() ? LegacyWorkshopFileOf(entry.item) : std::nullopt;
+      const auto folder = legacy ? app->OpenChild(std::to_string(entry.item.id), kTree) : std::nullopt;
+      struct stat info{};
+      if (!folder || !folder->InspectChild(legacy->name, &info) || !S_ISREG(info.st_mode)) continue;
+      files[entry.item.id] = {legacy->name, entry.item.creator};
+      named = true;
+    }
+    if (named) save_files();
   }
 
   std::size_t index = 0;
@@ -725,8 +842,12 @@ WorkshopSyncResult SyncWorkshopItems(const WorkshopSyncRequest& request, const s
                                          [&item](const WorkshopLocalItem& local) { return local.id == item.id; }),
                           state.items.end());
         deleted.insert(item.id);
-        if (!save()) settle(item.id, WorkshopOutcome::kFailed, InstallError::kStorage, "cannot write workshop state");
-        else settle(item.id, WorkshopOutcome::kRemoved);
+        if (!save()) {
+          settle(item.id, WorkshopOutcome::kFailed, InstallError::kStorage, "cannot write workshop state");
+        } else {
+          if (files.count(item.id)) save_files();
+          settle(item.id, WorkshopOutcome::kRemoved);
+        }
         continue;
       }
       case WorkshopAction::kDownload:
@@ -783,8 +904,10 @@ WorkshopSyncResult SyncWorkshopItems(const WorkshopSyncRequest& request, const s
       report.bytes_total = result.plan.download_bytes;
       request.progress(report);
     };
-    const auto downloaded = request.download(item, staging->path().string(), cancel, on_progress);
+    auto downloaded = request.download(item, staging->path().string(), cancel, on_progress);
     ++index;
+    // Canceled while the download finished or was checked: nothing is put in place.
+    if (cancel.load() && downloaded.error == InstallError::kNone) downloaded.error = InstallError::kCanceled;
     std::set<std::string> names;
     std::string why = downloaded.detail;
     const auto staged = downloaded.error == InstallError::kNone && !downloaded.refused
@@ -850,6 +973,13 @@ WorkshopSyncResult SyncWorkshopItems(const WorkshopSyncRequest& request, const s
     local->title = item.title;
     // The game may run again only once the state lists the item as it now is: a launch reads it for mods.json.
     const bool saved = save();
+    // The launch names an old-style item's file for the emulator (a depot item has none), before the game may run.
+    if (saved) {
+      if (const auto legacy = item.legacy() ? LegacyWorkshopFileOf(item) : std::nullopt)
+        files[item.id] = {legacy->name, item.creator};
+      else files.erase(item.id);
+      save_files();
+    }
     changed();
     if (!saved) {
       settle(item.id, WorkshopOutcome::kFailed, InstallError::kStorage, "cannot write workshop state");

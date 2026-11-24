@@ -392,6 +392,19 @@ void TestLegacyUgc() {
   CHECK((*items)[1].legacy() && !(*items)[1].downloadable() && (*items)[1].manifest == ugc.manifest);
   CHECK((*items)[2].legacy() && (*items)[2].file_url.empty() && (*items)[2].has_file_url);
   CHECK(stats.kept == 3 && stats.legacy == 2);
+  // The preview's URL and size (fields 11 and 9) are kept.
+  Detail with_preview = ugc;
+  with_preview.id = 24;
+  proto::Writer item = DetailMessage(with_preview);
+  item.AddVarint(9, 5082057);
+  item.AddString(11, "https://images.steamusercontent.com/ugc/1/ABC/");
+  proto::Writer page(1u << 20);
+  page.AddVarint(1, 1);
+  page.AddMessage(3, item);
+  const auto parsed = ParseWorkshopSubscriptions(page.bytes(), kApp);
+  CHECK(parsed && parsed->size() == 1 && (*parsed)[0].creator == 76561190000000001ull);  // field 3, fixed64
+  CHECK(parsed && parsed->size() == 1 && (*parsed)[0].preview_size == 5082057 &&
+        (*parsed)[0].preview_url == "https://images.steamusercontent.com/ugc/1/ABC/");
 }
 
 // The log line's legacy count is of the list handed to the sync: an item repeated on a later page counts once.

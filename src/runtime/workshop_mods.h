@@ -35,6 +35,11 @@ struct WorkshopMod {
   std::uint64_t bytes = 0;            // total_files_sizes; primary_filesize when there is no primary file
   std::string primary_filename;       // empty: none
   std::uint64_t primary_bytes = 0;    // the primary file's size, when primary_filename is set
+  // A picture beside it in the item's folder, named to gbe_fork by its full path (not steam_settings/mod_images).
+  std::string preview_filename;       // empty: none
+  std::uint64_t preview_bytes = 0;
+  // The author's SteamID; 0: none named, and gbe_fork shows the player as the author.
+  std::uint64_t owner = 0;
 };
 
 // text as a JSON string (quotes included): quote, backslash and control characters escaped, every byte sequence that
@@ -48,8 +53,8 @@ std::string WorkshopJsonString(std::string_view text);
 std::string BuildWorkshopModsJson(std::uint32_t app_id, const std::vector<WorkshopMod>& items,
                                   const std::vector<std::string>& hand_placed);
 
-// The items whose folder <workshop_folder>/content/<app_id>/<id> is a real folder (not a link). A primary_filename
-// that is not a plain name of a regular file in that folder is dropped; one that is gets its size.
+// The items whose folder <workshop_folder>/content/<app_id>/<id> is a real folder (not a link). A primary_filename or
+// preview_filename that is not a plain name of a regular file in that folder is dropped; one that is gets its size.
 std::vector<WorkshopMod> PresentWorkshopMods(const std::string& workshop_folder, std::uint32_t app_id,
                                              std::vector<WorkshopMod> items);
 

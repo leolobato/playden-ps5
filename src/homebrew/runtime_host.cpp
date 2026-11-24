@@ -48,6 +48,7 @@
 #include "steam/backend/cloud_mapping.h"
 #include "steam/backend/json.h"
 #include "steam/backend/workshop_items.h"
+#include "steam/backend/workshop_legacy.h"
 #include "steam/secret.h"
 #include "stores/local/scanner.h"
 
@@ -61,6 +62,7 @@
 #include <ctime>
 #include <dirent.h>
 #include <fcntl.h>
+#include <map>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -1406,6 +1408,8 @@ void HandWorkshopItems(const std::filesystem::path& root, const std::string& pre
     if (::lstat(workshop.c_str(), &info) != 0 && errno == ENOENT) {
       // No Workshop folder: this game never had items.
     } else if (const auto state = playden::steam::ReadWorkshopState(workshop, app_id)) {
+      // Old-style items (#1319): the emulator serves their one file when the game asks Steam for it.
+      const auto files = playden::steam::ReadWorkshopFiles(workshop, app_id).value_or(playden::steam::WorkshopFiles{});
       for (const auto& item : state->items) {
         if (!item.on || item.manifest == 0) continue;  // turned off, or a download that hasn't finished
         ++listed;
@@ -1414,6 +1418,13 @@ void HandWorkshopItems(const std::filesystem::path& root, const std::string& pre
         mod.title = item.title;
         mod.time_updated = item.time_updated;
         mod.bytes = item.bytes;
+        if (const auto file = files.find(item.id); file != files.end()) {
+          mod.primary_filename = file->second.name;
+          mod.owner = file->second.owner;
+          // Dropped when it isn't there; never the item's own file under that name.
+          if (file->second.name != playden::steam::kLegacyWorkshopPreviewName)
+            mod.preview_filename = playden::steam::kLegacyWorkshopPreviewName;
+        }
         items.push_back(std::move(mod));
       }
       items = rt::PresentWorkshopMods(workshop, app_id, std::move(items));
@@ -1445,6 +1456,8 @@ void HandWorkshopItems(const std::filesystem::path& root, const std::string& pre
   std::string line = std::string("workshop mods mode=") + (emulate ? "emulate" : client ? "steamclient" : "none") +
                      " items=" + std::to_string(items.size()) + " missing=" + std::to_string(listed - items.size()) +
                      " hand_placed=" + std::to_string(hand_placed) + state_note;
+  const auto named = std::count_if(items.begin(), items.end(), [](const rt::WorkshopMod& mod) { return !mod.primary_filename.empty(); });
+  if (named) line += " files=" + std::to_string(named);
   for (const auto& [outcome, count] : outcomes)
     line += std::string(" ") + rt::WorkshopModsOutcomeName(outcome) + "=" + std::to_string(count);
   log(line);
@@ -1466,9 +1479,13 @@ void HandWorkshopItemsToSteam(const std::string& prefix, std::uint32_t app_id, b
     log("workshop acf=skipped state=unreadable");
     return;
   }
+  // Old-style items (#1319) aren't Valve's client's to install: the game fetches them itself (into its own folder), and
+  // their version is a UGC handle, not a manifest the client knows.
+  const auto files = playden::steam::ReadWorkshopFiles(workshop, app_id).value_or(playden::steam::WorkshopFiles{});
   std::vector<rt::WorkshopMod> held;
   for (const auto& item : state->items) {
     if (item.manifest == 0) continue;  // a download that hasn't finished
+    if (files.count(item.id)) continue;
     rt::WorkshopMod mod;
     mod.id = item.id;
     held.push_back(std::move(mod));

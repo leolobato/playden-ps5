@@ -1111,6 +1111,49 @@ void TestRealDownloader() {
     CHECK(!Here(fixture.Staging(1)));
   }
   {
+    // An old-style item (#1319) downloads its one file over HTTPS, checked against its URL's SHA-1, never from a depot;
+    // a depot item beside it still comes from the depot.
+    Fixture fixture;
+    Steam steam;
+    steam.AddManifest(10, {steam.AddFile("mod.zip", "zipped mod")});
+    const std::string vpk = "VPK bytes";
+    unsigned char digest[20];
+    mbedtls_sha1(reinterpret_cast<const unsigned char*>(vpk.data()), vpk.size(), digest);
+    std::string sha;
+    for (unsigned char c : digest) {
+      static const char* kDigits = "0123456789ABCDEF";
+      sha += kDigits[c >> 4];
+      sha += kDigits[c & 15];
+    }
+    auto legacy = Item(2, 777, 1000, vpk.size());
+    legacy.file_url = "https://cdn.steamusercontent.com/ugc/777/" + sha + "/";
+    legacy.has_file_url = true;
+    legacy.filename = "myl4d2addons/thing.vpk";
+    std::vector<std::string> urls;
+    auto http = [&](const HttpRequest& request, const std::atomic<bool>&) {
+      urls.push_back(request.url);
+      HttpResponse response;
+      response.status_code = 206;
+      response.headers.emplace_back("content-range", "bytes 0-" + std::to_string(vpk.size() - 1) + "/" +
+                                                         std::to_string(vpk.size()));
+      request.body_sink(reinterpret_cast<const std::uint8_t*>(vpk.data()), vpk.size());
+      return response;
+    };
+    WorkshopSyncRequest request;
+    request.app_id = kApp;
+    request.workshop_folder = fixture.workshop.string();
+    request.subscribed = {Item(1, 10, 1000, 10), legacy};
+    request.download = MakeWorkshopDownloader(steam.Hooks(), StoredSession{}, kApp, kDepot, http);
+    const auto result = SyncWorkshopItems(request, cancel);
+    CHECK(result.error == InstallError::kNone && OutcomeOf(result, 2)->outcome == WorkshopOutcome::kDownloaded);
+    CHECK(steam.asked.size() == 1 && steam.asked[0].manifest_gid == 10);
+    CHECK(urls == (std::vector<std::string>{legacy.file_url}));
+    CHECK(Read(fixture.Item(2) / "thing.vpk") == vpk && Read(fixture.Item(1) / "mod.zip") == "zipped mod");
+    CHECK(!Here(fixture.Item(2) / ".playden-tree") && fixture.State().Find(2)->manifest == 777);
+    const auto files = ReadWorkshopFiles(fixture.workshop.string(), kApp);
+    CHECK(files && files->size() == 1 && files->at(2).name == "thing.vpk");
+  }
+  {
     // An item with a link, or with a top-level .playden- entry, is refused before any chunk is fetched.
     Fixture fixture;
     Steam steam;
@@ -1333,6 +1376,120 @@ void TestStoppedLineDetail() {
   CHECK(line.find(" detail=none") != std::string::npos);
 }
 
+// Old-style items Playden can fetch (#1319): planned like depot items, versioned by their UGC handle; the file name goes
+// in the files list for the launch, and leaves it with the item. A row a download left unfinished is Playden's to
+// finish, folder or not. One Playden can't fetch stays skipped.
+void TestFetchedLegacyItems() {
+  std::atomic<bool> cancel{false};
+  const std::string sha = "83511A7DF6263A5F33AFA72E1EC5E74647F7FBA8";
+  auto fetched = [&sha](std::uint64_t id, std::uint64_t handle, std::uint32_t updated = 1000) {
+    auto item = Item(id, handle, updated, 3211);
+    item.file_url = "https://cdn.steamusercontent.com/ugc/" + std::to_string(handle) + "/" + sha + "/";
+    item.has_file_url = true;
+    item.filename = "myl4d2addons/special bile.vpk";
+    item.creator = 76561199222093932ull;
+    return item;
+  };
+  {
+    WorkshopState state;
+    const auto plan = PlanWorkshopSync({fetched(1, 501)}, state, {}, {});
+    CHECK(plan.entries.size() == 1 && plan.entries[0].action == WorkshopAction::kDownload && plan.download_bytes == 3211);
+    state.items.push_back({1, 501, 1000, 3211, true, "held"});
+    CHECK(PlanWorkshopSync({fetched(1, 501)}, state, {}, {1}).entries[0].action == WorkshopAction::kKeep);
+    CHECK(PlanWorkshopSync({fetched(1, 502, 1001)}, state, {}, {1}).entries[0].action == WorkshopAction::kUpdate);
+    // An unfinished row with a folder there: the player's (it may be one they copied in after a failed try), never
+    // replaced or removed. Without the folder the item downloads again.
+    state.items = {{1, 0, 0, 0, true, "unfinished"}};
+    CHECK(PlanWorkshopSync({fetched(1, 501)}, state, {}, {1}).entries[0].action == WorkshopAction::kSkipHandPlaced);
+    CHECK(PlanWorkshopSync({fetched(1, 501)}, state, {1}, {1}).entries[0].action == WorkshopAction::kSkipOff);
+    CHECK(PlanWorkshopSync({fetched(1, 501)}, state, {}, {}).entries[0].action == WorkshopAction::kDownload);
+  }
+  {
+    Fixture fixture;
+    FakeDownloads downloads;
+    downloads.files[501] = {{"special bile.vpk", "vpk v1"}};
+    downloads.files[502] = {{"special bile.vpk", "vpk v2"}};
+    auto result = SyncWorkshopItems(Request(fixture, downloads, {fetched(1, 501), Item(2, 20)}), cancel);
+    downloads.files[20] = {{"mod.zip", "depot"}};
+    CHECK(result.error == InstallError::kNone && OutcomeOf(result, 1)->outcome == WorkshopOutcome::kDownloaded);
+    CHECK(Read(fixture.Item(1) / "special bile.vpk") == "vpk v1");
+    CHECK(fixture.State().Find(1) && fixture.State().Find(1)->manifest == 501);
+    auto files = ReadWorkshopFiles(fixture.workshop.string(), kApp);
+    CHECK(files && files->size() == 1 && files->at(1).name == "special bile.vpk");
+    CHECK(files->at(1).owner == 76561199222093932ull);
+    // A list from before authors were kept gets the author on the next sync, without a download.
+    CHECK(WriteWorkshopFiles(fixture.workshop.string(), kApp, {{1, {"special bile.vpk", 0}}}));
+    const auto calls = downloads.calls.size();
+    CHECK(SyncWorkshopItems(Request(fixture, downloads, {fetched(1, 501), Item(2, 20)}), cancel).error == InstallError::kNone);
+    CHECK(downloads.calls.size() == calls);
+    files = ReadWorkshopFiles(fixture.workshop.string(), kApp);
+    CHECK(files && files->at(1).owner == 76561199222093932ull);
+    // A new upload on Steam: a new handle, downloaded again.
+    result = SyncWorkshopItems(Request(fixture, downloads, {fetched(1, 502, 1001), Item(2, 20)}), cancel);
+    CHECK(OutcomeOf(result, 1)->outcome == WorkshopOutcome::kUpdated && Read(fixture.Item(1) / "special bile.vpk") == "vpk v2");
+    CHECK(fixture.State().Find(1)->manifest == 502);
+    // Turned off: the folder and its name go; the file is gone when nothing is left.
+    result = SyncWorkshopItems(Request(fixture, downloads, {fetched(1, 502, 1001), Item(2, 20)}, {1}), cancel);
+    CHECK(OutcomeOf(result, 1)->outcome == WorkshopOutcome::kRemoved && !Here(fixture.Item(1)));
+    files = ReadWorkshopFiles(fixture.workshop.string(), kApp);
+    CHECK(files && files->empty() && !Here(fixture.workshop / WorkshopFilesName(kApp)));
+  }
+  {
+    // The name is in the list before the game may run again; a list that lost it is repaired on the next sync.
+    Fixture fixture;
+    FakeDownloads downloads;
+    downloads.files[501] = {{"special bile.vpk", "vpk v1"}};
+    auto request = Request(fixture, downloads, {fetched(1, 501)});
+    std::vector<std::string> named_when_applied;
+    request.applied = [&] {
+      const auto files = ReadWorkshopFiles(fixture.workshop.string(), kApp);
+      named_when_applied.push_back(files && files->count(1) ? files->at(1).name : "");
+    };
+    CHECK(SyncWorkshopItems(request, cancel).error == InstallError::kNone);
+    CHECK(!named_when_applied.empty() && named_when_applied.back() == "special bile.vpk");
+    CHECK(WriteWorkshopFiles(fixture.workshop.string(), kApp, {}));
+    const auto result = SyncWorkshopItems(Request(fixture, downloads, {fetched(1, 501)}), cancel);
+    CHECK(OutcomeOf(result, 1)->outcome == WorkshopOutcome::kKept && downloads.calls.size() == 1);
+    const auto files = ReadWorkshopFiles(fixture.workshop.string(), kApp);
+    CHECK(files && files->size() == 1 && files->at(1).name == "special bile.vpk");
+  }
+  {
+    // Canceled as the download finishes: nothing is put in place.
+    Fixture fixture;
+    FakeDownloads downloads;
+    downloads.files[501] = {{"special bile.vpk", "vpk v1"}};
+    std::atomic<bool> stop{false};
+    auto request = Request(fixture, downloads, {fetched(1, 501)});
+    auto inner = request.download;
+    request.download = [&](const WorkshopItem& item, const std::string& staging, const std::atomic<bool>& flag,
+                           const WorkshopProgressFn& progress) {
+      auto out = inner(item, staging, flag, progress);
+      stop = true;
+      return out;
+    };
+    CHECK(SyncWorkshopItems(request, stop).error == InstallError::kCanceled && !Here(fixture.Item(1)));
+  }
+}
+
+void TestFilesList() {
+  const std::string text = "11\ta.vpk\n22\tspecial bile.vpk\t76561199222093932\n";
+  const auto files = ParseWorkshopFiles(text);
+  CHECK(files && files->size() == 2 && files->at(22).name == "special bile.vpk" &&
+        files->at(22).owner == 76561199222093932ull && files->at(11).owner == 0 && FormatWorkshopFiles(*files) == text);
+  CHECK(ParseWorkshopFiles("") && ParseWorkshopFiles("")->empty());
+  for (const std::string bad : {"11\ta.vpk", "0\ta.vpk\n", "011\ta.vpk\n", "11\ta.vpk\n11\tb.vpk\n", "11\t\n",
+                                "11\tdir/a.vpk\n", "11\t..\n", "11\t.playden-x\n", "11 a.vpk\n", "11\ta:b\n",
+                                "11\ta.vpk\t0\n", "11\ta.vpk\t\n", "11\ta.vpk\tx\n", "11\ta.vpk\t1\t2\n"})
+    CHECK(!ParseWorkshopFiles(bad));
+  Fixture fixture;
+  CHECK(ReadWorkshopFiles(fixture.workshop.string(), kApp) && ReadWorkshopFiles(fixture.workshop.string(), kApp)->empty());
+  CHECK(WriteWorkshopFiles(fixture.workshop.string(), kApp, *files));
+  CHECK(Read(fixture.workshop / WorkshopFilesName(kApp)) == text);
+  CHECK(!WriteWorkshopFiles(fixture.workshop.string(), kApp, {{1, {"a/b", 0}}}));
+  Write(fixture.workshop / WorkshopFilesName(kApp), "damaged");
+  CHECK(!ReadWorkshopFiles(fixture.workshop.string(), kApp));
+}
+
 int main() {
   TestEnsureFolder();
   TestStateFile();
@@ -1354,6 +1511,8 @@ int main() {
   TestRealDownloader();
   TestLegacyUgcItems();
   TestStoppedLineDetail();
+  TestFetchedLegacyItems();
+  TestFilesList();
   if (failures) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);
     return 1;

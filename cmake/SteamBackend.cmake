@@ -166,6 +166,7 @@ add_library(playden_steam_cm STATIC
     "${CMAKE_SOURCE_DIR}/src/steam/backend/collections_client.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/workshop_client.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/workshop_items.cpp"
+    "${CMAKE_SOURCE_DIR}/src/steam/backend/workshop_legacy.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/workshop_listing_service.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/app_info_http.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/app_names.cpp"
@@ -268,6 +269,10 @@ function(playden_register_steam_backend_tests)
     add_executable(workshop_client_test "${CMAKE_SOURCE_DIR}/tests/workshop_client_test.cpp")
     target_link_libraries(workshop_client_test PRIVATE playden_steam_cm)
     add_test(NAME workshop_client COMMAND workshop_client_test)
+    # Old-style Workshop items (#1319): which ones are fetched, and their one-file download.
+    add_executable(workshop_legacy_test "${CMAKE_SOURCE_DIR}/tests/workshop_legacy_test.cpp")
+    target_link_libraries(workshop_legacy_test PRIVATE playden_steam_cm)
+    add_test(NAME workshop_legacy COMMAND workshop_legacy_test)
 
     # The Steam host's core (tools/steam-host/core), the same C file steam.exe is built from.
     add_executable(steam_host_core_test "${CMAKE_SOURCE_DIR}/tests/steam_host_core_test.cpp"

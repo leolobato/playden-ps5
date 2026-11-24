@@ -230,6 +230,15 @@ std::string BuildWorkshopModsJson(std::uint32_t app_id, const std::vector<Worksh
     const bool primary = !item->primary_filename.empty() && PlainName(item->primary_filename);
     if (primary) fields.emplace_back("primary_filename", WorkshopJsonString(item->primary_filename));
     fields.emplace_back("primary_filesize", std::to_string(std::min(primary ? item->primary_bytes : item->bytes, kInt32Max)));
+    if (!item->preview_filename.empty() && PlainName(item->preview_filename)) {
+      const auto folder = std::string(kWorkshopContentWindowsFolder) + "\\" + std::to_string(app_id) + "\\" + key;
+      std::string url = "file:///" + folder + "/" + item->preview_filename;
+      for (auto& c : url) if (c == '\\') c = '/';
+      fields.emplace_back("preview_filename", WorkshopJsonString(folder + "\\" + item->preview_filename));
+      fields.emplace_back("preview_filesize", std::to_string(std::min(item->preview_bytes, kInt32Max)));
+      fields.emplace_back("preview_url", WorkshopJsonString(url));
+    }
+    if (item->owner != 0) fields.emplace_back("steam_id_owner", std::to_string(item->owner));
     fields.emplace_back("total_files_sizes", std::to_string(item->bytes));
     fields.emplace_back("time_updated", std::to_string(item->time_updated));
     fields.emplace_back("workshop_item_url",
@@ -258,6 +267,16 @@ std::vector<WorkshopMod> PresentWorkshopMods(const std::string& workshop_folder,
       } else {
         item.primary_filename.clear();
         item.primary_bytes = 0;
+      }
+    }
+    if (!item.preview_filename.empty()) {
+      struct stat info {};
+      if (PlainName(item.preview_filename) && ::lstat((folder + "/" + item.preview_filename).c_str(), &info) == 0 &&
+          S_ISREG(info.st_mode)) {
+        item.preview_bytes = static_cast<std::uint64_t>(info.st_size);
+      } else {
+        item.preview_filename.clear();
+        item.preview_bytes = 0;
       }
     }
     present.push_back(std::move(item));
