@@ -919,7 +919,12 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
   std::string marked_engine;
   ScanNames((root / executable).string(), &probe.apis, &marked_engine, &probe.unreal5);
 
-  if (const auto unity = Find(here, "unityplayer.dll", false); unity || Find(here, Lower(stem) + "_data", true)) {
+  if (marked_engine.empty() && lower_file == "scummvm.exe") {
+    // ScummVM (Myst: Masterpiece Edition and other packaged releases) draws with OpenGL through SDL, which loads
+    // opengl32 at run time, so the program names no graphics library (#440). Its own name says more than the files
+    // beside it.
+    probe.engine = "scummvm";
+  } else if (const auto unity = Find(here, "unityplayer.dll", false); unity || Find(here, Lower(stem) + "_data", true)) {
     probe.engine = "unity";
     probe.il2cpp = Find(here, "gameassembly.dll", false).has_value();
     probe.legacy_unity = !unity;
@@ -1009,8 +1014,9 @@ int DefaultsRevision(std::string_view engine) {
   // game set up before with no engine is read once for the game's own program. 2: Ren'Py is detected (it names no
   // graphics library, so it got DXVK and stopped with "No matching GL pixel format available": Roadwarden, #960, #1232),
   // so a game set up before with no engine is read once more for it. 3: MonoGame's DesktopGL build is detected (Stardew
-  // Valley, #1224); a game set up at 2 (Ren'Py's) had no engine either, so it is read once more for MonoGame.
-  if (engine == "unknown") return 3;
+  // Valley, #1224); a game set up at 2 (Ren'Py's) had no engine either, so it is read once more for MonoGame. 4: ScummVM
+  // is detected by its program (Myst: Masterpiece Edition, #440), so one set up at 3 is read once more for it.
+  if (engine == "unknown") return 4;
   return 0;
 }
 
@@ -1072,10 +1078,11 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
     // Wine Mono's FNA3D would still pick Wine's Direct3D 11: the profile turns it off (ProfileDllOverrides).
     out.graphics = "opengl";
   } else if (probe.engine == "love" || probe.engine == "sil" || probe.engine == "java" || probe.engine == "renpy" ||
-             probe.engine == "monogame") {
+             probe.engine == "monogame" || probe.engine == "scummvm") {
     // SIL (FTL) draws with OpenGL though its program also names Direct3D 11; under DXVK it
     // quits right after setting up video. Ren'Py under DXVK gets no GL pixel format (#1232). MonoGame DesktopGL under
-    // DXVK stops at "Failed to create graphics device!" (Stardew Valley, #1224).
+    // DXVK stops at "Failed to create graphics device!" (Stardew Valley, #1224). ScummVM under DXVK quits with "Could not
+    // load any graphics mode" (#440).
     out.graphics = "opengl";
   } else if (probe.engine == "idtech3") {
     // id Tech 3 copies the OpenGL extension list into a fixed buffer; Mesa's is far longer than any
@@ -1145,7 +1152,7 @@ std::string DetectedLabel(const std::string& summary) {
            {"unreal", "Unreal Engine"}, {"unreal5", "Unreal Engine 5"}, {"source", "Source"},
            {"gamemaker", "GameMaker"}, {"godot", "Godot"}, {"love", "L\xC3\x96VE"}, {"nwjs", "NW.js"}, {"sil", "SIL"},
            {"idtech3", "id Tech 3"}, {"hashlink", "HashLink"}, {"xna", "XNA"}, {"java", "Java"}, {"renpy", "Ren'Py"},
-           {"monogame", "MonoGame"}})
+           {"monogame", "MonoGame"}, {"scummvm", "ScummVM"}})
     if (facts.count(id)) engine = name;
   for (const auto& fact : facts)
     if (engine == "NW.js" && fact.rfind("nwjs-", 0) == 0) engine += " " + fact.substr(5);
