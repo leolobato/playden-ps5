@@ -502,6 +502,8 @@ struct RuntimeHost::Composition {
   struct LoadedPublisher {
     std::string directory;
     rt::PublisherStageManifest manifest;
+    std::string pack_version;  // this build's, or the earlier one its games start with meanwhile
+    std::string pinned_stamp;  // with an earlier one: this build's archive when it was loaded (size, time; "": none)
   };
   std::optional<rt::PublisherPackStatus> publisher_pack;
   std::map<rt::Publisher, LoadedPublisher> publishers;
@@ -7371,7 +7373,26 @@ const RuntimeHost::InstallPublisher* RuntimeHost::PublisherOf(Composition& c, co
 }
 
 std::string RuntimeHost::LoadPublisher(Composition& c, rt::Publisher publisher) {
-  if (c.publishers.count(publisher)) return {};
+  // This build's archive as it is on disk: its size and time, or "" when it isn't there.
+  const auto pinned_stamp = [&] {
+    struct stat info{};
+    const auto pinned = HostPath(config_.publisher_root) / rt::kPublisherPackVersion /
+                        rt::PinnedPublisherRelease(publisher).archive;
+    if (lstat(pinned.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) return std::string();
+    return std::to_string(static_cast<std::uint64_t>(info.st_size)) + ":" +
+           std::to_string(static_cast<std::int64_t>(info.st_mtime));
+  };
+  if (const auto loaded = c.publishers.find(publisher); loaded != c.publishers.end()) {
+    // An earlier pack stays until this build's archive shows up or changes (an upload, the builds page's Install):
+    // looked for with one stat, so a damaged one isn't hashed again on every use.
+    if (config_.publisher_release || loaded->second.pack_version == rt::kPublisherPackVersion) return {};
+    const auto stamp = pinned_stamp();
+    if (stamp.empty() || stamp == loaded->second.pinned_stamp) return {};
+    Log("publisher pack " + std::string(rt::PublisherSlug(publisher)) + " " + rt::kPublisherPackVersion +
+        " changed: checking it again over earlier pack " + loaded->second.pack_version);
+    c.publisher_pack.reset();
+    c.publishers.erase(loaded);
+  }
   const auto name = PublisherDisplayName(publisher);
   PublisherReleaseResult release;
   if (config_.publisher_release) {
@@ -7406,6 +7427,19 @@ std::string RuntimeHost::LoadPublisher(Composition& c, rt::Publisher publisher) 
         release.message = "The publisher pack could not be unpacked: " + reason;
       }
     }
+    // Meanwhile the games start with an earlier pack still on the console. RefreshPublishers looks for this
+    // build's again once its download is in place.
+    if (!release.ok) {
+      const auto cache = HostPath(config_.publisher_cache_root.empty() ? config_.publisher_work_root + "/cache"
+                                                                       : config_.publisher_cache_root);
+      std::string version, directory;
+      if (rt::PrepareEarlierPublisherRelease(root, cache.string(), publisher, config_.earlier_publisher_packs, &version,
+                                             &directory)) {
+        Log("publisher pack " + std::string(rt::PublisherSlug(publisher)) + " using earlier pack " + version +
+            " until " + rt::kPublisherPackVersion + " is ready");
+        release = {true, directory, release.message, version};
+      }
+    }
   }
   if (!release.ok) {
     c.publisher_failures[publisher] = release.message.empty() ? name + " games can't be started yet." : release.message;
@@ -7415,13 +7449,18 @@ std::string RuntimeHost::LoadPublisher(Composition& c, rt::Publisher publisher) 
   std::string reason;
   if (!rt::LoadPublisherStageManifest(release.directory, &manifest, &reason)) {
     Log("publisher manifest " + std::string(rt::PublisherSlug(publisher)) + " unavailable: " + reason);
-    c.publisher_failures[publisher] = "The publisher pack can't start games from " + name + ". Install a newer pack from builds.playden.club.";
+    // An earlier pack this build can't read: why this build's pack isn't there.
+    c.publisher_failures[publisher] = !release.version.empty() && !release.message.empty()
+        ? release.message
+        : "The publisher pack can't start games from " + name + ". Install a newer pack from builds.playden.club.";
     return c.publisher_failures[publisher];
   }
   Log("publisher " + std::string(rt::PublisherSlug(publisher)) + " ready titles=" + std::to_string(manifest.titles.size()) +
       " files=" + std::to_string(manifest.files.size()));
   c.publisher_failures.erase(publisher);
-  c.publishers[publisher] = {release.directory, std::move(manifest)};
+  c.publishers[publisher] = {release.directory, std::move(manifest),
+                             release.version.empty() ? std::string(rt::kPublisherPackVersion) : release.version,
+                             release.version.empty() || config_.publisher_release ? std::string() : pinned_stamp()};
   return {};
 }
 
@@ -7484,7 +7523,7 @@ std::string RuntimeHost::StagePublisher(Composition& c, const rt::RuntimeInstall
     Publish([&](RuntimeSnapshot& s) { s.work_app = record.runtime_number; s.work_step = words; });
     const auto install_root = HostPath(record.install_path).string();
     // The game keeps the version it already uses while the pack stays the same.
-    const rt::PublisherRuntimeHolder holder{app, rt::kPublisherPackVersion};
+    const rt::PublisherRuntimeHolder holder{app, loaded.pack_version};
     const auto made = config_.ensure_publisher_runtime
         ? config_.ensure_publisher_runtime(*runtime, install_root, game->publisher, holder)
         : EnsurePublisherRuntime(*runtime, install_root, game->publisher, holder);

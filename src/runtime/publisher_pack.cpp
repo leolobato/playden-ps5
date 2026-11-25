@@ -225,6 +225,28 @@ const std::vector<PublisherRelease>& PinnedPublisherReleases() {
   return releases;
 }
 
+const std::vector<PublisherPackPin>& EarlierPublisherPacks() {
+  static const std::vector<PublisherPackPin> pins = {
+      {"20261125.2",
+       {Publisher::kRockstar, "playden-rgschost-20261125.2.tzst",
+        "93055be9824727427c6add00d0d43053ff943a528d1a20023974d1e127981dcc",
+        "894584584e52ea3253175d01d6e4cfe90f56699101ac5ae39708cd7ef00f7d06",
+        {"pdstub-sc.exe", "pdstub-sc32.exe", "pdlaunch-sc.dll", "pdlaunch-sc32.dll", "pdlaunch-helper.exe", "pdscpatch.dll",
+         "pdscpatch32.dll", "bink2w64.dll", "binkw32.dll", "SocialClubD3D12Renderer.dll", "SocialClubVulkanLayer.dll",
+         "playden-signin-shim.js", "stage.json", "signin/index.html", "values-rdr2.txt"},
+        2413835}},
+      {"20261121.1",  // 0.12.0-beta.5
+       {Publisher::kRockstar, "playden-rgschost-20261121.1.tzst",
+        "18864f63998b12310f984b9e0fff1e6f3bc4526e7a7efe6e59c675263a789f5c",
+        "b56b72fadd8c632c3bb2596976204a7fe3c96d2861757c54d14fd8b9e7305901",
+        {"pdstub-sc.exe", "pdstub-sc32.exe", "pdlaunch-sc.dll", "pdlaunch-sc32.dll", "pdlaunch-helper.exe", "pdscpatch.dll",
+         "pdscpatch32.dll", "bink2w64.dll", "binkw32.dll", "SocialClubD3D12Renderer.dll", "SocialClubVulkanLayer.dll",
+         "playden-signin-shim.js", "stage.json", "signin/index.html"},
+        2351438}},
+  };
+  return pins;
+}
+
 const PublisherRelease& PinnedPublisherRelease(Publisher publisher) {
   const auto& releases = PinnedPublisherReleases();
   const auto found = std::find_if(releases.begin(), releases.end(),
@@ -373,6 +395,24 @@ bool PreparePublisherRelease(const std::string& pack_root, const std::string& ve
   if (!PublisherCacheValid(target.string(), release)) return Fail(reason, "the publisher cache did not verify");
   *directory = target.string();
   return true;
+}
+
+bool PrepareEarlierPublisherRelease(const std::string& pack_root, const std::string& cache_root, Publisher publisher,
+                                    const std::vector<PublisherPackPin>& pins, std::string* version,
+                                    std::string* directory) {
+  for (const auto& pin : pins) {
+    if (pin.release.publisher != publisher) continue;
+    const auto cached = fs::path(cache_root) / Stem(pin.release.archive);
+    std::string reason;
+    if (PublisherCacheValid(cached.string(), pin.release) ||
+        (IsRegular(fs::path(pack_root) / pin.version / pin.release.archive) &&
+         PreparePublisherRelease(pack_root, pin.version, cache_root, pin.release, directory, &reason))) {
+      *version = pin.version;
+      *directory = cached.string();
+      return true;
+    }
+  }
+  return false;
 }
 
 bool PublisherCacheValid(const std::string& directory, const PublisherRelease& release) {

@@ -82,6 +82,12 @@ The `publisher-pack-download` feature (on in every build since 0.12.0-beta.4, th
 pins from `https://builds.playden.club/packs/<version>/` and install it in `/data/playden/publisher/<version>/` when it
 isn't there, as a Queue item; the archive must match the pin in `src/runtime/publisher_pack.cpp`. Without it, the pack
 is installed with `tools/console_publisher_upload.py` or the builds page's Install button.
+Until the pinned pack is there, Rockstar games start with the newest earlier pack still on the console. These are
+listed in `EarlierPublisherPacks()` (same file), and each must still match its own pins. When you move the pin, move the old
+one to the top of that list if players can have it (a published build, or a pack on builds.playden.club), and keep the
+last two. `PLAYDEN_EARLIER_PUBLISHER_PACKS=<builds repo>/packs ctest -R '^runtime_publisher_pack$'` checks each against
+its archive. A game keeps the Social Club version it was set up with while its pack stays the same; a newer pack
+moves it to the version its installer holds (`runtime/publisher_runtime.h`).
 The `nightly-updates` line (on by default in nightlies and local dev builds; releases need the line) replaces
 Settings › Beta updates with an Updates picker: Stable, Beta or Nightly. On Nightly, Playden reads
 `https://builds.playden.club/updates.json` (written by the builds site's `publish-build.py`) next to GitHub's releases

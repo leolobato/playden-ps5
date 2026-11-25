@@ -36,6 +36,23 @@ const std::vector<PublisherRelease>& PinnedPublisherReleases();
 const PublisherRelease& PinnedPublisherRelease(Publisher publisher);
 const char* PublisherName(Publisher publisher);  // "Rockstar"
 
+// A pack an earlier Playden build pinned: its version folder name and its archive's pins.
+struct PublisherPackPin {
+  std::string version;
+  PublisherRelease release;
+};
+// The packs the builds before this one pinned that players can have (published, or on builds.playden.club), newest
+// first. Moving the pin above moves the old one here.
+const std::vector<PublisherPackPin>& EarlierPublisherPacks();
+
+// While this build's pack can't be used for a publisher yet (not downloaded, not installed, or damaged), its games
+// start with the newest earlier pack still on the console, as GameNative falls back to the last helper it unpacked:
+// an unpacked cache that still matches its pins, or its archive in <pack_root>/<version>/, checked and unpacked
+// again. Nothing is downloaded for it. *version and *directory name the pack found.
+bool PrepareEarlierPublisherRelease(const std::string& pack_root, const std::string& cache_root, Publisher publisher,
+                                    const std::vector<PublisherPackPin>& pins, std::string* version,
+                                    std::string* directory);
+
 // SHA-256 over each file's relative path, a zero byte, its hex SHA-256 and a zero byte, in
 // byte order of the paths: the macOS PublisherAssetCache.treeDigest.
 std::string PublisherTreeDigest(const std::map<std::string, std::string>& file_sha256);

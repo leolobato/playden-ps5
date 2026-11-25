@@ -201,6 +201,69 @@ int main(int argc, char** argv) {
   for (const auto& entry : fs::directory_iterator(cache))
     CHECK(entry.path().filename().string().rfind(".installing", 0) != 0);
 
+  // Earlier packs: while this build's isn't there, the newest earlier one still on the console, from its unpacked
+  // cache or its archive. Nothing else counts: a damaged one is passed over.
+  {
+    const auto earlier_root = root / "earlier";
+    const auto earlier_pack = earlier_root / "publisher";
+    const auto earlier_cache = earlier_root / "cache";
+    const auto files_v1 = std::map<std::string, std::string>{{"pdstub-sc.exe", "MZv1"}};
+    const auto files_v2 = std::map<std::string, std::string>{{"pdstub-sc.exe", "MZv2"}};
+    auto v1 = Build(Publisher::kRockstar, "playden-rgschost-0.1.tzst", fx::File("pdstub-sc.exe", "MZv1") + fx::End(),
+                    files_v1, {"pdstub-sc.exe"});
+    auto v2 = Build(Publisher::kRockstar, "playden-rgschost-0.2.tzst", fx::File("pdstub-sc.exe", "MZv2") + fx::End(),
+                    files_v2, {"pdstub-sc.exe"});
+    const std::vector<PublisherPackPin> pins = {{"0.2", v2.release}, {"0.1", v1.release}};
+    std::string found, at;
+    CHECK(!PrepareEarlierPublisherRelease(earlier_pack.string(), earlier_cache.string(), Publisher::kRockstar, pins,
+                                          &found, &at));
+    CHECK(found.empty() && at.empty());
+    // The older archive alone: unpacked and used.
+    Write(earlier_pack / "0.1" / v1.release.archive, v1.archive_bytes);
+    CHECK(PrepareEarlierPublisherRelease(earlier_pack.string(), earlier_cache.string(), Publisher::kRockstar, pins,
+                                         &found, &at));
+    CHECK(found == "0.1" && at == (earlier_cache / "playden-rgschost-0.1").string());
+    CHECK(Read(fs::path(at) / "pdstub-sc.exe") == "MZv1");
+    // A damaged newer archive is passed over.
+    Write(earlier_pack / "0.2" / v2.release.archive, v2.archive_bytes + "x");
+    CHECK(PrepareEarlierPublisherRelease(earlier_pack.string(), earlier_cache.string(), Publisher::kRockstar, pins,
+                                         &found, &at));
+    CHECK(found == "0.1");
+    // The newer one's unpacked cache, still matching its pins, wins even without its archive.
+    Write(earlier_pack / "0.2" / v2.release.archive, v2.archive_bytes);
+    CHECK(PrepareEarlierPublisherRelease(earlier_pack.string(), earlier_cache.string(), Publisher::kRockstar, pins,
+                                         &found, &at));
+    CHECK(found == "0.2" && Read(fs::path(at) / "pdstub-sc.exe") == "MZv2");
+    fs::remove_all(earlier_pack / "0.2");
+    CHECK(PrepareEarlierPublisherRelease(earlier_pack.string(), earlier_cache.string(), Publisher::kRockstar, pins,
+                                         &found, &at));
+    CHECK(found == "0.2");
+    // A changed file in that cache: back to the older pack.
+    Write(earlier_cache / "playden-rgschost-0.2" / "pdstub-sc.exe", "MZevil");
+    CHECK(PrepareEarlierPublisherRelease(earlier_pack.string(), earlier_cache.string(), Publisher::kRockstar, pins,
+                                         &found, &at));
+    CHECK(found == "0.1" && Read(fs::path(at) / "pdstub-sc.exe") == "MZv1");
+  }
+  // This build's earlier pins: newest first, all older than its own pack, never its own archive.
+  {
+    const auto& earlier = EarlierPublisherPacks();
+    CHECK(!earlier.empty());
+    // "20261125.5": a date and that day's build.
+    const auto order = [](const std::string& version) {
+      const auto dot = version.find('.');
+      CHECK(dot == 8);
+      return std::make_pair(std::stoul(version.substr(0, dot)), std::stoul(version.substr(dot + 1)));
+    };
+    auto previous = order(kPublisherPackVersion);
+    for (const auto& pin : earlier) {
+      CHECK(order(pin.version) < previous);
+      previous = order(pin.version);
+      CHECK(pin.release.archive == "playden-rgschost-" + pin.version + ".tzst");
+      CHECK(pin.release.archive != PinnedPublisherRelease(pin.release.publisher).archive);
+      CHECK(pin.release.sha256.size() == 64 && pin.release.tree_sha256.size() == 64 && pin.release.size > 0);
+    }
+  }
+
   // The pinned releases: the Rockstar archive alone.
   CHECK(PinnedPublisherReleases().size() == 1);
   CHECK(PinnedPublisherRelease(Publisher::kRockstar).archive == "playden-rgschost-20261125.5.tzst");
@@ -245,6 +308,18 @@ int main(int argc, char** argv) {
     std::printf("real publisher pack: the archive matches its pin\n");
   } else {
     std::printf("PLAYDEN_PUBLISHER_ARCHIVES unset: real archives not checked\n");
+  }
+  // The earlier packs, when at hand (a folder of <version>/<archive>, as builds.playden.club's packs/): each one
+  // still found under its pins.
+  if (const char* real = std::getenv("PLAYDEN_EARLIER_PUBLISHER_PACKS")) {
+    for (const auto& pin : EarlierPublisherPacks()) {
+      CHECK(fs::file_size(fs::path(real) / pin.version / pin.release.archive) == pin.release.size);
+      const auto cache_root = root / "earlier-real" / pin.version;
+      std::string found, at;
+      CHECK(PrepareEarlierPublisherRelease(real, cache_root.string(), pin.release.publisher, {pin}, &found, &at));
+      CHECK(found == pin.version && PublisherCacheValid(at, pin.release));
+    }
+    std::printf("earlier publisher packs: each archive matches its pin\n");
   }
 
   fs::remove_all(root);

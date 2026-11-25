@@ -1,6 +1,7 @@
 #include "open_modes_walk.h"
 #include "homebrew/runtime_host.hpp"
 #include "runtime/publisher_runtime.h"
+#include "tzst_fixture.h"
 #include "gog/dependencies.h"
 #include "installs/install_record.h"
 #include "runtime_host_fixture.h"
@@ -11461,6 +11462,7 @@ struct PublisherFixture {
   unsigned uuids = 0;
   RuntimeHost* host = nullptr;  // set once the test made it, for the runtime hook
   std::string seen_step;
+  std::string runtime_pack;  // the pack the runtime hook was last asked for
 
   explicit PublisherFixture(const std::string& listed_app = "220", bool rockstar = true) {
     config = fixture.Config();
@@ -11512,8 +11514,9 @@ struct PublisherFixture {
                                                                   const std::string& install, Publisher,
                                                                   const PublisherRuntimeHolder& holder) {
       CHECK(spec.label == "Example Runtime");
-      // The game keeps its version while Playden's pack stays the same.
-      CHECK(holder.game == "220" && holder.pack == playden::runtime::kPublisherPackVersion);
+      // The game keeps its version while the pack it starts with stays the same.
+      CHECK(holder.game == "220" && !holder.pack.empty());
+      runtime_pack = holder.pack;
       CHECK(install == (root / "data/homebrew/FAKE77031/games/220").string());
       // The game page names this step while it runs.
       if (host) {
@@ -12048,6 +12051,69 @@ void PublisherGameWithoutPackSaysWhy() {
   }).publishers.at(Publisher::kRockstar);
   CHECK(!view.pack_ready && view.pack_message == wanted);
   CHECK(Read(f.title / "proxy.dll") == "game-proxy");
+  host.Shutdown();
+}
+
+// While this build's pack isn't on the console yet (its download hasn't finished), a game starts with an earlier
+// pack still there, and the game's runtime is kept for that pack.
+void PublisherGameStartsWithAnEarlierPack() {
+  PublisherFixture f;
+  f.config.publisher_release = nullptr;  // the real pack lookup
+  f.config.publisher_root = "/data/playden/publisher";
+  f.config.publisher_pack_download = true;
+  const std::map<std::string, std::string> files = {{"stage.json", PublisherManifest("220")},
+                                                    {"proxy32.dll", "proxy-32"},
+                                                    {"helper.dll", "helper"},
+                                                    {"page/index.html", "<html></html>"}};
+  std::string tar;
+  std::map<std::string, std::string> digests;
+  for (const auto& [name, data] : files) {
+    if (name == "page/index.html") tar += tzst_fixture::Directory("page");
+    tar += tzst_fixture::File(name, data);
+    digests[name] = *HashArtifactBytes(data);
+  }
+  const auto archive = tzst_fixture::Frame(tar + tzst_fixture::End());
+  const PublisherRelease earlier{Publisher::kRockstar, "playden-rgschost-0.9.tzst", *HashArtifactBytes(archive),
+                                 PublisherTreeDigest(digests), {"stage.json"}, archive.size()};
+  Write(f.fixture.root / "data/playden/publisher/0.9" / earlier.archive, archive, 0644);
+  f.config.earlier_publisher_packs = {{"0.9", earlier}};
+  RuntimeHost host(f.config);
+  f.host = &host;
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(Hl2());
+  const auto ready = WaitFor(host, [](const RuntimeSnapshot& s) { return s.prepares_handled > 0 && !s.preparing_app; }, 60);
+  CHECK(!ready.refusals.count(220));
+  CHECK(f.Logged(std::string("publisher pack rockstar using earlier pack 0.9 until ") +
+                 playden::runtime::kPublisherPackVersion + " is ready"));
+  CHECK(f.runtime_pack == "0.9");
+  CHECK(Read(f.title / "helper.dll") == "helper");
+  const auto view = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return s.publishers.count(Publisher::kRockstar) && s.publishers.at(Publisher::kRockstar).pack_checked;
+  }).publishers.at(Publisher::kRockstar);
+  CHECK(view.pack_ready);
+
+  // This build's archive shows up (here a damaged one): Play checks it once, and the earlier pack stays.
+  const auto pinned = f.fixture.root / "data/playden/publisher" / playden::runtime::kPublisherPackVersion /
+                      playden::runtime::PinnedPublisherRelease(Publisher::kRockstar).archive;
+  Write(pinned, "not the pack", 0644);
+  const auto checks = [&] {
+    std::lock_guard<std::mutex> lock(*f.log_mutex);
+    return std::count_if(f.log->begin(), f.log->end(), [](const std::string& line) {
+      return line.find("changed: checking it again over earlier pack 0.9") != std::string::npos;
+    });
+  };
+  const auto play = [&] {
+    const auto handled = host.Snapshot().plays_handled;
+    host.Play(220);
+    WaitFor(host, [handled](const RuntimeSnapshot& s) { return s.plays_handled > handled; }, 60);
+  };
+  play();
+  CHECK(checks() == 1);
+  CHECK(f.Logged("publisher pack rockstar using earlier pack 0.9 until"));
+  CHECK(host.Snapshot().publishers.at(Publisher::kRockstar).pack_ready);
+  play();
+  CHECK(checks() == 1);  // unchanged: not hashed again
   host.Shutdown();
 }
 
@@ -12663,6 +12729,7 @@ int main(int argc, char** argv) {
   PublisherProgramReachesAPreparedGame();
   PublisherGameWithoutPackSaysWhy();
   PublisherGameWithoutPackPointsToTheDownload();
+  PublisherGameStartsWithAnEarlierPack();
   PlacesPublisherCredentialForAStartFromHome();
   NotifiesAtQuitWhenAHomeStartLacksTheSignIn();
   NotifiesAboutTheStatusOfAStartFromHome();

@@ -80,6 +80,7 @@ struct PublisherReleaseResult {
   bool ok = false;
   std::string directory;
   std::string message;  // for the player
+  std::string version;  // the pack's version, when an earlier one (runtime::EarlierPublisherPacks); "": this build's
 };
 
 // A publisher's runtime made from a game's own installer: its version folder (a host path), or
@@ -250,6 +251,8 @@ struct RuntimeHostConfig {
   std::string publisher_work_root = runtime::kPublisherWorkRoot;
   // Where pack releases are unpacked (console path); empty: <publisher_work_root>/cache.
   std::string publisher_cache_root;
+  // Earlier packs a publisher's games may start with while this build's isn't there yet (worker only).
+  std::vector<runtime::PublisherPackPin> earlier_publisher_packs = runtime::EarlierPublisherPacks();
   // Where publisher accounts are kept (the Steam state root, host path); empty: state_root.
   std::filesystem::path publisher_account_root;
   // Sends a pack's sign-in refresh (stage manifest "refresh") and returns the answer; called on the
