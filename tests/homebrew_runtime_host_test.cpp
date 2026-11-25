@@ -6950,6 +6950,98 @@ void GeneratedRecipeGetsShippedIni() {
   host.Shutdown();
 }
 
+// A shipped recipe changed in place by a Playden update (same id and version; Project Zomboid dropping -nosteam, #1319)
+// reaches a game prepared with it at its next Play, with the player's own settings kept, and without a revision bump;
+// a Play that finds the profile unchanged publishes nothing.
+void ShippedRecipeEditReachesPreparedGame() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  const auto runtime = fixture.root / "runtime";
+  Write(runtime / "presets.json", Read(fs::path(g_runtime_dir) / "presets.json"), 0644);
+  const auto recipe = [&](const std::string& arguments) {
+    Write(runtime / "recipes/steam-4320-refreshtest-v1.json", R"({
+  "recipe_id": "steam-4320-refreshtest-v1", "recipe_version": 1, "app_id": 4320, "name": "Refresh Game",
+  "launch_entries": [{"id": "game", "label": "Refresh Game", "executable": "Game.exe"}],
+  "arguments": ")" + arguments + R"(", "dll_overrides": "", "architecture": "pe32", "runtime": "wine-wow64",
+  "prefix": "game", "graphics": "dxvk", "defaults": {}, "locked": []
+})", 0644);
+    Write(runtime / "recipes/recipes.lst", "steam-4320-refreshtest-v1.json\n", 0644);
+  };
+  recipe("-nosteam");
+  config.runtime_dir = runtime.string();
+  config.steamworks_dir = (fs::path(g_runtime_dir) / "steamworks").string();
+  config.host_namespace_prefix = fixture.root;
+  config.session_data_root = fixture.root / "data";
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    char id[37];
+    std::snprintf(id, sizeof(id), "00000000-0000-4000-8000-%012u", ++uuids);
+    return std::string(id);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  config.launch_title = [](const std::string&, const std::vector<std::string>&) { return TitleResult{true, 0, "launch"}; };
+  GameSettingsRecord saved;
+  saved.revision = 1;
+  saved.overrides = {{"extra_arguments", "-mine"}};
+  config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> { return saved; };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/4320";
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x4c; pe[0x45] = 0x01; pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x01;
+  Write(game / "Game.exe", pe, 0644);
+  RuntimePrepareRequest request{4320, "/data/homebrew/FAKE77031/games/4320", "internal", "Refresh Game"};
+  request.launches = {{"", "", "Game.exe", "", ""}};
+  const auto profile = fixture.root / "data/playden/games/steam-4320/library/profiles/playden-steam-4320.profile";
+  const auto installs = config.state_root / "installs.json";
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(request);
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(4320) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    if (done.refusals.count(4320)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(4320).c_str());
+    CHECK(!done.refusals.count(4320) && done.installs.size() == 1 && done.installs[0].settings_revision == 1);
+    CHECK(Read(installs).find("\"recipe_id\":\"steam-4320-refreshtest-v1\"") != std::string::npos);
+    CHECK(Read(profile).find("\narguments = -nosteam -mine\n") != std::string::npos);
+    host.Shutdown();
+  }
+  // The update ships the recipe without the flag, under the same id and version.
+  recipe("");
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Play(4320);
+  const auto played = WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready || s.play_refusals.count(4320); }, 30);
+  if (played.play_refusals.count(4320)) std::fprintf(stderr, "Play refused: %s\n", played.play_refusals.at(4320).c_str());
+  CHECK(played.handoff_ready);
+  CHECK(Read(profile).find("\narguments = -mine\n") != std::string::npos);
+  CHECK(host.Snapshot().installs[0].settings_revision == 1);
+  host.Shutdown();
+  // Unchanged now: Apply settings publishes nothing.
+  RuntimeHost again(config);
+  CHECK(again.Start());
+  CHECK(WaitFor(again, Started).kit_available);
+  const auto publications = uuids;
+  const auto before = again.Snapshot().maintenance_handled;
+  again.Maintain(4320, RuntimeMaintenance::kApplySettings);
+  const auto applied = WaitFor(again, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
+  CHECK(applied.maintenance.count(4320) && applied.maintenance.at(4320).ok);
+  CHECK(uuids == publications && Read(profile).find("\narguments = -mine\n") != std::string::npos);
+  again.Shutdown();
+}
+
 // A copy of Clair Obscur: Expedition 33 prepared before Playden shipped its recipe keeps the recipe Playden generated,
 // and still gets the shipped recipe's copy of its Steam library the next time it is played. The game's own Steam files
 // take the copy away.
@@ -12515,6 +12607,7 @@ int main(int argc, char** argv) {
   ShippedRecipeWritesGameIni(false);
   ShippedRecipeWritesGameIni(true);
   GeneratedRecipeGetsShippedIni();
+  ShippedRecipeEditReachesPreparedGame();
   UnchartedSavedGpuIdFollowsRuntime(true);
   UnchartedSavedGpuIdFollowsRuntime(false);
   UnchartedSavedGpuIdFollowsPublishedConfig();

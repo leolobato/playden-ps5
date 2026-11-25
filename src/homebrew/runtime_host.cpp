@@ -3683,24 +3683,41 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
       if (!switch_failure.empty()) s.recipe_switch_failures[record.runtime_number] = "The switch didn't finish: " + switch_failure;
     });
   }
-  // A refusal while switching is the switch not finishing: the game plays on with its applied recipe.
-  const auto refuse = [&](std::string message) {
-    if (switching)
-      Publish([&](RuntimeSnapshot& s) { s.recipe_switch_failures[record.runtime_number] = "The switch didn't finish: " + message; });
-    return message;
+  // "Steam features" only swaps the game's own files, so it follows the saved value at once. So do the
+  // steps a recipe switch that committed did not get to (its registry values): once they are in, and
+  // the wanted recipe is the applied one, the switch is finished. run_steps: false when they already ran.
+  const auto settled = [&](bool run_steps) {
+    const auto steps = run_steps ? ApplyPreparationSteps(c, record, steam_account_known) : std::string{};
+    if (steps.empty() && selection.fallback_reason.empty() && switch_failure.empty())
+      Publish([&](RuntimeSnapshot& s) { s.recipe_switch_failures.erase(record.runtime_number); });
+    return steps;
   };
   // The presets file can disappear, become unreadable, or be restored without changing the
   // game's revision. Compare the resulting profile even at the same revision in that case.
   const bool refresh_player_preset = rt::IsMyPresetId(saved.preset_id) && saved.revision == record.settings_revision;
-  // "Steam features" only swaps the game's own files, so it follows the saved value at once. So do the
-  // steps a recipe switch that committed did not get to (its registry values): once they are in, and
-  // the wanted recipe is the applied one, the switch is finished.
-  if (!force && !refresh_player_preset && !switching && setup_program.empty() && !restoring && saved.revision <= record.settings_revision && !moved && !unowned_upgrade) {
-    const auto steps = ApplyPreparationSteps(c, record, steam_account_known);
-    if (steps.empty() && selection.fallback_reason.empty() && switch_failure.empty())
-      Publish([&](RuntimeSnapshot& s) { s.recipe_switch_failures.erase(record.runtime_number); });
-    return steps;
-  }
+  const bool usual = !force && !switching && setup_program.empty() && !restoring &&
+                     saved.revision <= record.settings_revision && !moved && !unowned_upgrade;
+  // So can a recipe Playden ships, changed in place by a Playden update (same id and version, #1319): the game
+  // takes it at its next Play or Apply settings, and an unchanged profile isn't published again. Only a refresh:
+  // whatever would refuse it before the publication starts leaves the game playing as published (refresh_steps_ran
+  // says whether the steps ran on the way).
+  const bool refresh_recipe = usual && !refresh_player_preset && c.kit && applied && saved.revision == record.settings_revision &&
+                              !applied_is_community && !rt::IsGeneratedRecipeId(applied->id);
+  bool refresh_armed = false;
+  bool refresh_steps_ran = false;
+  // A refusal while switching is the switch not finishing: the game plays on with its applied recipe.
+  const auto refuse = [&](std::string message) {
+    if (refresh_recipe && !refresh_armed) {
+      Log("settings refresh app=" + std::to_string(record.runtime_number) + " kept the published settings: " + message);
+      if (prepare_again) *prepare_again = false;
+      if (code) code->clear();
+      return settled(!refresh_steps_ran);
+    }
+    if (switching)
+      Publish([&](RuntimeSnapshot& s) { s.recipe_switch_failures[record.runtime_number] = "The switch didn't finish: " + message; });
+    return message;
+  };
+  if (usual && !refresh_player_preset && !refresh_recipe) return settled(true);
   if (!c.kit) return "No verified runtime kit is installed.";
   if (saved.revision < record.settings_revision)
     return again("The game's saved settings are older than its PS5 title's; prepare it again.");
@@ -3756,9 +3773,11 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   // SteamStub unpacking and the Steam emulator follow the program that starts now. A recipe switch
   // runs the steps after its publication commits instead, so a publication that fails leaves the
   // bottle as the applied recipe had it.
-  if (!switching)
+  if (!switching) {
     if (const auto steamworks = ApplyPreparationSteps(c, next, steam_account_known, run_launcher_mode); !steamworks.empty())
       return steamworks;
+    refresh_steps_ran = true;
+  }
   rt::SettingsLaunchInput input;
   input.recipe = recipe;
   // The player's layout templates name the game's own controls in the Touchpad hold notice.
@@ -3796,7 +3815,7 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   // respin that changes nothing there keeps its publication, registration and bottle as they are.
   // So is a program's run, or the return from one, that publishes what the title already has. A recipe
   // switch always publishes: its descriptor names the new recipe.
-  if ((force || refresh_player_preset || !setup_program.empty() || restoring) && !switching) {
+  if ((force || refresh_player_preset || refresh_recipe || !setup_program.empty() || restoring) && !switching) {
     // POSIX reads, as elsewhere here: the PS5 libc++ has no locale support for file streams.
     const auto read = [](const std::filesystem::path& path) {
       std::string bytes;
@@ -3814,8 +3833,12 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
                         "dxvk.conf";
     if (read(profile) == plan.profile_bytes && read(config) == plan.dxvk_config) {
       if (restoring) return MarkSetupProgram(c, record.install_id, {});
+      if (refresh_recipe) return settled(false);
       return refresh_player_preset ? ApplyPreparationSteps(c, record, steam_account_known) : std::string{};
     }
+    if (refresh_recipe)
+      Log("settings refresh app=" + std::to_string(record.runtime_number) + " publishes again: the profile from recipe " +
+          record.recipe_id + " differs from the published one");
   }
   // Recorded before the program's profile is published, so a publication cut off part way still gets the saved
   // settings back.
@@ -3838,6 +3861,7 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   request.install.settings_revision = saved.revision;  // the revision the update commits
   request.plan = std::move(plan);
   request.registry_unix_time = config_.unix_time();
+  refresh_armed = true;  // from here a refusal is the publication's, as for any other update
   const auto requested = c.owner->Request(request, c.request_directory);
   Log("settings update request app=" + std::to_string(record.runtime_number) + " transaction=" + request.transaction_id +
       " revision=" + std::to_string(record.settings_revision) + "->" + std::to_string(saved.revision) + " state=" +
