@@ -6,7 +6,7 @@
   "launch_entries": [
     {"id": "game", "label": "Project Zomboid", "executable": "ProjectZomboid64.exe"}
   ],
-  "arguments": "-nosteam",
+  "arguments": "",
   "resolution_arguments": "",
   "dll_overrides": "",
   "architecture": "pe64",

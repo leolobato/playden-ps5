@@ -2916,8 +2916,9 @@ int main(int argc, char** argv) {
     CHECK(settings.launch && settings.launch->executable == "Binaries/Win32/BatmanAC.exe" && settings.arguments.empty());
   }
   // Project Zomboid: its launcher picks ZGC for Windows 10, which can't reserve its heap on the console, and G1 for
-  // Windows 7; LWJGL draws with OpenGL, loaded at run time, so nothing in the files names it; and the launcher quits
-  // when the Steam emulator says nobody is signed in, unless the game runs with -nosteam.
+  // Windows 7; and LWJGL draws with OpenGL, loaded at run time, so nothing in the files names it. No -nosteam (#1319):
+  // with it the game never asks Steam for its Workshop items, so the mods Playden installs don't show in its Mods list.
+  // Game version 42.22 starts in Steam mode with Steam network Online or Offline.
   {
     GameRecipe zomboid;
     CHECK(ParseGameRecipe(ReadText(source / "runtime/recipes/steam-108600-projectzomboid-v1.json"), &zomboid, &reason));
@@ -2928,7 +2929,7 @@ int main(int argc, char** argv) {
     EffectiveSettings settings;
     SettingsError error;
     CHECK(BuildEffectiveSettings(zomboid, nullptr, {}, kit, &settings, &error));
-    CHECK(settings.graphics == "opengl" && settings.architecture == "pe64" && settings.arguments == "-nosteam");
+    CHECK(settings.graphics == "opengl" && settings.architecture == "pe64" && settings.arguments.empty());
     CHECK(settings.values.at("windows_version").value == "win7" && !settings.values.at("windows_version").locked);
   }
   // GTA V Legacy: GTA5.exe itself with the arguments Rockstar's launcher passes; with the console microphone the game
