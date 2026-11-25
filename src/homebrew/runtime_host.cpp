@@ -7729,10 +7729,9 @@ void RuntimeHost::ApplyPublisherStatus(Composition& c, const rt::RuntimeInstall&
   const auto name = PublisherDisplayName(game->publisher);
   // A status file that could not be removed is read again next time; say it once it is gone.
   if (expired && ok)
-    Notify(GameName(record) + ": your " + name +
-           " sign-in expired during the last start. Sign in again in Playden \u203a Settings \u203a Account.");
+    Notify(GameName(record) + ": your " + name + " sign-in expired. Sign in again in Settings.");
   else if (missing)
-    Notify(GameName(record) + " started without your " + name + " sign-in. Start it from Playden once to sign in.");
+    Notify(GameName(record) + ": press Play in Playden to sign in to " + name + ".");
 }
 
 void RuntimeHost::ApplyHomeStatuses(Composition& c, rt::Publisher publisher) {

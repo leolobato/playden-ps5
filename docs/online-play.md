@@ -135,8 +135,7 @@ the PS5 doesn't normally allow for games.
    find Steam. It waits until the Steam client knows your account owns the game, then says "ready". Valve's own
    Steam program can't do this job: it is an updater and a user interface, and neither can work here.
 6. **The title releases the game.** If the Steam host fails, or 60 seconds pass, the game starts anyway, without
-   Steam, and the PS5 shows "Steam didn't start: \<reason\>. The game runs without it; close the game and try
-   again."
+   Steam, and the PS5 shows "Steam didn't start: \<reason\>. Close the game and try again."
 7. **The game finds the Steam client.** The game's own Steam API finds the running Steam client, as it does on
    Windows. From here everything is Valve's code: tickets, friends, lobbies, relays and game coordinators.
 8. **The game ends.** The helper is part of the game's title, so it ends with it.

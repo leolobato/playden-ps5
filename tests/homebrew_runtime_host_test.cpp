@@ -12376,12 +12376,10 @@ void NotifiesAboutTheStatusOfAStartFromHome() {
       return s.publishers.count(Publisher::kRockstar) && s.publishers.at(Publisher::kRockstar).pack_checked;
     }, 30).publishers.at(Publisher::kRockstar).account;
     if (expired) {
-      CHECK(notices[0].find(": your Rockstar Games sign-in expired during the last start. Sign in again in Playden "
-                            "\u203a Settings \u203a Account.") != std::string::npos);
+      CHECK(notices[0].find(": your Rockstar Games sign-in expired. Sign in again in Settings.") != std::string::npos);
       CHECK(account == PublisherAccountState::kExpired);
     } else {
-      CHECK(notices[0].find(" started without your Rockstar Games sign-in. Start it from Playden once to sign in.") !=
-            std::string::npos);
+      CHECK(notices[0].find(": press Play in Playden to sign in to Rockstar Games.") != std::string::npos);
       CHECK(account == PublisherAccountState::kSignedIn);
       CHECK(f.Logged("publisher status app=220 expired=0 missing=1 from Home"));
     }
