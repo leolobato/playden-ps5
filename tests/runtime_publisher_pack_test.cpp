@@ -203,8 +203,8 @@ int main(int argc, char** argv) {
 
   // The pinned releases: the Rockstar archive alone.
   CHECK(PinnedPublisherReleases().size() == 1);
-  CHECK(PinnedPublisherRelease(Publisher::kRockstar).archive == "playden-rgschost-20261125.2.tzst");
-  CHECK(std::string(kPublisherPackVersion) == "20261125.2");
+  CHECK(PinnedPublisherRelease(Publisher::kRockstar).archive == "playden-rgschost-20261125.3.tzst");
+  CHECK(std::string(kPublisherPackVersion) == "20261125.3");
   // dependencies.lock.json (read by the upload tool) pins the same pack.
   if (argc > 1) {
     playden::steam::json::Limits limits;
