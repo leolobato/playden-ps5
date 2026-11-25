@@ -4752,7 +4752,7 @@ bool DescribeProcessors(const std::string& prefix_dir, const ProcessorDescriptio
   // Windows numbers at most 64 processors in one group; a bigger count is not a console's.
   if (processor.mhz == 0 || processor.count == 0 || processor.count > 64) return true;
   constexpr std::size_t kMaxRegistryBytes = 32u * 1024u * 1024u;
-  auto bottle = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kPrivateTraversable);
+  auto bottle = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kOpenTree);
   if (!bottle) return errno == ENOENT ? true : fail("cannot open the bottle");
   std::string system_reg;
   const auto state = ReadRegularAt(*bottle, "system.reg", kMaxRegistryBytes, &system_reg, nullptr, true);

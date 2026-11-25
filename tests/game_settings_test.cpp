@@ -3414,7 +3414,7 @@ int main(int argc, char** argv) {
     // The CentralProcessor keys wineboot would write: one per processor, rewritten only when they differ.
     const auto cpu_bottle = root / "cpu-bottle";
     std::filesystem::create_directories(cpu_bottle);
-    std::filesystem::permissions(cpu_bottle, std::filesystem::perms::owner_all);
+    std::filesystem::permissions(cpu_bottle, std::filesystem::perms::all);
     std::ofstream(cpu_bottle / "system.reg", std::ios::trunc) << head + wbem;
     ::chmod((cpu_bottle / "system.reg").c_str(), 0600);
     ProcessorDescription cpu{1596, 2, "AuthenticAMD", "AMD64 Family 23 Model 71 Stepping 0", "AMD \"Custom\" APU"};
