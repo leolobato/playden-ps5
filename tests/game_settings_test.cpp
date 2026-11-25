@@ -2974,6 +2974,9 @@ int main(int argc, char** argv) {
     CHECK(settings.graphics == "dxvk" && settings.architecture == "pe64" &&
           settings.arguments.find("-steamAppId=3240220") != std::string::npos &&
           settings.arguments.find("-scCommerceProvider=4") != std::string::npos);
+    // The game asks Windows for a 12-channel spatial audio bed, and the runtime kit's audio driver takes at most 8
+    // channels: without this switch the game stops on "Failed to initialize spatial audio client" (#1227).
+    CHECK(settings.arguments.find("-disableSpatialAudioClient") != std::string::npos);
     CHECK(settings.values.at("microphone").value == "off");
     CHECK(settings.values.at("steam_features").value == "emulate");
     CHECK(settings.vkd3d_proton && settings.values.at("d3d12").value == "vkd3d-proton");

@@ -6,7 +6,7 @@
   "launch_entries": [
     {"id": "game", "label": "Grand Theft Auto V Enhanced", "executable": "GTA5_Enhanced.exe"}
   ],
-  "arguments": "-nobattleye -skipPatcherCheck -useSteam -steamAppId=3240220 -scCommerceProvider=4",
+  "arguments": "-nobattleye -skipPatcherCheck -useSteam -steamAppId=3240220 -scCommerceProvider=4 -disableSpatialAudioClient",
   "resolution_arguments": "",
   "dll_overrides": "d3d8,d3d9,d3d10core,d3d11,dxgi=n",
   "architecture": "pe64",
