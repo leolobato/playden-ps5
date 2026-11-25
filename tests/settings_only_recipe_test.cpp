@@ -390,6 +390,23 @@ void Share() {
     const auto moved_share = BuildSettingsOnlyRecipe(env_base, from_env, moved, playden::GameRef::Steam(274520), "Darkwood");
     CHECK(moved_share.recipe.defaults.at("d3d12_feature_level") == "12_2");
   }
+  // Memory fault fixes is shared once a player turns it on; left Off it stays out, so the share still loads in a
+  // Playden from before the row.
+  {
+    auto fixes_kit = kit;
+    fixes_kit.subpage_fixes = true;
+    auto fixes_base = Read("\"program\": \"Bin/Old.exe\"");
+    auto fixes_filled = fixes_base;
+    FillSettingsOnlyRecipe(&fixes_filled.recipe, own, copy);
+    EffectiveSettings plain, on;
+    CHECK(BuildEffectiveSettings(fixes_filled.recipe, nullptr, {}, fixes_kit, &plain, &error));
+    CHECK(plain.values.at("subpage_fixes").available && plain.values.at("subpage_fixes").value == "off");
+    CHECK(BuildEffectiveSettings(fixes_filled.recipe, nullptr, {{"subpage_fixes", "on"}}, fixes_kit, &on, &error));
+    const auto untouched = BuildSettingsOnlyRecipe(fixes_base, plain, plain, playden::GameRef::Steam(274520), "Darkwood");
+    CHECK(!untouched.recipe.defaults.count("subpage_fixes"));
+    const auto turned_on = BuildSettingsOnlyRecipe(fixes_base, plain, on, playden::GameRef::Steam(274520), "Darkwood");
+    CHECK(turned_on.recipe.defaults.at("subpage_fixes") == "on");
+  }
   // Online is shared; the sign-in and invites stay each player's own; Offline emulation and its Steam network value
   // are shared.
   SetOnlineSteamEnabled(true);

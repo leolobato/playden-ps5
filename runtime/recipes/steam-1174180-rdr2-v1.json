@@ -1,0 +1,23 @@
+{
+  "recipe_id": "steam-1174180-rdr2-v1",
+  "recipe_version": 1,
+  "app_id": 1174180,
+  "name": "Red Dead Redemption 2",
+  "launch_entries": [
+    {"id": "publisher", "label": "Red Dead Redemption 2", "executable": "RDR2.exe"}
+  ],
+  "dll_overrides": "d3d8,d3d9,d3d10core,d3d11,dxgi=n",
+  "architecture": "pe64",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "dxvk",
+  "defaults": {
+    "d3d12": "vkd3d-proton",
+    "steam_features": "emulate",
+    "microphone": "off",
+    "touchpad_hold": "mouse",
+    "subpage_fixes": "on",
+    "amd_gpu_services": "runtime"
+  },
+  "locked": []
+}

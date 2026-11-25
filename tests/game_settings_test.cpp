@@ -147,7 +147,7 @@ int main(int argc, char** argv) {
         "graphics", "d3d12", "d3d12_feature_level", "pixel_shader_waves", "frame_latency", "reported_gpu", "amd_gpu_services",
         "reported_vram",
         "steam_library_path", "steam_network", "steam_input", "windows_version", "text_scale",
-        "locale", "system_locale", "cpu_topology", "address_space", "cpu", "network_adapters", "logging",
+        "locale", "system_locale", "cpu_topology", "address_space", "cpu", "network_adapters", "subpage_fixes", "logging",
         "environment", "program_folder", "program_arguments", "arguments", "architecture", "dll_overrides",
         "library_overrides", "registry_dll_overrides"};
     CHECK(ids == expected);
@@ -1694,6 +1694,62 @@ int main(int argc, char** argv) {
         CHECK(profile.text.find("\n[environment]\nPW_NSIPROXY_DISABLE = 1\n") != std::string::npos);
         CHECK(KitCapabilitiesFromManifest({kKitNsiproxySwitch}, true).nsiproxy_switch);
       }
+      // Memory fault fixes On: PW_SUBPAGE_FIXES=1 in [debug] env, where the title's Wine reads it, with nothing typed in
+      // Environment variables.
+      {
+        auto fixes = KitCapabilitiesFromManifest({kKitEnvironment, kKitInputMap, kKitOpenGLZink}, true);
+        CHECK(fixes.subpage_fixes);
+        CHECK(!KitCapabilitiesFromManifest({kKitEnvironment, kKitOpenGLZink}, true).subpage_fixes);
+        CHECK(BuildEffectiveSettings(pe64, nullptr, {{"subpage_fixes", "on"}}, fixes, &settings, &error));
+        CHECK(settings.values.at("subpage_fixes").available);
+        CHECK(RenderProsperoProfile(pe64, settings, target, &profile, &reason));
+        CHECK(profile.text.find("\n[debug]\nenv = PW_SUBPAGE_FIXES=1\n") != std::string::npos);
+        CHECK(CheckProsperoProfile(profile.text, &reason, {.environment_section = true, .debug_env = true}));
+        // Off, the default, writes nothing.
+        CHECK(BuildEffectiveSettings(pe64, nullptr, {}, fixes, &settings, &error));
+        CHECK(settings.values.at("subpage_fixes").value == "off");
+        CHECK(RenderProsperoProfile(pe64, settings, target, &profile, &reason));
+        CHECK(profile.text.find("PW_SUBPAGE_FIXES") == std::string::npos);
+        // First of the [debug] env lines, so the title's limit of five drops a typed variable instead.
+        CHECK(BuildEffectiveSettings(pe64, nullptr,
+                                     {{"subpage_fixes", "on"},
+                                      {"environment", "PW_A=1; PW_B=1; PW_C=1; PW_D=1; PW_E=1"}},
+                                     fixes, &settings, &error));
+        CHECK(RenderProsperoProfile(pe64, settings, target, &profile, &reason));
+        CHECK(profile.text.find("\n[debug]\nenv = PW_SUBPAGE_FIXES=1\nenv = PW_A=1\n") != std::string::npos);
+        CHECK(profile.text.find("PW_E") == std::string::npos);
+        CHECK(CheckProsperoProfile(profile.text, &reason, {.environment_section = true, .debug_env = true}));
+        // Typed in Environment variables (GTA V's recipes do), the variable goes as typed, once, and the row shows it.
+        CHECK(BuildEffectiveSettings(pe64, nullptr, {{"subpage_fixes", "on"}, {"environment", "PW_SUBPAGE_FIXES=1"}},
+                                     fixes, &settings, &error));
+        CHECK(!settings.values.at("subpage_fixes").available && settings.values.at("subpage_fixes").shown == "on" &&
+              settings.values.at("subpage_fixes").reason == "Environment variables set PW_SUBPAGE_FIXES.");
+        CHECK(RenderProsperoProfile(pe64, settings, target, &profile, &reason));
+        CHECK(profile.text.find("env = PW_SUBPAGE_FIXES=1\n") != std::string::npos &&
+              profile.text.find("PW_SUBPAGE_FIXES") == profile.text.rfind("PW_SUBPAGE_FIXES"));
+        CHECK(BuildEffectiveSettings(pe64, nullptr, {{"subpage_fixes", "on"}, {"environment", "PW_SUBPAGE_FIXES=0"}},
+                                     fixes, &settings, &error));
+        CHECK(settings.values.at("subpage_fixes").shown == "off");
+        CHECK(RenderProsperoProfile(pe64, settings, target, &profile, &reason));
+        CHECK(profile.text.find("PW_SUBPAGE_FIXES=1") == std::string::npos);
+        // A kit without the fixes has the row closed, and writes nothing.
+        auto older = fixes;
+        older.subpage_fixes = false;
+        CHECK(BuildEffectiveSettings(pe64, nullptr, {{"subpage_fixes", "on"}}, older, &settings, &error));
+        CHECK(!settings.values.at("subpage_fixes").available &&
+              settings.values.at("subpage_fixes").reason == "Needs a newer runtime kit with the memory fault fixes.");
+        CHECK(RenderProsperoProfile(pe64, settings, target, &profile, &reason));
+        CHECK(profile.text.find("PW_SUBPAGE_FIXES") == std::string::npos);
+        // A title from before kit 0.33 keeps the choice for its update; one from 0.33 on takes it now.
+        CHECK(BuildEffectiveSettings(pe64, nullptr, {{"subpage_fixes", "on"}}, KitForTitleRuntime(fixes, false),
+                                     &settings, &error));
+        CHECK(settings.values.at("subpage_fixes").waits_for_update &&
+              settings.values.at("subpage_fixes").after_update == "on");
+        CHECK(RenderProsperoProfile(pe64, settings, target, &profile, &reason));
+        CHECK(profile.text.find("PW_SUBPAGE_FIXES") == std::string::npos);
+        CHECK(!KitForTitleRuntime(fixes, false, KitVersion{0, 32}).subpage_fixes);
+        CHECK(KitForTitleRuntime(fixes, false, KitVersion{0, 33}).subpage_fixes);
+      }
       // 32-bit code: Native writes nothing; Translator writes [runtime] cpu, once, with the version when there is one.
       auto v2 = every;
       v2.profile_version_2 = true;
@@ -3077,8 +3133,8 @@ int main(int argc, char** argv) {
   std::vector<SettingsPreset> loaded_presets;
   std::vector<GameRecipe> loaded_recipes;
   CHECK(LoadSettingsData((source / "runtime").string(), &loaded_presets, &loaded_recipes, &reason));
-  CHECK(loaded_presets.size() == 4 && loaded_recipes.size() == 12 && loaded_recipes.front().app_id == 220 &&
-        loaded_recipes.back().id == "steam-1659420-uncharted-v1");
+  CHECK(loaded_presets.size() == 4 && loaded_recipes.size() == 13 && loaded_recipes.front().app_id == 220 &&
+        loaded_recipes.back().id == "steam-1174180-rdr2-v1");
   CHECK(!LoadSettingsData((source / "missing").string(), &loaded_presets, &loaded_recipes, &reason));
   // FINAL FANTASY VII REBIRTH (#1297): Steam starts it with -dx11, which stops with a fatal error, and with -dx12 it asks
   // D3D12CreateDevice for feature level 12_2. Its recipe starts -dx12 on vkd3d-proton at 12_2; every other vkd3d-proton
@@ -3230,6 +3286,35 @@ int main(int argc, char** argv) {
     CHECK(ags.values.at("environment").available && !ReportedGpuDeviceId(ags, "", true));
     CHECK(uncharted && BuildEffectiveSettings(*uncharted, nullptr, {{"environment", "DXVK_HUD=fps"}}, env_kit, &ags, &error));
     CHECK(ReportedGpuDeviceId(ags, "", true) == std::optional<std::string>("13fe"));
+    // Red Dead Redemption 2 freezes in its Story intro, faulting on one write beside a read-only page, unless Memory
+    // fault fixes is on. Its recipe turns it on, unlocked, with the settings its community recipe ran with: RDR2.exe on
+    // vkd3d-proton, the microphone off (Social Club stops loading at it), the Steam emulator and Touchpad hold = mouse.
+    // AMD GPU Services is the runtime kit's, or the game shows AMD's hardware check box before its menu.
+    // The Rockstar arguments come from the publisher pack, not the recipe.
+    const auto* rdr2 = shipped(1174180);
+    // Its entry keeps the generated recipe's id, so a copy set up before that saved Program = publisher still finds it.
+    CHECK(rdr2 && rdr2->launch_entries.size() == 1 && rdr2->launch_entries[0].executable == "RDR2.exe" &&
+          rdr2->launch_entries[0].id == kPublisherEntryId && rdr2->arguments.empty());
+    auto rdr2_kit = KitCapabilitiesFromManifest({kKitEnvironment, kKitInputMap, kKitOpenGLZink, kKitAudioMicrophone,
+                                                 kKitTouchpadSwitch, kKitVkd3dProton, kKitAmdAgs},
+                                                true);
+    EffectiveSettings rdr2_settings;
+    CHECK(rdr2 && BuildEffectiveSettings(*rdr2, nullptr, {}, rdr2_kit, &rdr2_settings, &error));
+    CHECK(rdr2_settings.vkd3d_proton && rdr2_settings.architecture == "pe64" &&
+          Value(rdr2_settings, "microphone") == "off" && Value(rdr2_settings, "steam_features") == "emulate" &&
+          Value(rdr2_settings, "touchpad_hold") == "mouse");
+    CHECK(rdr2_settings.values.at("subpage_fixes").available && Value(rdr2_settings, "subpage_fixes") == "on" &&
+          !rdr2_settings.values.at("subpage_fixes").locked);
+    ProsperoProfile rdr2_profile;
+    std::string rdr2_reason;
+    const ProfileTarget rdr2_target{"playden-steam-1174180", "/data/homebrew/FAKE77031/games/1174180"};
+    CHECK(rdr2 && RenderProsperoProfile(*rdr2, rdr2_settings, rdr2_target, &rdr2_profile, &rdr2_reason));
+    CHECK(rdr2_profile.text.find("\n[debug]\nenv = PW_SUBPAGE_FIXES=1\n") != std::string::npos);
+    CHECK(rdr2_profile.text.find(";amd_ags_x64=b,n\n") != std::string::npos);
+    CHECK(Value(rdr2_settings, "amd_gpu_services") == "runtime" && !rdr2_settings.values.at("amd_gpu_services").locked);
+    // The player can turn it off.
+    CHECK(rdr2 && BuildEffectiveSettings(*rdr2, nullptr, {{"subpage_fixes", "off"}}, rdr2_kit, &rdr2_settings, &error));
+    CHECK(Value(rdr2_settings, "subpage_fixes") == "off");
   }
 
   // ApplyGameSettings writes the profile and a Playden dxvk.conf, removes it when nothing is

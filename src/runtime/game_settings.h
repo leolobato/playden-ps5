@@ -151,6 +151,11 @@ struct KitCapabilities {
   // first in kit 0.33). A title made with an older kit refuses the key, so it waits like helper_process.
   bool helper_launcher_identity = false;
   bool helper_launcher_identity_needs_update = false;
+  // [debug] env PW_SUBPAGE_FIXES=1 turns on Wine's fixes for faults beside a protected page (prospero-win patches
+  // 1033-1036, first in kit 0.33): the Memory fault fixes row. An older title's Wine ignores the variable, so the row
+  // waits for its update like helper_launcher_identity.
+  bool subpage_fixes = false;
+  bool subpage_fixes_needs_update = false;
   // [input] map = 1 and a controller layout's lines (kKitInputMap): the Controller layout row. Counts only for a title
   // that runs this kit's runtime, like display_120hz.
   bool input_map = false;

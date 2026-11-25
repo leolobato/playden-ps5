@@ -1268,6 +1268,9 @@ To see which kit your console has, look at Settings › System › About, or the
   `VKD3D_FEATURE_LEVEL=` to the level. Above 11_1 the level is faked, and a game that needs the missing features can
   still fail. vkd3d-proton's other variables (`VKD3D_DEBUG`, `VKD3D_CONFIG`, …) go in
   Environment variables too.
+- **A game that freezes while its sound keeps playing**, often on a loading screen, may be stuck on a memory fault the
+  runtime kit retries forever. From 0.13.0, try Game settings › Memory fault fixes = On (runtime kit 0.33 or later); on
+  earlier versions, set Environment variables `PW_SUBPAGE_FIXES=1`. Red Dead Redemption 2's recipe turns it on.
 - **Denuvo Anti-Tamper** games (for example Hi-Fi RUSH) cannot run, and support is not planned.
 - **Kernel anti-cheat** games (for example Easy Anti-Cheat or BattlEye in kernel mode) cannot run, and support is not planned.
 - Games that need a **third-party launcher or account** (EA app, Ubisoft Connect, Rockstar) are not supported yet, except Grand Theft Auto IV and Grand Theft Auto V Legacy through the Rockstar Games Launcher.

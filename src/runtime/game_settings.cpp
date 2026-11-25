@@ -427,6 +427,21 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"kit", "Runtime default", "The game can list them."},
                          {"off", "Off", "For 64-bit games that hang at start or lose the network with them listed."}},
                         "kit", 3, ApplyMode::kGameClosed));
+  // Wine's fixes for faults beside a protected page (prospero-win 1033-1035, PW_SUBPAGE_FIXES=1 in [debug] env): a
+  // write-watched write is run again only once its 16 KiB host page is writable, one step opens up to four host pages,
+  // and an access another thread's protection change already allows runs again. Without them Red Dead Redemption 2
+  // freezes in its Story intro, faulting about 170,000 times a second on one write. Off by default until more games
+  // ran with them.
+  {
+    auto fixes = Choice("subpage_fixes", "Memory fault fixes",
+                        "Newer handling of memory faults beside a protected page.", "", G::kWindows,
+                        {{"off", "Off", ""},
+                         {"on", "On",
+                          "For games that freeze, often on a loading screen, while their sound keeps playing."}},
+                        "off", 3, ApplyMode::kGameClosed);
+    fixes.since = "0.13.0";
+    list.push_back(std::move(fixes));
+  }
   // Advanced.
   list.push_back(Choice("logging", "Logging", "How much detail goes into the game's log file.", "WINEDEBUG",
                         G::kAdvanced,
@@ -730,6 +745,9 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
     if (const auto program = values.find("architecture"); program != values.end() && program->second.value == "pe64")
       return "Only for 32-bit programs.";
   }
+  if (id == "subpage_fixes" && !kit.subpage_fixes)
+    return kit.subpage_fixes_needs_update ? kAppliesAfterKitUpdate
+                                          : "Needs a newer runtime kit with the memory fault fixes.";
   if (id == "network_adapters") {
     if (kit.nsiproxy_switch_needs_update) return kAppliesAfterKitUpdate;
     if (!kit.nsiproxy_switch) return "Needs a newer runtime kit that can turn network adapters off.";
@@ -1788,6 +1806,15 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
           if (choice.value == typed) level->second.shown = typed;
     }
   }
+  // Memory fault fixes the same way: a PW_SUBPAGE_FIXES typed in Environment variables is the one the title gets.
+  if (auto fixes = out.values.find("subpage_fixes"); fixes != out.values.end() && fixes->second.available) {
+    const auto& environment = out.values["environment"];
+    if (environment.available && EnvironmentSetsName(environment.value, "PW_SUBPAGE_FIXES")) {
+      fixes->second.available = false;
+      fixes->second.reason = "Environment variables set PW_SUBPAGE_FIXES.";
+      fixes->second.shown = EnvironmentValueOf(environment.value, "PW_SUBPAGE_FIXES") == "1" ? "on" : "off";
+    }
+  }
   // It also brings DXVK's dxgi, which it presents through, when no other entry names dxgi.
   if (out.vkd3d_proton || overrides_row.value.find(kVkd3dProtonOverrides) != std::string::npos ||
       overrides_row.value.find(kVkd3dProtonDxgiOverrides) != std::string::npos) {
@@ -2079,8 +2106,13 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
                                     settings.environment_as_debug_env, &environment_entries, &why))
       return fail(why);
   }
+  // Memory fault fixes On: PW_SUBPAGE_FIXES=1 first in [debug] env, so the entry cap never drops it. The row is
+  // unavailable when Environment variables set the name, which then go as typed.
+  const auto& subpage_fixes = OptionalValue(settings, "subpage_fixes");
+  if (subpage_fixes.available && subpage_fixes.value == "on" && settings.debug_env_lines)
+    environment_entries = "PW_SUBPAGE_FIXES=1" + (environment_entries.empty() ? std::string() : ";" + environment_entries);
   bool debug_env = false;
-  if (environment.available && !environment_entries.empty() && settings.debug_env_lines) {
+  if (!environment_entries.empty() && settings.debug_env_lines) {
     // [debug] env = NAME=value, one line per variable; names the runtime does not take are left out, and so are
     // names that go to [environment] on a kit that reads it.
     std::string lines;
@@ -5012,6 +5044,9 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.helper_process = has(kKitHelperProcess);
   // No capability of its own: every kit Playden accepts with helper-process has it (kit 0.33 and later).
   kit.helper_launcher_identity = kit.helper_process;
+  // Nor has PW_SUBPAGE_FIXES (prospero-win 4d2f33a): it came in kit 0.33 just before input-map, and every kit with
+  // input-map has it. The title reads it from [debug] env, which Playden writes for a kit with Zink.
+  kit.subpage_fixes = kit.input_map && kit.opengl_zink;
   kit.launch_arguments_4096 = has(kKitLaunchArguments4096);
   kit.large_address_aware = has(kKitLargeAddressAware);
   kit.nsiproxy_switch = has(kKitNsiproxySwitch);
@@ -5115,6 +5150,10 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   if (lacks({0, 33}) && kit.helper_launcher_identity) {
     kit.helper_launcher_identity = false;
     kit.helper_launcher_identity_needs_update = true;
+  }
+  if (lacks({0, 33}) && kit.subpage_fixes) {
+    kit.subpage_fixes = false;
+    kit.subpage_fixes_needs_update = true;
   }
   if (lacks({0, 24}) && kit.title_notify) {
     kit.title_notify = false;
