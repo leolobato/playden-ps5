@@ -310,6 +310,9 @@ struct RuntimeInstallView {
   // Whether the title runs the installed kit's runtime (its files and artifacts are the kit's). Unlike title_current,
   // a new game name or icon does not count. Settings only the newer runtime takes (120 Hz output) wait for Update.
   bool runtime_current = true;
+  // For a Ready title that isn't: the release whose capabilities the kit it was made with surely has (its owner marker,
+  // RuntimeHost::TitleCapabilityKit), when known. What that kit already had, the title keeps.
+  std::optional<runtime::KitVersion> title_kit_version;
   // A setup that stopped before Ready (Failed, Unavailable or Downloaded) left a title or bottle made with
   // another kit: Try again can't finish over it, and Prepare refuses. Recreate bottle (remove, then prepare)
   // does, keeping saves and settings.
@@ -883,6 +886,10 @@ class RuntimeHost {
   // the title is not made yet), otherwise unknown (CommunityRecipeFits then refuses a min_kit).
   std::optional<runtime::KitVersion> TitleKitVersion(const Composition& composition,
                                                      const runtime::RuntimeInstall* record) const;
+  // For a Ready title made with another kit: the release whose capabilities its runtime surely has, from its owner
+  // marker (runtime::CapabilityKitVersion: a development kit counts as the release before). Nothing otherwise.
+  std::optional<runtime::KitVersion> TitleCapabilityKit(const Composition& composition,
+                                                        const runtime::RuntimeInstall& record) const;
   // runtime::SelectRecipe for a game: its shipped and generated recipes, the saved record's wanted
   // community recipe (loaded from the cache) and the kit as the game's title (record, or none yet) runs it. The game
   // folder is the record's, else install_path (a game being prepared).

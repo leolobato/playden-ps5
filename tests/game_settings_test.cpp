@@ -421,6 +421,23 @@ int main(int argc, char** argv) {
           SettingsKitCapabilityNames().end());
     const auto stale = KitForTitleRuntime(helper_kit, false);
     CHECK(!stale.helper_process && stale.helper_process_needs_update && KitForTitleRuntime(helper_kit, true).helper_process);
+    // A title made with an older kit keeps what that kit had: helper-process came in kit 0.24, the AMD GPU Services
+    // row in 0.36. A title on 0.35 under kit 0.36 still runs its launcher helper; one on 0.23 waits for its update.
+    const auto newer_kit = KitCapabilitiesFromManifest({kKitHelperProcess, kKitAmdAgs}, false);
+    const auto on_035 = KitForTitleRuntime(newer_kit, false, KitVersion{0, 35});
+    CHECK(on_035.helper_process && !on_035.helper_process_needs_update);
+    CHECK(!on_035.amd_ags && on_035.amd_ags_needs_update);
+    const auto on_023 = KitForTitleRuntime(newer_kit, false, KitVersion{0, 23});
+    CHECK(!on_023.helper_process && on_023.helper_process_needs_update);
+    // A development kit of 0.24 may predate a capability 0.24 lists: it counts as 0.23.
+    CHECK(!KitForTitleRuntime(newer_kit, false, CapabilityKitVersion("0.24-dev.20261111.4")).helper_process);
+    CHECK(KitForTitleRuntime(newer_kit, false, CapabilityKitVersion("0.24")).helper_process);
+    CHECK((CapabilityKitVersion("0.24-dev.20261111.4") == KitVersion{0, 23}) && !CapabilityKitVersion("1.0-dev.20261111.4") &&
+          !CapabilityKitVersion("kit-h"));
+    // identity = launcher came later than [helper] (kit 0.33): a title on 0.32 keeps [helper] but not the identity.
+    const auto on_032 = KitForTitleRuntime(newer_kit, false, KitVersion{0, 32});
+    CHECK(on_032.helper_process && !on_032.helper_launcher_identity && on_032.helper_launcher_identity_needs_update);
+    CHECK(on_035.helper_launcher_identity && newer_kit.helper_launcher_identity);
     const std::map<std::string, std::string> online = {{"unlock.steam_features", "on"}, {"steam_features", "online"}};
     CHECK(BuildEffectiveSettings(hl2, nullptr, online, helper_kit, &settings, &error) && settings.helper_process);
     CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
@@ -481,6 +498,17 @@ int main(int argc, char** argv) {
     CHECK(BuildEffectiveSettings(hl2, nullptr, {}, KitCapabilities{}, &settings, &error) && !settings.helper_process);
     CHECK(RenderProsperoProfile(hl2, settings, launcher_target, &profile, &reason));
     CHECK(profile.text.find("[helper]") == std::string::npos);
+    // A title whose runtime has [helper] but not identity = launcher (made with kit 0.24 to 0.32) refuses the key: a
+    // launcher that must be the game's parent is left out; a helper without that identity is still written.
+    const auto before_identity = KitForTitleRuntime(helper_kit, false, KitVersion{0, 30});
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {}, before_identity, &settings, &error) && settings.helper_process &&
+          !settings.helper_launcher_identity);
+    CHECK(RenderProsperoProfile(hl2, settings, launcher_target, &profile, &reason));
+    CHECK(profile.text.find("[helper]") == std::string::npos);
+    auto plain_target = launcher_target;
+    plain_target.helper_identity.clear();
+    CHECK(RenderProsperoProfile(hl2, settings, plain_target, &profile, &reason));
+    CHECK(profile.text.find("[helper]") != std::string::npos && profile.text.find("identity") == std::string::npos);
   }
   // A Steam game shown in steamapps\common: the target names its folder only for a title whose runtime reads [steam]
   // (the host decides, SteamLibraryFolder); the profile keeps the real paths and adds the section. The section is

@@ -1426,6 +1426,8 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
   out.title_notify_needs_update = kit.title_notify_needs_update;
   out.helper_process = kit.helper_process;
   out.helper_process_needs_update = kit.helper_process_needs_update;
+  out.helper_launcher_identity = kit.helper_launcher_identity;
+  out.helper_launcher_identity_needs_update = kit.helper_launcher_identity_needs_update;
 
   // A controller preset (runtime/input/<name>.input) brings its own mode, pointer stick and speed. Rows set less
   // deliberately than the preset show the preset's values, so the sheet tells the truth and Pointer speed can be tuned.
@@ -2187,9 +2189,11 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
     text += std::string("\n[helper]\nprogram = ") + kSteamHostProgram + "\nready = " + kSteamHostReady +
             "\nwait = " + std::to_string(kSteamHostWaitSeconds) + "\n";
   // A publisher's launcher, when no Steam host runs: the title starts it beside the game and holds the game until
-  // it is ready. Left out when its path would be too long for the runtime.
+  // it is ready. Left out when its path would be too long for the runtime, or when it must be the game's parent and
+  // the title's runtime predates identity = launcher.
   bool launcher_helper = false;
-  if (!helper_section && settings.helper_process && !target.helper_program.empty()) {
+  if (!helper_section && settings.helper_process && !target.helper_program.empty() &&
+      (target.helper_identity != "launcher" || settings.helper_launcher_identity)) {
     const auto program = *root + "\\" + Backslashes(target.helper_program);
     launcher_helper = program.size() <= kProsperoMaxPathBytes;
     if (launcher_helper)
@@ -5006,6 +5010,8 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.launcher_map = has(kKitLauncherMap);
   kit.title_notify = has(kKitTitleNotify);
   kit.helper_process = has(kKitHelperProcess);
+  // No capability of its own: every kit Playden accepts with helper-process has it (kit 0.33 and later).
+  kit.helper_launcher_identity = kit.helper_process;
   kit.launch_arguments_4096 = has(kKitLaunchArguments4096);
   kit.large_address_aware = has(kKitLargeAddressAware);
   kit.nsiproxy_switch = has(kKitNsiproxySwitch);
@@ -5022,100 +5028,111 @@ bool KitDependsOnTitleRuntime(const KitCapabilities& kit) {
   return std::memcmp(&older, &kit, sizeof kit) != 0;
 }
 
-KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current) {
+KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current,
+                                   std::optional<KitVersion> title_kit) {
+  // A title behind the installed kit still runs the runtime of the kit it was made with (title_kit, from its owner
+  // marker): what that kit already had, the title keeps. The marker names the kit's runtime artifact, which a kit
+  // can share with the one before it, so each version below is the first runtime label from which every kit in
+  // dependencies.lock.json's history has the capability (kit 0.22 kept 0.21's label but added nsiproxy-switch; the
+  // first 0.18 builds lacked fps_counter and mode = playstation). Without the title's version everything waits.
+  const auto lacks = [&](KitVersion since) { return !title_runtime_current && !(title_kit && *title_kit >= since); };
   // An older title refuses the search form outright, and nothing the player chose waits on it.
-  if (!title_runtime_current) kit.game_root_usb_search = false;
+  if (lacks({0, 19})) kit.game_root_usb_search = false;
   // Nor does an older title read [steam]: the game keeps its Z: paths until its runtime is updated.
-  if (!title_runtime_current && kit.steam_library_path) {
+  if (lacks({0, 25}) && kit.steam_library_path) {
     kit.steam_library_path = false;
     kit.steam_library_path_needs_update = true;
   }
   // Nor [runtime] system_locale and user_locale: an older title refuses the keys.
-  if (!title_runtime_current && kit.windows_locale) {
+  if (lacks({0, 30}) && kit.windows_locale) {
     kit.windows_locale = false;
     kit.windows_locale_needs_update = true;
   }
   // Nor has an older title's Wine the built-in amd_ags_x64.dll.
-  if (!title_runtime_current && kit.amd_ags) {
+  if (lacks({0, 36}) && kit.amd_ags) {
     kit.amd_ags = false;
     kit.amd_ags_needs_update = true;
   }
-  if (!title_runtime_current && kit.display_120hz) {
+  if (lacks({0, 12}) && kit.display_120hz) {
     kit.display_120hz = false;
     kit.display_120hz_needs_update = true;
   }
-  if (!title_runtime_current && kit.profile_version_2) {
+  if (lacks({0, 13}) && kit.profile_version_2) {
     kit.profile_version_2 = false;
     kit.profile_version_2_needs_update = true;
   }
   // An older title refuses [audio]: volume and microphone wait for its update.
-  if (!title_runtime_current && kit.audio_volume) {
+  if (lacks({0, 30}) && kit.audio_volume) {
     kit.audio_volume = false;
     kit.audio_volume_needs_update = true;
   }
-  if (!title_runtime_current && kit.audio_microphone) {
+  if (lacks({0, 30}) && kit.audio_microphone) {
     kit.audio_microphone = false;
     kit.audio_microphone_needs_update = true;
   }
-  if (!title_runtime_current && kit.input_rumble) {
+  if (lacks({0, 14}) && kit.input_rumble) {
     kit.input_rumble = false;
     kit.input_rumble_needs_update = true;
   }
-  if (!title_runtime_current && kit.display_framegen) {
+  if (lacks({0, 15}) && kit.display_framegen) {
     kit.display_framegen = false;
     kit.display_framegen_needs_update = true;
   }
-  if (!title_runtime_current && kit.display_fps_counter) {
+  if (lacks({0, 19}) && kit.display_fps_counter) {
     kit.display_fps_counter = false;
     kit.display_fps_counter_needs_update = true;
   }
-  if (!title_runtime_current && kit.display_hud) {
+  if (lacks({0, 35}) && kit.display_hud) {
     kit.display_hud = false;
     kit.display_hud_needs_update = true;
   }
-  if (!title_runtime_current && kit.launcher_mode) {
+  if (lacks({0, 18}) && kit.launcher_mode) {
     kit.launcher_mode = false;
     kit.launcher_mode_needs_update = true;
   }
-  if (!title_runtime_current && kit.touchpad_switch) {
+  if (lacks({0, 24}) && kit.touchpad_switch) {
     kit.touchpad_switch = false;
     kit.touchpad_switch_needs_update = true;
   }
   // An older title refuses map = 1: a layout waits for the title's update.
-  if (!title_runtime_current && kit.input_map) {
+  if (lacks({0, 33}) && kit.input_map) {
     kit.input_map = false;
     kit.input_map_needs_update = true;
   }
   // An older title refuses map = 1 in [launcher]: a held layout waits for the title's update.
-  if (!title_runtime_current && kit.launcher_map) {
+  if (lacks({0, 34}) && kit.launcher_map) {
     kit.launcher_map = false;
     kit.launcher_map_needs_update = true;
   }
-  if (!title_runtime_current && kit.input_playstation) {
+  if (lacks({0, 19}) && kit.input_playstation) {
     kit.input_playstation = false;
     kit.input_playstation_needs_update = true;
   }
-  if (!title_runtime_current && kit.helper_process) {
+  if (lacks({0, 24}) && kit.helper_process) {
     kit.helper_process = false;
     kit.helper_process_needs_update = true;
   }
-  if (!title_runtime_current && kit.title_notify) {
+  if (lacks({0, 33}) && kit.helper_launcher_identity) {
+    kit.helper_launcher_identity = false;
+    kit.helper_launcher_identity_needs_update = true;
+  }
+  if (lacks({0, 24}) && kit.title_notify) {
     kit.title_notify = false;
     kit.title_notify_needs_update = true;
   }
-  if (!title_runtime_current && kit.launch_arguments_4096) {
+  if (lacks({0, 21}) && kit.launch_arguments_4096) {
     kit.launch_arguments_4096 = false;
     kit.launch_arguments_4096_needs_update = true;
   }
-  if (!title_runtime_current && kit.large_address_aware) {
+  if (lacks({0, 21}) && kit.large_address_aware) {
     kit.large_address_aware = false;
     kit.large_address_aware_needs_update = true;
   }
-  if (!title_runtime_current && kit.nsiproxy_switch) {
+  if (lacks({0, 23}) && kit.nsiproxy_switch) {
     kit.nsiproxy_switch = false;
     kit.nsiproxy_switch_needs_update = true;
   }
-  if (!title_runtime_current && kit.environment_file_budgets) {
+  if (lacks({0, 21}) && kit.environment_file_budgets) {
     kit.environment_file_budgets = false;
     kit.environment_file_budgets_needs_update = true;
   }

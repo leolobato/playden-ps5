@@ -64,4 +64,14 @@ std::optional<KitVersion> KitVersionFromArtifactRevision(std::string_view artifa
   return text ? ParseKitVersion(*text) : std::nullopt;
 }
 
+std::optional<KitVersion> CapabilityKitVersion(std::string_view version_text) {
+  auto version = ParseKitVersion(version_text);
+  if (!version || version_text.find("-dev.") == std::string_view::npos) return version;
+  if (version->revision > 0) {
+    --version->revision;
+    return version;
+  }
+  return std::nullopt;
+}
+
 }  // namespace playden::runtime

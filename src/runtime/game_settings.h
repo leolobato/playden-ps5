@@ -3,6 +3,7 @@
 #include "library/game_ref.h"
 #include "library/store.h"
 #include "runtime/controller_layout.h"
+#include "runtime/kit_version.h"
 #include "runtime/prospero_profile.h"
 
 #include <cstdint>
@@ -146,6 +147,10 @@ struct KitCapabilities {
   // Online. Counts only for a title that runs this kit's runtime, like display_120hz.
   bool helper_process = false;
   bool helper_process_needs_update = false;
+  // [helper] identity = launcher: the title runs a publisher's launcher as the game's parent (prospero-win 1a2cc69,
+  // first in kit 0.33). A title made with an older kit refuses the key, so it waits like helper_process.
+  bool helper_launcher_identity = false;
+  bool helper_launcher_identity_needs_update = false;
   // [input] map = 1 and a controller layout's lines (kKitInputMap): the Controller layout row. Counts only for a title
   // that runs this kit's runtime, like display_120hz.
   bool input_map = false;
@@ -449,6 +454,10 @@ struct EffectiveSettings {
   // needs it.
   bool helper_process = false;
   bool helper_process_needs_update = false;
+  // It also takes [helper] identity = launcher (KitCapabilities::helper_launcher_identity): a publisher's launcher
+  // that must be the game's parent needs it.
+  bool helper_launcher_identity = false;
+  bool helper_launcher_identity_needs_update = false;
   // The title's runtime reads the profile's [environment] section (KitCapabilities::environment).
   bool environment_section = false;
   // The player's names for layouts (their layout templates), by ControllerLayoutNameKey: the switch notice names the
@@ -1121,11 +1130,12 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
 
 // The installed kit's capabilities for one game's title. A prepared title keeps its own copy of the runtime until
 // Update, so a capability that adds profile keys counts only when the title runs this kit's runtime
-// (title_runtime_current: the title's owner markers name this kit, PackageInstaller::TitleCurrent). Otherwise
-// display_120hz, profile_version_2, input_rumble, display_framegen, display_fps_counter, display_hud, input_playstation,
-// audio_volume, audio_microphone, title_notify, steam_library_path and windows_locale are off and their _needs_update
-// say why.
-KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current);
+// (title_runtime_current: the title's owner markers name this kit, PackageInstaller::TitleCurrent). Otherwise such a
+// capability (display_120hz, profile_version_2, input_rumble, helper_process, steam_library_path, windows_locale and
+// the others in KitForTitleRuntime) is off, and its _needs_update says why, unless title_kit, the version of the kit
+// the title was made with, already had it: a title on kit 0.35 keeps [helper] when kit 0.36 is installed.
+KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current,
+                                   std::optional<KitVersion> title_kit = std::nullopt);
 // Whether any capability the kit has counts only for a title on its runtime: whether KitForTitleRuntime would turn
 // something off for an older title. Reading the title's markers is worth it only then.
 bool KitDependsOnTitleRuntime(const KitCapabilities& kit);

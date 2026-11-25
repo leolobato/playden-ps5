@@ -3012,13 +3012,13 @@ static bool ArtifactsBound(const auto& kit_artifacts, const rt::RuntimeInstall& 
 }
 
 void RuntimeHost::PublishInstalls(const Composition& composition, const std::string& only) {
-  // title_current, runtime_current, setup_other_kit, title_icon_current, title_icon_file
-  std::map<std::string, std::tuple<bool, bool, bool, bool, std::string>> checked;
+  // title_current, runtime_current, setup_other_kit, title_icon_current, title_icon_file, title_kit_version
+  std::map<std::string, std::tuple<bool, bool, bool, bool, std::string, std::optional<rt::KitVersion>>> checked;
   if (!only.empty()) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& view : snapshot_.installs)
       checked[view.install_id] = {view.title_current, view.runtime_current, view.setup_other_kit, view.title_icon_current,
-                                  view.title_icon_file};
+                                  view.title_icon_file, view.title_kit_version};
   }
   std::vector<RuntimeInstallView> installs;
   for (const auto& record : composition.repository.Snapshot()) {
@@ -3039,7 +3039,7 @@ void RuntimeHost::PublishInstalls(const Composition& composition, const std::str
     }
     if (const auto kept = checked.find(record.install_id); !only.empty() && record.install_id != only && kept != checked.end()) {
       std::tie(view.title_current, view.runtime_current, view.setup_other_kit, view.title_icon_current,
-               view.title_icon_file) = kept->second;
+               view.title_icon_file, view.title_kit_version) = kept->second;
     } else if (record.state == rt::PreparationState::kReady && composition.kit) {
       const bool files_current = composition.installer->TitleCurrent(record);
       view.title_current = files_current && composition.installer->TitleMetadataCurrent(record) && TitleNameCurrent(composition, record) &&
@@ -3048,6 +3048,7 @@ void RuntimeHost::PublishInstalls(const Composition& composition, const std::str
       if (!icon_file.empty()) view.title_icon_file = record.install_path + "/" + icon_file;
       view.title_icon_current = TitleIconCurrent(composition, record, icon_file);
       view.runtime_current = files_current && ArtifactsBound(composition.kit->view.artifacts, record);
+      if (!view.runtime_current) view.title_kit_version = TitleCapabilityKit(composition, record);
     } else if (composition.kit && SetupRestarts(record) && !view.moving) {
       view.setup_other_kit = composition.installer->SetupFromOtherKit(record);
     }
@@ -3091,7 +3092,19 @@ rt::KitCapabilities RuntimeHost::TitleKit(const Composition& c, const rt::Runtim
   if (!c.kit) return {};
   const auto kit = rt::KitCapabilitiesFromManifest(c.kit->capabilities, true);
   // The title's markers are read only when the kit has something an older runtime would refuse.
-  return rt::KitDependsOnTitleRuntime(kit) ? rt::KitForTitleRuntime(kit, TitleRuntimeCurrent(c, record)) : kit;
+  if (!rt::KitDependsOnTitleRuntime(kit)) return kit;
+  if (TitleRuntimeCurrent(c, record)) return kit;
+  // A Ready title keeps what the kit it was made with already had (TitleCapabilityKit), so a settings change
+  // doesn't take [helper] from a title that runs one.
+  return rt::KitForTitleRuntime(kit, false, TitleCapabilityKit(c, record));
+}
+
+std::optional<rt::KitVersion> RuntimeHost::TitleCapabilityKit(const Composition& c, const rt::RuntimeInstall& record) const {
+  if (!c.kit || !c.filesystem_installer || record.state != rt::PreparationState::kReady || TitleRuntimeCurrent(c, record))
+    return std::nullopt;
+  const auto revision = c.filesystem_installer->TitleRuntimeRevision(record);
+  const auto text = revision ? rt::KitVersionTextFromArtifactRevision(*revision) : std::nullopt;
+  return text ? rt::CapabilityKitVersion(*text) : std::nullopt;
 }
 
 // With no working folder set, the profile runs the program from its own folder

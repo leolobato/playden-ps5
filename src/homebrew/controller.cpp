@@ -1932,6 +1932,7 @@ void Controller::TickRuntime() {
       game.settings_revision = record->settings_revision;
       game.launch_entry_id = record->launch_entry_id;
       game.runtime_current = record->runtime_current;
+      game.title_kit_version = record->title_kit_version;
       game.save_backups = record->save_backups;
       game.latest_save_backup = record->latest_save_backup;
       // The game's own icon file (a GOG copy's), as its title's icon uses it, falling back to its program's icon;

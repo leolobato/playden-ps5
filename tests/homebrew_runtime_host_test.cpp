@@ -10214,6 +10214,9 @@ void AppliedCommunityRecipeSurvivesKitSwap() {
   CHECK(host.Start());
   const auto started = WaitFor(host, Started);
   CHECK(started.kit_available && started.installs.size() == 1 && !started.installs[0].title_current);
+  // The view names the kit the title was made with, so Game settings keeps what that kit already had.
+  CHECK(!started.installs[0].runtime_current && started.installs[0].title_kit_version &&
+        (*started.installs[0].title_kit_version == playden::runtime::KitVersion{0, 12}));
   fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
   const auto before = host.Snapshot().maintenance_handled;
   host.Maintain(220, RuntimeMaintenance::kApplySettings);
@@ -11577,6 +11580,83 @@ void RenewsPublisherSignInOnSchedule() {
   host.Shutdown();
 }
 
+// A settings change on a title one runtime kit behind keeps the pack's launcher [helper] when the title's own kit
+// had it (Red Dead Redemption 2, 2026-11-25: the profile lost [helper] and the game stopped at "Invalid handle").
+// identity = launcher needs a title from kit 0.33 on; an older one gets no [helper] rather than a key it refuses.
+void PublisherHelperKeptOnTitleBehind() {
+  for (const bool old_title : {false, true}) {
+    PublisherFixture f;
+    const auto with_helper = [](RuntimeKit kit) {
+      kit.capabilities.push_back(kKitHelperProcess);
+      std::sort(kit.capabilities.begin(), kit.capabilities.end());
+      return kit;
+    };
+    const auto first = with_helper(SyntheticKit(f.fixture.root / "kit-a", "native", "kit-1", 'a', "runtime",
+                                                old_title ? "aaaaaaa-kit-0.23" : "aaaaaaa-kit-0.33"));
+    f.config.admit_kit = [first](std::string*) { return std::optional<RuntimeKit>(first); };
+    auto manifest = PublisherManifest("220");
+    const std::string tail = "\n}";
+    manifest.replace(manifest.rfind(tail), tail.size(),
+                     ",\n  \"helper\": { \"program\": \".examplepub/Launcher.exe\", \"ready\": "
+                     "\"playden/examplepub.ready\", \"wait\": 30, \"identity\": \"launcher\" }\n}");
+    Write(f.pack / "stage.json", manifest, 0644);
+    std::map<std::string, std::string> overrides;
+    unsigned revision = 0;
+    std::mutex settings_mutex;
+    f.config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> {
+      std::lock_guard<std::mutex> lock(settings_mutex);
+      GameSettingsRecord record;
+      record.overrides = overrides;
+      record.revision = revision;
+      return record;
+    };
+    const auto profile = f.fixture.root / "data/playden/games/steam-220/library/profiles/playden-steam-220.profile";
+    const std::string helper_line =
+        "\n[helper]\nprogram = Z:\\data\\homebrew\\FAKE77031\\games\\220\\Title\\.examplepub\\Launcher.exe\n";
+    {
+      RuntimeHost host(f.config);
+      f.host = &host;
+      f.PrepareReady(host);
+      CHECK(host.Snapshot().installs.size() == 1 && host.Snapshot().installs[0].state == PreparationState::kReady);
+      host.Shutdown();
+      f.host = nullptr;
+    }
+    // Made with its own kit, the title has the helper, as the launcher's parent.
+    CHECK(Read(profile).find(helper_line) != std::string::npos);
+    CHECK(Read(profile).find("identity = launcher\n") != std::string::npos);
+    // The next kit: the title is one behind and still runs its own.
+    const auto next = with_helper(SyntheticKit(f.fixture.root / "kit-b", "native-2", "kit-1", 'c', "runtime",
+                                               old_title ? "bbbbbbb-kit-0.24" : "bbbbbbb-kit-0.34"));
+    f.config.admit_kit = [next](std::string*) { return std::optional<RuntimeKit>(next); };
+    RuntimeHost host(f.config);
+    f.host = &host;
+    CHECK(host.Start());
+    const auto started = WaitFor(host, Started);
+    CHECK(started.installs.size() == 1 && !started.installs[0].title_current);
+    {
+      std::lock_guard<std::mutex> lock(settings_mutex);
+      overrides["extra_arguments"] = "-windowed";
+      revision = 1;
+    }
+    f.fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+    const auto before = host.Snapshot().maintenance_handled;
+    host.Maintain(220, RuntimeMaintenance::kApplySettings);
+    const auto result = WaitFor(host, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
+    if (!result.maintenance.at(220).ok) std::fprintf(stderr, "helper on a title behind: %s\n", result.maintenance.at(220).message.c_str());
+    CHECK(result.maintenance.at(220).ok);
+    const auto text = Read(profile);
+    CHECK(text.find("-windowed") != std::string::npos);  // the change was published
+    if (old_title) {
+      CHECK(text.find("[helper]") == std::string::npos);
+    } else {
+      CHECK(text.find(helper_line) != std::string::npos);
+      CHECK(text.find("identity = launcher\n") != std::string::npos);
+    }
+    host.Shutdown();
+    f.host = nullptr;
+  }
+}
+
 // A Rockstar game gets the pack's files when it is prepared; Play asks for the publisher's account
 // and places the credential last; a session that ends with the expired status asks again; the
 // maintenance action takes the files out and puts them back.
@@ -12477,6 +12557,7 @@ int main(int argc, char** argv) {
   RenewsPublisherSignInOnSchedule();
   ExtractsPublisherRuntimeFromTheGamesInstaller();
   PublisherGamesThePackDoesNotCoverAreUntouched();
+  PublisherHelperKeptOnTitleBehind();
   UntestedPublisherTitleAsksOnceBeforePlay();
   UntestedPublisherTitleStartsFromHome();
   UntestedNoticeSeenWithoutTheFile();

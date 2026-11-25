@@ -41,4 +41,9 @@ std::string FormatKitVersion(KitVersion version);
 std::optional<std::string> KitVersionTextFromArtifactRevision(std::string_view artifact_revision);
 std::optional<KitVersion> KitVersionFromArtifactRevision(std::string_view artifact_revision);
 
+// The newest release whose capabilities a kit surely has, for a title made with it: a release is itself; a
+// development kit ("0.24-dev.20261111.4") may predate a capability its release lists, so it counts as the release
+// before ("0.23"). Nothing for 0.0 or text that is no kit version.
+std::optional<KitVersion> CapabilityKitVersion(std::string_view version_text);
+
 }  // namespace playden::runtime

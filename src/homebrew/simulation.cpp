@@ -18283,7 +18283,8 @@ std::string Simulation::RecipeFallbackFor(GameId id) const {
 
 rt::KitCapabilities Simulation::kit_for(GameId id) const {
     const auto runtime = state_.runtime_games.find(id);
-    return rt::KitForTitleRuntime(kit_, runtime == state_.runtime_games.end() || runtime->second.runtime_current);
+    if (runtime == state_.runtime_games.end() || runtime->second.runtime_current) return kit_;
+    return rt::KitForTitleRuntime(kit_, false, runtime->second.title_kit_version);
 }
 
 const rt::SettingsPreset* Simulation::preset_for(GameId id) const {
