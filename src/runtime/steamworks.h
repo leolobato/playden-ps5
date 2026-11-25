@@ -190,4 +190,19 @@ bool WriteSteamworksFacts(const std::string& install_root, const std::vector<std
                           const std::vector<std::string>& save_folders = {});
 bool ReadSteamworksFacts(const std::string& install_root, SteamworksIdentity* identity);
 
+// The account's CD key for a game Steam sells with one (appinfo legacykeyregistrationmethod and
+// legacykeyregistrylocation), which the download asked Steam for: Steam's client hands it to the game's install script,
+// which writes it where the game reads it (DOOM 3's base\doomkey). Kept beside the game, owner-only (0600), and never
+// logged. "v1", then method=, location= and key= lines; each value is printable ASCII.
+inline constexpr const char* kLegacyKeyFile = ".playden-legacy-key";
+inline constexpr std::size_t kMaxLegacyKeyField = 512;
+struct LegacyKey {
+  std::string method;    // "registry" (or Steam's "disk")
+  std::string location;  // registry: the value's path, HKEY_CURRENT_USER\...\SteamKey
+  std::string key;
+};
+bool WriteLegacyKey(const std::string& install_root, const LegacyKey& key);
+// None when the file is missing, unreadable or not this format, or a field is empty.
+std::optional<LegacyKey> ReadLegacyKey(const std::string& install_root);
+
 }  // namespace playden::runtime

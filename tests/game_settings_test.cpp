@@ -2,6 +2,7 @@
 #include "steam_id.h"
 #include "runtime/game_probe.h"
 #include "runtime/install_script.h"
+#include "runtime/steamworks.h"
 #include "runtime/kit_version.h"
 #include "runtime/recipe_choice.h"
 #include "runtime/settings_publication.h"
@@ -2445,6 +2446,86 @@ int main(int argc, char** argv) {
     CHECK(applied.ok && applied.found == std::vector<std::string>{"CSTW2.vdf"} && applied.values == 1);
     CHECK(ReadText(bottle / "user.reg").find("\"Path\"=\"Z:\\\\data\\\\games\\\\22380\"") != std::string::npos);
     std::filesystem::remove_all(script_root);
+  }
+
+  // A game sold with a CD key (DOOM 3): Steam's client puts the account's key in the registry where appinfo says, then
+  // fills the File Template in from that value and writes base\doomkey, once.
+  {
+    const auto root = std::filesystem::canonical(std::filesystem::temp_directory_path()) /
+                      ("playden-file-template-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+    const auto game = root / "game", bottle = root / "bottle";
+    std::filesystem::create_directories(game / "base");
+    std::filesystem::create_directories(bottle);
+    const std::string user_reg = "WINE REGISTRY Version 2\n;; All keys relative to \\\\User\\\\S-1-5-21-0-0-0-1000\n\n#arch=win64\n";
+    std::ofstream(bottle / "user.reg") << user_reg;
+    ::chmod((bottle / "user.reg").c_str(), 0600);
+    std::ofstream(game / "instscript.vdf")
+        << "\"InstallScript\" { \"Registry\" { \"HKEY_LOCAL_MACHINE\\\\SOFTWARE\\\\id\\\\Doom 3\" { \"string\" { "
+           "\"InstallPath\" \"%INSTALLDIR%\" } } } \"File Template\" { \"doomkey_template\" { "
+           "\"HasRunKey\" \"HKEY_CURRENT_USER\\\\Software\\\\Valve\\\\Steam\\\\Apps\\\\9050\" "
+           "\"template_file\" \"%INSTALLDIR%\\\\base\\\\STEAM_doomkey\" \"output_file\" \"%INSTALLDIR%\\\\base\\\\doomkey\" "
+           "\"CDKEY\" \"HKEY_CURRENT_USER\\\\Software\\\\Valve\\\\TestApp9050\\\\SteamKey\" } } }";
+    std::ofstream(game / kInstallScriptList) << "v1\ninstscript.vdf\n";  // appinfo names it
+    std::ofstream(bottle / "system.reg") << "WINE REGISTRY Version 2\n;; All keys relative to REGISTRY\\\\Machine\n\n#arch=win64\n";
+    ::chmod((bottle / "system.reg").c_str(), 0600);
+    std::ofstream(game / "base" / "STEAM_doomkey") << "%CDKEY%\r\n// Do not give this file to ANYONE.\r\n";
+    std::ofstream(game / "base" / "doomkey") << "";  // the depot's empty file
+    const std::string install_dir = "Z:\\data\\playden-games\\9050";
+
+    std::vector<FileTemplate> parsed;
+    std::vector<std::string> dropped;
+    CHECK(ParseFileTemplates(ReadText(game / "instscript.vdf"), install_dir, &parsed, &dropped, &reason));
+    CHECK(parsed.size() == 1 && dropped.empty() && parsed[0].name == "doomkey_template" &&
+          parsed[0].has_run_key == "HKEY_CURRENT_USER\\Software\\Valve\\Steam\\Apps\\9050" &&
+          parsed[0].template_file == "Z:\\data\\playden-games\\9050\\base\\STEAM_doomkey" &&
+          parsed[0].output_file == "Z:\\data\\playden-games\\9050\\base\\doomkey" &&
+          parsed[0].fields == (std::vector<std::pair<std::string, std::string>>{
+                                  {"cdkey", "HKEY_CURRENT_USER\\Software\\Valve\\TestApp9050\\SteamKey"}}));
+    CHECK(ParseFileTemplates("\"InstallScript\" { \"File Template\" { \"a\" { \"HasRunKey\" \"HKCU\\\\x\" "
+                             "\"template_file\" \"%NOPE%\\\\t\" \"output_file\" \"o\" } \"b\" { \"HasRunKey\" \"HKCU\\\\x\" } } }",
+                             install_dir, &parsed, &dropped, &reason));
+    CHECK(parsed.size() == 1 && dropped == (std::vector<std::string>{"a: unknown %NOPE%", "b: no template or output file"}));
+
+    // Without a key: the Registry values go in, the template waits for a later start.
+    auto applied = ApplyInstallScripts(game.string(), install_dir, "", bottle.string(), 1791500000);
+    CHECK(applied.ok && !applied.legacy_key && applied.templates.empty() && applied.values == 2);
+    CHECK(applied.dropped == std::vector<std::string>{"instscript.vdf: doomkey_template: no value for %CDKEY%"});
+    CHECK(ReadText(game / "base" / "doomkey").empty());
+
+    const LegacyKey key{"registry", "HKEY_CURRENT_USER\\Software\\Valve\\TestApp9050\\SteamKey", "SYNTHETICKEY0001"};
+    applied = ApplyInstallScripts(game.string(), install_dir, "", bottle.string(), 1791600000, &key);
+    CHECK(applied.ok && applied.legacy_key && applied.templates == std::vector<std::string>{"base/doomkey"});
+    CHECK(applied.dropped.empty());
+    CHECK(ReadText(game / "base" / "doomkey") == "SYNTHETICKEY0001\r\n// Do not give this file to ANYONE.\r\n");
+    const auto user = ReadText(bottle / "user.reg");
+    CHECK(user.find("\n[Software\\\\Valve\\\\TestApp9050] 1791600000\n\"SteamKey\"=\"SYNTHETICKEY0001\"\n") !=
+          std::string::npos);
+    CHECK(user.find("\n[Software\\\\Valve\\\\Steam\\\\Apps\\\\9050] 1791600000\n\"doomkey_template\"=dword:00000001\n") !=
+          std::string::npos);
+    for (const auto& line : applied.dropped) CHECK(line.find("SYNTHETICKEY") == std::string::npos);
+
+    // Filled in once: the game's own rewrite of the file stays, as with Steam.
+    std::ofstream(game / "base" / "doomkey") << "typed by the player";
+    applied = ApplyInstallScripts(game.string(), install_dir, "", bottle.string(), 1791700000, &key);
+    CHECK(applied.ok && applied.templates.empty() && ReadText(game / "base" / "doomkey") == "typed by the player");
+
+    // A key with a method Playden doesn't know only names that; nothing else changes.
+    const LegacyKey disk{"disk", "base\\cdkey.txt", "SYNTHETICKEY0001"};
+    applied = ApplyInstallScripts(game.string(), install_dir, "", bottle.string(), 1791800000, &disk);
+    CHECK(applied.ok && !applied.legacy_key &&
+          applied.dropped == std::vector<std::string>{"CD key: method disk or its location not supported"});
+
+    // The key file beside the game: owner-only, read back as written; anything else reads as none.
+    CHECK(WriteLegacyKey(game.string(), key));
+    struct stat info {};
+    CHECK(::stat((game / kLegacyKeyFile).c_str(), &info) == 0 && (info.st_mode & 0777) == 0600);
+    const auto read = ReadLegacyKey(game.string());
+    CHECK(read && read->method == key.method && read->location == key.location && read->key == key.key);
+    CHECK(!WriteLegacyKey(game.string(), LegacyKey{"registry", "x", "bad\nkey"}));
+    std::ofstream(game / kLegacyKeyFile) << "v1\nmethod=registry\nkey=SYNTHETICKEY0001\n";
+    CHECK(!ReadLegacyKey(game.string()));
+    std::filesystem::remove_all(root);
   }
 
   // A prospero-win-profiles sidecar becomes a community preset for its game.

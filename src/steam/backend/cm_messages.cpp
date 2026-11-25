@@ -17,6 +17,19 @@ void AppendLE32(std::vector<std::uint8_t>& out, std::uint32_t value) {
     out.push_back(static_cast<std::uint8_t>(value >> shift));
 }
 
+std::uint64_t ReadLE64(const std::uint8_t* data) {
+  return static_cast<std::uint64_t>(ReadLE32(data)) | static_cast<std::uint64_t>(ReadLE32(data + 4)) << 32;
+}
+
+void AppendLE64(std::vector<std::uint8_t>& out, std::uint64_t value) {
+  AppendLE32(out, static_cast<std::uint32_t>(value));
+  AppendLE32(out, static_cast<std::uint32_t>(value >> 32));
+}
+
+constexpr std::uint8_t kExtendedHeaderVersion = 2;
+constexpr std::uint8_t kExtendedHeaderCanary = 239;
+constexpr std::uint64_t kNoJob = ~0ull;
+
 // Varint fields declared int32 carry negative values sign-extended to 64 bits.
 std::int32_t AsInt32(std::uint64_t value) {
   return static_cast<std::int32_t>(static_cast<std::uint32_t>(value));
@@ -98,6 +111,67 @@ bool DecodeFrame(const std::uint8_t* data, std::size_t size, Frame* frame) {
   if (!DecodeHeader(data + 8, header_size, &decoded.header)) return false;
   decoded.body.assign(data + 8 + header_size, data + size);
   *frame = std::move(decoded);
+  return true;
+}
+
+std::vector<std::uint8_t> EncodeExtendedFrame(std::uint32_t emsg, const Header& header,
+                                              const std::vector<std::uint8_t>& body) {
+  if ((emsg & kProtoMask) != 0 || kExtendedHeaderBytes + body.size() > kMaxFrameBytes) return {};
+  std::vector<std::uint8_t> frame;
+  frame.reserve(kExtendedHeaderBytes + body.size());
+  AppendLE32(frame, emsg);
+  frame.push_back(static_cast<std::uint8_t>(kExtendedHeaderBytes));
+  frame.push_back(kExtendedHeaderVersion);
+  frame.push_back(0);
+  AppendLE64(frame, header.jobid_target.value_or(kNoJob));
+  AppendLE64(frame, header.jobid_source.value_or(kNoJob));
+  frame.push_back(kExtendedHeaderCanary);
+  AppendLE64(frame, header.steam_id);
+  AppendLE32(frame, static_cast<std::uint32_t>(header.session_id));
+  frame.insert(frame.end(), body.begin(), body.end());
+  return frame;
+}
+
+bool DecodeExtendedFrame(const std::uint8_t* data, std::size_t size, Frame* frame) {
+  if (data == nullptr || size < kExtendedHeaderBytes || size > kMaxFrameBytes) return false;
+  const std::uint32_t raw = ReadLE32(data);
+  if ((raw & kProtoMask) != 0) return false;
+  const std::uint8_t* header = data + 4;
+  if (header[0] != kExtendedHeaderBytes || header[1] != kExtendedHeaderVersion || header[2] != 0 ||
+      header[19] != kExtendedHeaderCanary)
+    return false;
+  Frame decoded;
+  decoded.emsg = raw;
+  decoded.extended = true;
+  if (const auto target = ReadLE64(header + 3); target != kNoJob) decoded.header.jobid_target = target;
+  if (const auto source = ReadLE64(header + 11); source != kNoJob) decoded.header.jobid_source = source;
+  decoded.header.steam_id = ReadLE64(header + 20);
+  decoded.header.session_id = static_cast<std::int32_t>(ReadLE32(header + 28));
+  decoded.body.assign(data + kExtendedHeaderBytes, data + size);
+  *frame = std::move(decoded);
+  return true;
+}
+
+std::vector<std::uint8_t> EncodeLegacyGameKeyRequest(std::uint32_t app_id) {
+  std::vector<std::uint8_t> body;
+  AppendLE32(body, app_id);
+  return body;
+}
+
+bool DecodeLegacyGameKeyResponse(const std::vector<std::uint8_t>& body, LegacyGameKeyResponse* response) {
+  if (body.size() < 12) return false;
+  LegacyGameKeyResponse decoded;
+  decoded.app_id = ReadLE32(body.data());
+  decoded.eresult = static_cast<std::int32_t>(ReadLE32(body.data() + 4));
+  const std::uint32_t length = ReadLE32(body.data() + 8);
+  if (length > body.size() - 12 || length > kMaxLegacyGameKeyBytes + 1) return false;
+  std::string key(body.begin() + 12, body.begin() + 12 + length);
+  while (!key.empty() && key.back() == '\0') key.pop_back();
+  for (const char value : key)
+    if (value < 0x20 || value > 0x7e) return false;
+  if (key.size() > kMaxLegacyGameKeyBytes) return false;
+  decoded.key = std::move(key);
+  *response = std::move(decoded);
   return true;
 }
 

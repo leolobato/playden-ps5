@@ -4598,10 +4598,6 @@ bool ApplyD3D12Library(const std::string& runtime_dir, const std::string& templa
   return true;
 }
 
-namespace {
-
-// The data of one value in a Wine registry file, in Wine's text form ("\"...\"" for a string), or nothing when
-// its key or the value isn't there or is written more than once.
 std::optional<std::string> RegistryData(const std::string& text, const std::string& key, const std::string& name) {
   const auto header = RegistryHeader(key);
   const auto line_prefix = "\"" + name + "\"=";
@@ -4629,8 +4625,6 @@ std::optional<std::string> RegistryData(const std::string& text, const std::stri
   }
   return data;
 }
-
-}  // namespace
 
 std::vector<std::string> BottleEnvironmentNames(const std::string& user_reg) {
   std::vector<std::string> names;

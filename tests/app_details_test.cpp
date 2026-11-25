@@ -767,6 +767,11 @@ void IncludedDlcIsCounted() {
   // The install script an app names (Cthulhu Saves the World's CSTW2.vdf, which its depot doesn't flag).
   const auto named = ParseAppInfo(107310, R"("appinfo" { "common" { "name" "Cthulhu" } "extended" { "installscript" "CSTW2.vdf" "installscript_macos" "x.app/i.vdf" } })");
   assert(named && named->install_script == "CSTW2.vdf");
+  assert(named->legacy_key_method.empty() && named->legacy_key_location.empty());
+  // A game sold with a CD key names where Steam puts it (DOOM 3's appinfo).
+  const auto keyed = ParseAppInfo(9050, R"("appinfo" { "common" { "name" "DOOM 3" } "extended" { "installscript" "instscript.vdf" "legacykeyregistrationmethod" "registry" "legacykeyregistrylocation" "HKEY_CURRENT_USER\\Software\\Valve\\TestApp9050\\SteamKey" "ShowCDKeyInMenu" "1" } })");
+  assert(keyed && keyed->legacy_key_method == "registry" &&
+         keyed->legacy_key_location == "HKEY_CURRENT_USER\\Software\\Valve\\TestApp9050\\SteamKey");
   const LicensedDepots::Grant game_only{{6100}, {6100}};
   auto offered = DetailsFromAppInfo(6100, pack_game, game_only, "english", std::nullopt, {*pack});
   assert(offered.dlc.size() == 1 && offered.dlc[0].free && offered.dlc[0].name == "Pack" && offered.dlc[0].install_bytes == 300000000u);

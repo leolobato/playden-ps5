@@ -778,6 +778,43 @@ bool WriteSteamworksFacts(const std::string& install_root, const std::vector<std
                                               save_folders));
 }
 
+namespace {
+
+bool LegacyKeyField(std::string_view text) {
+  return !text.empty() && text.size() <= kMaxLegacyKeyField &&
+         std::all_of(text.begin(), text.end(), [](unsigned char value) { return value >= 0x20 && value < 0x7f; });
+}
+
+}  // namespace
+
+bool WriteLegacyKey(const std::string& install_root, const LegacyKey& key) {
+  if (!LegacyKeyField(key.method) || !LegacyKeyField(key.location) || !LegacyKeyField(key.key)) return false;
+  return WriteAtomic(fs::path(install_root) / kLegacyKeyFile,
+                     "v1\nmethod=" + key.method + "\nlocation=" + key.location + "\nkey=" + key.key + "\n", 0600);
+}
+
+std::optional<LegacyKey> ReadLegacyKey(const std::string& install_root) {
+  const auto text = ReadFile(fs::path(install_root) / kLegacyKeyFile, 4 * 1024);
+  if (!text || text->rfind("v1\n", 0) != 0) return std::nullopt;
+  LegacyKey key;
+  std::size_t start = 3;
+  while (start < text->size()) {
+    auto end = text->find('\n', start);
+    if (end == std::string::npos) end = text->size();
+    const auto line = std::string_view(*text).substr(start, end - start);
+    start = end + 1;
+    const auto equals = line.find('=');
+    if (equals == std::string_view::npos) continue;
+    const auto name = line.substr(0, equals);
+    const auto value = std::string(line.substr(equals + 1));
+    if (name == "method") key.method = value;
+    else if (name == "location") key.location = value;
+    else if (name == "key") key.key = value;
+  }
+  if (!LegacyKeyField(key.method) || !LegacyKeyField(key.location) || !LegacyKeyField(key.key)) return std::nullopt;
+  return key;
+}
+
 bool ReadSteamworksFacts(const std::string& install_root, SteamworksIdentity* identity) {
   const auto text = ReadFile(fs::path(install_root) / kSteamworksFactsFile, 64 * 1024);
   if (!text) return false;

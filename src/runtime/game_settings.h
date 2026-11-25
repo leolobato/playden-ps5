@@ -806,6 +806,11 @@ inline constexpr char kBottleEnvironmentNamesValue[] = "EnvironmentNames";
 std::vector<RegistryValue> RenderBottleEnvironment(const EffectiveSettings& settings,
                                                    const std::vector<std::string>& previous_names = {});
 
+// The data of one value in a Wine registry file's text (key as the hive names it, Software\Playden; names in any
+// case), in Wine's text form ("\"...\"" for a string, dword:00000001), or nothing when its key or the value isn't there
+// or is written more than once.
+std::optional<std::string> RegistryData(const std::string& text, const std::string& key, const std::string& name);
+
 // The names kBottleEnvironmentNamesKey holds in a user.reg text; none when it isn't there.
 std::vector<std::string> BottleEnvironmentNames(const std::string& user_reg);
 

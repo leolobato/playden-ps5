@@ -516,8 +516,9 @@ class CmClient::Session {
   }
 
   // Sends one job request and waits for its single response of the expected EMsg.
+  // `extended` sends an old-style frame (cm::EncodeExtendedFrame), for the messages Steam never moved to protobuf.
   CmError Call(std::uint32_t emsg, const std::string& job_name, const std::vector<std::uint8_t>& body,
-               std::uint32_t response_emsg, std::vector<std::uint8_t>* reply) {
+               std::uint32_t response_emsg, std::vector<std::uint8_t>* reply, bool extended = false) {
     const std::uint64_t jobid = ++job_counter_;
     service_ = ServiceJob{jobid, false, CmError::kNone, {}, response_emsg};
     cm::Header header;
@@ -525,7 +526,7 @@ class CmClient::Session {
     header.session_id = session_id_;
     header.jobid_source = jobid;
     header.target_job_name = job_name;
-    const auto frame = cm::EncodeFrame(emsg, header, body);
+    const auto frame = extended ? cm::EncodeExtendedFrame(emsg, header, body) : cm::EncodeFrame(emsg, header, body);
     if (frame.empty()) return CmError::kProtocol;
     const auto remaining = RemainingMs(deadline_);
     if (remaining == 0) return CmError::kTimeout;
@@ -736,14 +737,16 @@ class CmClient::Session {
       return;
     }
     cm::Frame frame;
-    if (!cm::DecodeFrame(data, size, &frame)) return;  // non-protobuf or unknown frames are ignored
+    // An old-style frame only ever answers a call (the legacy CD key); other unknown frames are ignored.
+    if (!cm::DecodeFrame(data, size, &frame) && !cm::DecodeExtendedFrame(data, size, &frame)) return;
 
-    if (frame.emsg == cm::kEMsgClientLogOnResponse && logon_pending_ && session_id_ == 0 &&
+    if (!frame.extended && frame.emsg == cm::kEMsgClientLogOnResponse && logon_pending_ && session_id_ == 0 &&
         frame.header.steam_id != 0 && frame.header.session_id != 0) {
       steam_id_ = frame.header.steam_id;
       session_id_ = frame.header.session_id;
     }
-    switch (frame.emsg) {
+    // An old-style frame is never one of the pushed messages below, whatever its EMsg: it can only answer a call.
+    switch (frame.extended ? 0u : frame.emsg) {
       case cm::kEMsgMulti: {
         cm::Multi multi;
         if (!cm::DecodeMulti(frame.body, &multi)) {
@@ -1615,6 +1618,40 @@ FreeLicenseResult CmClient::RequestFreeLicenses(const StoredSession& stored, con
     // Running out of time leaves the session fine; anything else ends the call.
     if (waited != CmError::kNone && waited != CmError::kTimeout) return finish(waited);
   }
+  return finish(CmError::kNone);
+}
+
+LegacyGameKeyResult CmClient::FetchLegacyGameKey(const StoredSession& stored, std::uint32_t app_id,
+                                                 const std::atomic<bool>& cancel) {
+  LegacyGameKeyResult result;
+  if (app_id == 0) return result;  // kProtocol
+  const auto deadline = Clock::now() + std::chrono::milliseconds(hooks_.deadline_ms);
+  Lease lease;
+  auto finish = [&](CmError error) {
+    Release(&lease, error);
+    result.error = error;
+    if (error != CmError::kNone) result.key.clear();
+    return result;
+  };
+  if (const auto open = Acquire(stored, cancel, deadline, &lease); open != CmError::kNone) return finish(open);
+  Session& session = *lease.session;
+  std::vector<std::uint8_t> reply;
+  if (const auto call = session.Call(cm::kEMsgClientGetLegacyGameKey, {}, cm::EncodeLegacyGameKeyRequest(app_id),
+                                     cm::kEMsgClientGetLegacyGameKeyResponse, &reply, true);
+      call != CmError::kNone) {
+    Log(std::string("step=legacy_key app=") + std::to_string(app_id) + " error=" + CmErrorName(call));
+    return finish(call);
+  }
+  cm::LegacyGameKeyResponse response;
+  if (!cm::DecodeLegacyGameKeyResponse(reply, &response) || response.app_id != app_id) {
+    Log("step=legacy_key app=" + std::to_string(app_id) + " error=protocol");
+    return finish(CmError::kProtocol);
+  }
+  result.eresult = response.eresult;
+  result.key = std::move(response.key);
+  Log("step=legacy_key app=" + std::to_string(app_id) + " eresult=" + std::to_string(result.eresult) +
+      " found=" + (result.key.empty() ? "0" : "1"));
+  if (result.eresult != cm::kEResultOk || result.key.empty()) return finish(CmError::kRejected);
   return finish(CmError::kNone);
 }
 
