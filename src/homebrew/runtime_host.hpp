@@ -39,6 +39,10 @@
 #include <unordered_map>
 #include <vector>
 
+namespace playden::runtime {
+struct PublisherRuntimeHolder;  // runtime/publisher_runtime.h
+}  // namespace playden::runtime
+
 namespace playden::homebrew {
 
 // An admitted kit: the verified view and the capabilities its manifest declares.
@@ -258,10 +262,11 @@ struct RuntimeHostConfig {
   // pinned pack under publisher_root, hashed once while it passes, unpacked into the cache root.
   std::function<PublisherReleaseResult(runtime::Publisher publisher)> publisher_release;
   // Makes sure the publisher's runtime is extracted from the game's installer below install_root
-  // (a host path) and returns its version folder (worker only). Empty: extracted from the
-  // installer (runtime/publisher_runtime.h) into <publisher_work_root>/runtime/<slug>/.
+  // (a host path) and returns its version folder (worker only). holder: the game (its app id) and
+  // the pack, so the game keeps the version it already uses. Empty: extracted from the installer
+  // (runtime/publisher_runtime.h) into <publisher_work_root>/runtime/<slug>/.
   std::function<PublisherRuntimeResult(const runtime::PublisherRuntimeSpec& spec, const std::string& install_root,
-                                       runtime::Publisher publisher)>
+                                       runtime::Publisher publisher, const runtime::PublisherRuntimeHolder& holder)>
       ensure_publisher_runtime;
   // SQLite and the native readers run on this worker. PS5 std::thread stacks are
   // too small for them, so the worker uses an explicit stack size.
@@ -1230,7 +1235,8 @@ class RuntimeHost {
   // The default ensure_publisher_runtime: extracts below <publisher_work_root>/runtime/<slug>/, one
   // extraction per folder at a time, reporting its progress as work.
   PublisherRuntimeResult EnsurePublisherRuntime(const runtime::PublisherRuntimeSpec& spec,
-                                                const std::string& install_root, runtime::Publisher publisher);
+                                                const std::string& install_root, runtime::Publisher publisher,
+                                                const runtime::PublisherRuntimeHolder& holder);
   // *failure, when given, gets the bare reason a signed-in account's credential could not be made
   // or written. untested: Play's own check for a title the pack marks untested (Play: the player went past
   // the notice, or not yet); nothing for a start outside Play, which can't show the notice.

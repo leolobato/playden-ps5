@@ -1,5 +1,6 @@
 #include "open_modes_walk.h"
 #include "homebrew/runtime_host.hpp"
+#include "runtime/publisher_runtime.h"
 #include "gog/dependencies.h"
 #include "installs/install_record.h"
 #include "runtime_host_fixture.h"
@@ -11508,15 +11509,18 @@ struct PublisherFixture {
       return PublisherReleaseResult{true, pack.string(), {}};
     };
     config.ensure_publisher_runtime = [this, root = fixture.root](const PublisherRuntimeSpec& spec,
-                                                                  const std::string& install, Publisher) {
+                                                                  const std::string& install, Publisher,
+                                                                  const PublisherRuntimeHolder& holder) {
       CHECK(spec.label == "Example Runtime");
+      // The game keeps its version while Playden's pack stays the same.
+      CHECK(holder.game == "220" && holder.pack == playden::runtime::kPublisherPackVersion);
       CHECK(install == (root / "data/homebrew/FAKE77031/games/220").string());
       // The game page names this step while it runs.
       if (host) {
         const auto now = host->Snapshot();
         seen_step = now.work_step + "/" + (now.work_app ? std::to_string(*now.work_app) : std::string("-"));
       }
-      return PublisherRuntimeResult{true, (root / "data/playden/publisher-work/runtime/rockstar/1.0").string(), {}};
+      return playden::homebrew::PublisherRuntimeResult{true, (root / "data/playden/publisher-work/runtime/rockstar/1.0").string(), {}};
     };
     accounts = fixture.root / "data/steam-state";
     config.publisher_account_root = accounts;
@@ -11901,7 +11905,10 @@ void ExtractsPublisherRuntimeFromTheGamesInstaller() {
   CHECK(fs::is_regular_file(version / "x86/runtime.dll"));
   CHECK(Read(f.title / "helper.ini").find("root=Z:\\data\\playden\\publisher-work\\runtime\\rockstar\\1.2.3.6\\x86") !=
         std::string::npos);
-  CHECK(f.Logged("publisher runtime rockstar version=1.2.3.6 extracted=1 ok=1"));
+  CHECK(f.Logged("publisher runtime rockstar app=220 version=1.2.3.6 extracted=1 ok=1"));
+  // The game's record: a game update can't change its version while this pack is pinned.
+  CHECK(Read(f.fixture.root / "data/playden/publisher-work/runtime/rockstar/.game-220") ==
+        std::string("1.2.3.6\n") + playden::runtime::kPublisherPackVersion + "\n");
   host.Shutdown();
 }
 

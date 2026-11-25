@@ -7426,7 +7426,8 @@ std::string RuntimeHost::LoadPublisher(Composition& c, rt::Publisher publisher) 
 }
 
 PublisherRuntimeResult RuntimeHost::EnsurePublisherRuntime(const rt::PublisherRuntimeSpec& spec,
-                                                           const std::string& install_root, rt::Publisher publisher) {
+                                                           const std::string& install_root, rt::Publisher publisher,
+                                                           const rt::PublisherRuntimeHolder& holder) {
   PublisherRuntimeResult result;
   const bool present = std::any_of(spec.installers.begin(), spec.installers.end(), [&](const std::string& path) {
     struct stat info{};
@@ -7442,10 +7443,12 @@ PublisherRuntimeResult RuntimeHost::EnsurePublisherRuntime(const rt::PublisherRu
   std::lock_guard<std::mutex> held(*lock);
   const auto made = rt::EnsurePublisherRuntime(
       spec, install_root, root, [this](std::uint64_t done, std::uint64_t total) { ReportWork(done, total); },
-      [this] { return Stopping(); });
-  Log("publisher runtime " + std::string(rt::PublisherSlug(publisher)) + " version=" +
+      [this] { return Stopping(); }, holder);
+  Log("publisher runtime " + std::string(rt::PublisherSlug(publisher)) + " app=" + holder.game + " version=" +
       (made.version.empty() ? "-" : made.version) + " extracted=" + std::to_string(made.extracted) +
-      " ok=" + std::to_string(made.ok) + (made.ok ? std::string() : " reason=" + made.reason));
+      " ok=" + std::to_string(made.ok) + (made.ok ? std::string() : " reason=" + made.reason) +
+      (made.kept ? " kept: the installer holds " + (made.installer_version.empty() ? "an unreadable version" : made.installer_version)
+                 : std::string()));
   result.ok = made.ok;
   result.version_dir = made.version_dir;
   // The extractor's own sentences stand alone; its short reasons get the runtime's name.
@@ -7480,9 +7483,11 @@ std::string RuntimeHost::StagePublisher(Composition& c, const rt::RuntimeInstall
     const auto words = "Preparing " + runtime->label;
     Publish([&](RuntimeSnapshot& s) { s.work_app = record.runtime_number; s.work_step = words; });
     const auto install_root = HostPath(record.install_path).string();
+    // The game keeps the version it already uses while the pack stays the same.
+    const rt::PublisherRuntimeHolder holder{app, rt::kPublisherPackVersion};
     const auto made = config_.ensure_publisher_runtime
-        ? config_.ensure_publisher_runtime(*runtime, install_root, game->publisher)
-        : EnsurePublisherRuntime(*runtime, install_root, game->publisher);
+        ? config_.ensure_publisher_runtime(*runtime, install_root, game->publisher, holder)
+        : EnsurePublisherRuntime(*runtime, install_root, game->publisher, holder);
     ClearWork();
     Publish([](RuntimeSnapshot& s) { s.work_app.reset(); s.work_step.clear(); });
     if (!made.ok) {

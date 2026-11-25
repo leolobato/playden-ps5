@@ -121,6 +121,13 @@ struct Scratch {
                                 const std::function<bool()>& canceled = {}) const {
     return EnsurePublisherRuntime(spec, install().string(), runtime().string(), progress, canceled);
   }
+  PublisherRuntimeResult EnsureFor(const std::string& game, const std::string& pack) const {
+    return EnsurePublisherRuntime(Spec(), install().string(), runtime().string(), {}, {}, {game, pack});
+  }
+  std::string Record(const std::string& game) const {
+    const auto file = runtime() / (".game-" + game);
+    return fs::exists(file) ? ReadFile(file) : std::string();
+  }
   fs::path root;
 };
 
@@ -242,6 +249,78 @@ void TestBcjExtraction() {
   CHECK(fs::is_regular_file(fs::path(result.version_dir) / kPublisherRuntimeCompleteMarker));
 }
 
+// A game keeps the version it already uses when a game update brings another one, while the pack
+// stays the same: the pack's patches are made for the versions it knows (GTA IV moved from Social
+// Club 2.4.0.240 to 2.4.0.302 in an update and stopped on error 17).
+void TestGameKeepsItsVersion() {
+  Scratch scratch;
+  scratch.Install(Fixture("bcj2.7z"));
+  const auto first = scratch.EnsureFor("220", "p1");
+  CHECK(first.ok && first.extracted && !first.kept && first.version == "1.2.3.4");
+  CHECK(scratch.Record("220") == "1.2.3.4\np1\n");
+
+  // The game update: the installer holds 1.2.3.5 now. Nothing is extracted for it.
+  scratch.Install(Fixture("solid.7z"));
+  const auto kept = scratch.EnsureFor("220", "p1");
+  CHECK(kept.ok && kept.kept && !kept.extracted);
+  CHECK(kept.version == "1.2.3.4" && kept.installer_version == "1.2.3.5");
+  CHECK(kept.version_dir == first.version_dir);
+  CHECK(!fs::exists(scratch.runtime() / "1.2.3.5"));
+  CHECK(scratch.Record("220") == "1.2.3.4\np1\n");
+  // The next run doesn't read the installer again: garbage of the same size and time still answers.
+  {
+    const auto installer = scratch.install() / "Redist/Example-Setup.exe";
+    const auto stamp = fs::last_write_time(installer);
+    const auto bytes = ReadFile(installer);
+    WriteFile(installer, std::string(bytes.size(), 'G'));
+    fs::last_write_time(installer, stamp);
+    const auto cached = scratch.EnsureFor("220", "p1");
+    CHECK(cached.ok && cached.kept && cached.installer_version == "1.2.3.5");
+    WriteFile(installer, bytes);
+  }
+
+  // Another game, first set up now, gets what its installer holds.
+  const auto other = scratch.EnsureFor("271590", "p1");
+  CHECK(other.ok && other.extracted && !other.kept && other.version == "1.2.3.5");
+
+  // A third version arrives: the versions games still use stay, beside the newest other one.
+  scratch.Install(Fixture("plain.7z"));
+  const auto third = scratch.EnsureFor("12210", "p1");
+  CHECK(third.ok && third.extracted && third.version == "1.2.3.6");
+  CHECK(fs::exists(scratch.runtime() / "1.2.3.4/.complete") && fs::exists(scratch.runtime() / "1.2.3.5/.complete"));
+
+  // An installer that can't be read any more still starts the game with its version.
+  {
+    const auto installer = scratch.install() / "Redist/Example-Setup.exe";
+    WriteFile(installer, std::string(fs::file_size(installer) + 7, 'G'));
+    const auto unreadable = scratch.EnsureFor("220", "p1");
+    CHECK(unreadable.ok && unreadable.kept && unreadable.version == "1.2.3.4" && unreadable.installer_version.empty());
+    CHECK(!scratch.EnsureFor("999", "p1").ok);  // no record: refused as before
+  }
+
+  // A recorded version whose folder is gone: the game follows its installer.
+  fs::remove(scratch.runtime() / "1.2.3.6" / kPublisherRuntimeCompleteMarker);
+  scratch.Install(Fixture("bcj2.7z"));
+  const auto gone = scratch.EnsureFor("12210", "p1");
+  CHECK(gone.ok && !gone.kept && gone.version == "1.2.3.4");
+  CHECK(scratch.Record("12210") == "1.2.3.4\np1\n");
+
+  // A newer pack moves the game to its installer's version.
+  scratch.Install(Fixture("solid.7z"));
+  const auto moved = scratch.EnsureFor("220", "p2");
+  CHECK(moved.ok && !moved.kept && moved.version == "1.2.3.5");
+  CHECK(scratch.Record("220") == "1.2.3.5\np2\n");
+
+  // Without a holder, or with a game id that can't name a file, nothing is recorded.
+  CHECK(scratch.Ensure().ok);
+  CHECK(scratch.EnsureFor("../x", "p2").ok && !fs::exists(scratch.runtime() / ".game-../x"));
+  CHECK(!fs::exists(scratch.root / "runtime" / "x"));
+  // A damaged record is ignored.
+  WriteFile(scratch.runtime() / ".game-220", "1.2.3.4\n");
+  const auto damaged = scratch.EnsureFor("220", "p2");
+  CHECK(damaged.ok && !damaged.kept && damaged.version == "1.2.3.5");
+}
+
 void TestInstallerLookup() {
   Scratch scratch;
   auto missing = scratch.Ensure();
@@ -359,6 +438,7 @@ int main(int argc, char** argv) {
   TestPeFileVersion();
   TestBcj2ExtractionAndReuse();
   TestSolidAndRetention();
+  TestGameKeepsItsVersion();
   TestBcjExtraction();
   TestInstallerLookup();
   TestRefusals();

@@ -735,17 +735,91 @@ bool WriteMarker(const fs::path& path) {
   return fd.Close() && ok;
 }
 
+// A small regular file (links not followed), or nothing.
+std::optional<std::string> ReadSmall(const fs::path& file, std::size_t limit) {
+  struct stat info {};
+  if (::lstat(file.c_str(), &info) != 0 || !S_ISREG(info.st_mode) || static_cast<std::uint64_t>(info.st_size) > limit)
+    return std::nullopt;
+  const int fd = ::open(file.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) return std::nullopt;
+  std::string text(static_cast<std::size_t>(info.st_size), '\0');
+  std::size_t at = 0;
+  while (at < text.size()) {
+    const auto count = ::read(fd, text.data() + at, text.size() - at);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) break;
+    at += static_cast<std::size_t>(count);
+  }
+  ::close(fd);
+  text.resize(at);
+  return text;
+}
+
+// Best effort, through <file>.new and a rename.
+void WriteSmall(const fs::path& file, const std::string& text) {
+  const fs::path temporary = file.string() + ".new";
+  const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
+  if (fd < 0) return;
+  std::size_t at = 0;
+  while (at < text.size()) {
+    const auto count = ::write(fd, text.data() + at, text.size() - at);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) break;
+    at += static_cast<std::size_t>(count);
+  }
+  ::close(fd);
+  std::error_code ignored;
+  if (at != text.size() || ::rename(temporary.c_str(), file.c_str()) != 0) fs::remove(temporary, ignored);
+}
+
+// A game's record: the version it uses and the pack it was set up with, one per line.
+constexpr char kGameRecordPrefix[] = ".game-";
+
+bool GameIdAllowed(const std::string& game) {
+  if (game.empty() || game.size() > 32) return false;
+  return std::all_of(game.begin(), game.end(), [](unsigned char c) {
+    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '-';
+  });
+}
+
+struct GameRecord {
+  std::string version;
+  std::string pack;
+};
+
+std::optional<GameRecord> ReadGameRecord(const fs::path& file) {
+  const auto text = ReadSmall(file, 256);
+  if (!text) return std::nullopt;
+  const auto first = text->find('\n');
+  if (first == std::string::npos) return std::nullopt;
+  const auto second = text->find('\n', first + 1);
+  if (second == std::string::npos || second + 1 != text->size()) return std::nullopt;
+  GameRecord record{text->substr(0, first), text->substr(first + 1, second - first - 1)};
+  if (!ParseVersion(record.version) || record.pack.empty()) return std::nullopt;
+  return record;
+}
+
 // Removes leftovers: every other version folder without a .complete marker, and complete ones
-// beyond the newest other one.
-void KeepTwoVersions(const fs::path& root, const std::string& current) {
+// beyond the newest other one, except a version a game made with this pack still names.
+void KeepVersions(const fs::path& root, const std::string& current, const std::string& pack) {
   std::error_code error;
+  std::set<std::string> named;
+  if (!pack.empty()) {
+    for (fs::directory_iterator it(root, error), end; !error && it != end; it.increment(error)) {
+      const auto name = it->path().filename().string();
+      if (name.rfind(kGameRecordPrefix, 0) != 0 || name.size() > 4 && name.compare(name.size() - 4, 4, ".new") == 0)
+        continue;
+      if (const auto record = ReadGameRecord(it->path()); record && record->pack == pack) named.insert(record->version);
+    }
+    error.clear();
+  }
   std::vector<std::pair<std::array<std::uint32_t, 4>, fs::path>> complete;
   for (fs::directory_iterator it(root, error), end; !error && it != end; it.increment(error)) {
     const auto name = it->path().filename().string();
     const auto version = ParseVersion(name);
     if (!version || name == current) continue;
     if (IsRegular(it->path() / kPublisherRuntimeCompleteMarker)) {
-      complete.emplace_back(*version, it->path());
+      if (!named.count(name)) complete.emplace_back(*version, it->path());
     } else {
       std::error_code ignored;
       fs::remove_all(it->path(), ignored);
@@ -769,46 +843,17 @@ std::string InstallerStamp(const fs::path& installer, const struct stat& info) {
 }
 
 std::optional<std::string> CachedVersion(const fs::path& root, const std::string& stamp) {
-  const fs::path file = root / kInstallerCacheName;
-  struct stat info {};
-  if (::lstat(file.c_str(), &info) != 0 || !S_ISREG(info.st_mode) || info.st_size > 4096) return std::nullopt;
-  const int fd = ::open(file.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-  if (fd < 0) return std::nullopt;
-  std::string text(static_cast<std::size_t>(info.st_size), '\0');
-  std::size_t at = 0;
-  while (at < text.size()) {
-    const auto count = ::read(fd, text.data() + at, text.size() - at);
-    if (count < 0 && errno == EINTR) continue;
-    if (count <= 0) break;
-    at += static_cast<std::size_t>(count);
-  }
-  ::close(fd);
-  text.resize(at);
-  if (text.size() <= stamp.size() || text.compare(0, stamp.size(), stamp) != 0) return std::nullopt;
-  auto version = text.substr(stamp.size());
+  const auto text = ReadSmall(root / kInstallerCacheName, 4096);
+  if (!text || text->size() <= stamp.size() || text->compare(0, stamp.size(), stamp) != 0) return std::nullopt;
+  auto version = text->substr(stamp.size());
   while (!version.empty() && (version.back() == '\n' || version.back() == '\r')) version.pop_back();
   if (!ParseVersion(version)) return std::nullopt;
-  if (!IsRegular(root / version / kPublisherRuntimeCompleteMarker)) return std::nullopt;
   return version;
 }
 
 // Best effort: a cache that can't be written only costs the next run a decode.
 void WriteInstallerCache(const fs::path& root, const std::string& stamp, const std::string& version) {
-  const fs::path file = root / kInstallerCacheName;
-  const fs::path temporary = root / (std::string(kInstallerCacheName) + ".new");
-  const std::string text = stamp + version + "\n";
-  const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
-  if (fd < 0) return;
-  std::size_t at = 0;
-  while (at < text.size()) {
-    const auto count = ::write(fd, text.data() + at, text.size() - at);
-    if (count < 0 && errno == EINTR) continue;
-    if (count <= 0) break;
-    at += static_cast<std::size_t>(count);
-  }
-  ::close(fd);
-  std::error_code ignored;
-  if (at != text.size() || ::rename(temporary.c_str(), file.c_str()) != 0) fs::remove(temporary, ignored);
+  WriteSmall(root / kInstallerCacheName, stamp + version + "\n");
 }
 
 PublisherRuntimeResult Failure(std::string reason) {
@@ -910,8 +955,41 @@ std::optional<std::string> PeFileVersion(std::string_view image) {
 PublisherRuntimeResult EnsurePublisherRuntime(const PublisherRuntimeSpec& spec, const std::string& install_root,
                                               const std::string& runtime_root,
                                               const PublisherRuntimeProgress& progress,
-                                              const std::function<bool()>& canceled) {
+                                              const std::function<bool()>& canceled,
+                                              const PublisherRuntimeHolder& holder) {
   InitCrc();
+  const fs::path cache_root(runtime_root);
+  // The game's record, when it still holds: made with this pack, its version folder complete.
+  const bool recorded = GameIdAllowed(holder.game) && !holder.pack.empty();
+  const fs::path record_file = recorded ? cache_root / (kGameRecordPrefix + holder.game) : fs::path();
+  std::optional<GameRecord> record;
+  if (recorded) {
+    record = ReadGameRecord(record_file);
+    if (record && (record->pack != holder.pack || !IsRegular(cache_root / record->version / kPublisherRuntimeCompleteMarker)))
+      record.reset();
+  }
+  // The recorded version, when the installer holds another one ("": the installer can't be read).
+  const auto keep = [&](const std::string& installer_version) -> std::optional<PublisherRuntimeResult> {
+    if (!record || record->version == installer_version) return std::nullopt;
+    PublisherRuntimeResult result;
+    result.ok = true;
+    result.kept = true;
+    result.version = record->version;
+    result.version_dir = (cache_root / record->version).string();
+    result.installer_version = installer_version;
+    KeepVersions(cache_root, record->version, holder.pack);
+    return result;
+  };
+  const auto fail = [&](std::string reason) {
+    if (auto kept = keep({})) return *kept;
+    return Failure(std::move(reason));
+  };
+  // A version in use: recorded for the game, then the other versions trimmed.
+  const auto finish = [&](PublisherRuntimeResult result) {
+    if (recorded) WriteSmall(record_file, result.version + "\n" + holder.pack + "\n");
+    KeepVersions(cache_root, result.version, holder.pack);
+    return result;
+  };
   fs::path installer;
   for (const auto& candidate : spec.installers) {
     if (!PublisherRuntimePathAllowed(candidate)) continue;
@@ -920,29 +998,32 @@ PublisherRuntimeResult EnsurePublisherRuntime(const PublisherRuntimeSpec& spec, 
       break;
     }
   }
-  if (installer.empty()) return Failure("The " + spec.label + " installer was not found in the game.");
+  if (installer.empty()) return fail("The " + spec.label + " installer was not found in the game.");
   Fd fd(::open(installer.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC));
   struct stat info {};
   if (fd.get() < 0 || ::fstat(fd.get(), &info) != 0 || !S_ISREG(info.st_mode))
-    return Failure("cannot read the " + spec.label + " installer");
+    return fail("cannot read the " + spec.label + " installer");
 
-  const fs::path cache_root(runtime_root);
   const auto stamp = InstallerStamp(installer, info);
+  // A cached version answers when its folder is complete, or when the game keeps another one.
   if (const auto cached = CachedVersion(cache_root, stamp)) {
+    if (auto kept = keep(*cached)) return *kept;
+  }
+  if (const auto cached = CachedVersion(cache_root, stamp);
+      cached && IsRegular(cache_root / *cached / kPublisherRuntimeCompleteMarker)) {
     PublisherRuntimeResult result;
     result.ok = true;
     result.version = *cached;
     result.version_dir = (cache_root / *cached).string();
-    KeepTwoVersions(cache_root, *cached);
-    return result;
+    return finish(std::move(result));
   }
 
   Archive archive;
   if (!OpenEmbeddedArchive(fd.get(), static_cast<std::uint64_t>(info.st_size), &archive))
-    return Failure("The " + spec.label + " installer holds no archive Playden can read.");
+    return fail("The " + spec.label + " installer holds no archive Playden can read.");
   std::vector<Entry> entries;
   std::string reason;
-  if (!ReadEntries(archive, spec, &entries, &reason)) return Failure(std::move(reason));
+  if (!ReadEntries(archive, spec, &entries, &reason)) return fail(std::move(reason));
 
   FolderDecoder decoder(fd.get(), archive);
   // The version: decode just the version file's folder into memory.
@@ -951,35 +1032,38 @@ PublisherRuntimeResult EnsurePublisherRuntime(const PublisherRuntimeSpec& spec, 
   });
   if (version_entry == entries.end() || version_entry->folder == static_cast<std::uint32_t>(-1) ||
       version_entry->size > kMaxVersionFileBytes)
-    return Failure("The " + spec.label + " installer has no usable " + spec.version_file + ".");
+    return fail("The " + spec.label + " installer has no usable " + spec.version_file + ".");
   std::string version_bytes;
   version_bytes.reserve(static_cast<std::size_t>(version_entry->size));
   {
     const auto files = FolderFiles(archive, entries, version_entry->folder);
-    if (!FolderSizesMatch(archive, files, version_entry->folder)) return Failure("the installer's archive is damaged");
+    if (!FolderSizesMatch(archive, files, version_entry->folder)) return fail("the installer's archive is damaged");
     std::vector<FolderSink::File> sinks;
     for (const auto* file : files) sinks.push_back({file, {}, file == &*version_entry ? &version_bytes : nullptr});
     const auto& ar = archive.db.db;
     FolderSink sink(std::move(sinks), SzBitWithVals_Check(&ar.FolderCRCs, version_entry->folder)
                         ? ar.FolderCRCs.Vals[version_entry->folder] : 0,
                     SzBitWithVals_Check(&ar.FolderCRCs, version_entry->folder), progress, canceled, nullptr, 0);
-    if (!decoder.Decode(version_entry->folder, &sink, &reason)) return Failure(std::move(reason));
+    if (!decoder.Decode(version_entry->folder, &sink, &reason)) return fail(std::move(reason));
   }
   const auto version = PeFileVersion(version_bytes);
   version_bytes = std::string();
-  if (!version) return Failure("cannot read the version of " + spec.version_file);
+  if (!version) return fail("cannot read the version of " + spec.version_file);
+  if (auto kept = keep(*version)) {
+    WriteInstallerCache(cache_root, stamp, *version);  // the next run doesn't decode it again
+    return *kept;
+  }
 
   // From here on, a failed result still names the version.
   PublisherRuntimeResult result;
   result.version = *version;
-  const fs::path root(runtime_root);
+  const fs::path& root = cache_root;
   const auto target = root / *version;
   result.version_dir = target.string();
   if (IsRegular(target / kPublisherRuntimeCompleteMarker)) {
     result.ok = true;
-    KeepTwoVersions(root, *version);
     WriteInstallerCache(root, stamp, *version);
-    return result;
+    return finish(std::move(result));
   }
 
   const auto failure = [&](std::string text) {
@@ -1043,11 +1127,10 @@ PublisherRuntimeResult EnsurePublisherRuntime(const PublisherRuntimeSpec& spec, 
   if (error) return abandon("cannot replace " + target.string());
   fs::rename(stage, target, error);
   if (error) return abandon("cannot finish " + target.string());
-  KeepTwoVersions(root, *version);
   WriteInstallerCache(root, stamp, *version);
   result.ok = true;
   result.extracted = true;
-  return result;
+  return finish(std::move(result));
 }
 
 }  // namespace playden::runtime
