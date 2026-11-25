@@ -19,14 +19,14 @@ inline constexpr Publisher kPublishers[] = {Publisher::kRockstar};
 
 struct PublisherRelease {
   Publisher publisher = Publisher::kRockstar;
-  std::string archive;      // file name, e.g. playden-rgschost-20261125.3.tzst
+  std::string archive;      // file name, e.g. playden-rgschost-20261125.4.tzst
   std::string sha256;       // of the archive file
   std::string tree_sha256;  // PublisherTreeDigest of the unpacked files
   std::vector<std::string> required;  // files that must be at the unpacked root
   std::uint64_t size = 0;             // of the archive file, for the download (0: not pinned)
 };
 
-inline constexpr const char* kPublisherPackVersion = "20261125.3";
+inline constexpr const char* kPublisherPackVersion = "20261125.4";
 inline constexpr const char* kPublisherPackRoot = "/data/playden/publisher";
 // Playden's own publisher files: the unpacked archives in <work root>/cache, the publishers' runtimes.
 inline constexpr const char* kPublisherWorkRoot = "/data/playden/publisher-work";

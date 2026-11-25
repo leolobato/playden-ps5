@@ -214,13 +214,13 @@ class Unpacker {
 
 const std::vector<PublisherRelease>& PinnedPublisherReleases() {
   static const std::vector<PublisherRelease> releases = {
-      {Publisher::kRockstar, "playden-rgschost-20261125.3.tzst",
-       "99a13f300ebe139a540309c643b8693a7e767c30493ebf4aaa1ada186409b2be",
-       "dbd4a5fe1c2b7168017526ca288d409e36f1d619509b82aab851216864b84e25",
+      {Publisher::kRockstar, "playden-rgschost-20261125.4.tzst",
+       "3515d25456ad49b911500d3bd2fa22a2a9c25f95433b16221c999682bcd3fba1",
+       "4b6ee26599552d405f0cc6c4478976c612b52d9be08194c3f81829a228a8ff38",
        {"pdstub-sc.exe", "pdstub-sc32.exe", "pdlaunch-sc.dll", "pdlaunch-sc32.dll", "pdlaunch-helper.exe", "pdscpatch.dll", "pdscpatch32.dll",
         "bink2w64.dll", "binkw32.dll", "SocialClubD3D12Renderer.dll", "SocialClubVulkanLayer.dll",
         "playden-signin-shim.js", "stage.json", "signin/index.html", "values-rdr2.txt"},
-       2424297},
+       2425584},
   };
   return releases;
 }
