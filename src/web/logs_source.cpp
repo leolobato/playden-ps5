@@ -539,7 +539,8 @@ LogsIndex LogsSource::Index() const {
       const auto param = ReadFile(paths_.homebrew + "/" + game.title + "/sce_sys", "param.json", 64 * 1024);
       const auto title_name = param ? TitleNameFromParam(*param) : std::string();
       if (game.name.empty()) game.name = title_name;
-      game.removed = !param || (header && !header->name.empty() && !title_name.empty() && header->name != title_name);
+      game.removed = !param || (header && !header->name.empty() && !title_name.empty() &&
+                                header->name != TitleLogName(title_name));
       index.games.push_back(std::move(game));
     } else if (entry.name.compare(0, kTitlePrefix.size(), kTitlePrefix) != 0) {
       index.playden.push_back({entry.name, entry.changed, entry.size});

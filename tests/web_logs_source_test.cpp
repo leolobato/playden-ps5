@@ -388,6 +388,9 @@ for name in z.namelist():
     // Still installed (the title's name carries the store suffix the header leaves out).
     Put(logs / "title-FAKE78006.log", header("gog-1207658930", "Gothic") + "PW_REPORT/1 profile=playden-gog-1207658930 time=450\n");
     Put(homebrew / "FAKE78006/sce_sys/param.json", Param("Gothic (GOG)"));
+    // Still installed, under a Steam name that ends in a space: the header trims it, the title keeps it.
+    Put(logs / "title-FAKE78068.log", header("steam-107310", "Cthulhu Saves the World ") + "PW_REPORT/1 time=403\n");
+    Put(homebrew / "FAKE78068/sce_sys/param.json", Param("Cthulhu Saves the World  (Steam)"));
     // A name can't pass for a profile, nor a header for another line.
     Put(logs / "title-FAKE78007.log", header("local-1", "profile=playden-steam-9\nPW_REPORT/1 time=999") + "PW_REPORT/1 time=420\n");
     Put(homebrew / "FAKE78007/sce_sys/param.json", Param("profile=playden-steam-9 PW_REPORT/1 time=999"));
@@ -415,6 +418,8 @@ for name in z.namelist():
           reused->removed && reused->last_run == 400);
     const auto* gothic = named.Game("FAKE78006");
     CHECK(gothic && gothic->name == "Gothic" && gothic->store == "gog" && !gothic->removed && gothic->app == 0);
+    const auto* cthulhu = named.Game("FAKE78068");
+    CHECK(cthulhu && cthulhu->name == "Cthulhu Saves the World" && !cthulhu->removed);
     const auto* odd = named.Game("FAKE78007");
     CHECK(odd && odd->app == 0 && odd->last_run == 420 && !odd->removed);
     // An older Playden's copy of a removed game: no name to give.
@@ -428,11 +433,12 @@ for name in z.namelist():
     const auto json_named = source.IndexJson(named);
     CHECK(json_named.find("\"title\":\"FAKE78045\",\"app\":271590,\"name\":\"Grand Theft Auto V Legacy\",\"store\":\"steam\","
                           "\"removed\":true,") != std::string::npos);
-    for (const char* title : {"FAKE78045", "FAKE78005", "FAKE78006", "FAKE78007", "FAKE78052", "FAKE78063", "FAKE78064", "FAKE78065", "FAKE78066", "FAKE78067"})
+    for (const char* title : {"FAKE78045", "FAKE78005", "FAKE78006", "FAKE78007", "FAKE78052", "FAKE78063", "FAKE78064", "FAKE78065", "FAKE78066", "FAKE78067", "FAKE78068"})
       fs::remove(logs / ("title-" + std::string(title) + ".log"));
     fs::remove_all(homebrew / "FAKE78005");
     fs::remove_all(homebrew / "FAKE78006");
     fs::remove_all(homebrew / "FAKE78007");
+    fs::remove_all(homebrew / "FAKE78068");
   }
 
   // A logs folder that isn't there: an empty index, not an error.

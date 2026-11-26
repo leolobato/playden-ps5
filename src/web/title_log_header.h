@@ -32,10 +32,9 @@ inline bool ValidInstall(std::string_view install) {
 }
 }  // namespace title_log_detail
 
-// The header line, newline included; empty for an install ID it can't carry. Control characters in the name
-// become spaces, and a name over the limit is cut at a character boundary, so it stays one line.
-inline std::string TitleLogHeader(std::string_view install, std::string_view name) {
-  if (!title_log_detail::ValidInstall(install)) return {};
+// A name as the header carries it: control characters become spaces, a name over the limit is cut at a character
+// boundary, and trailing spaces go (some Steam names end in one). Compare a title's name through this too.
+inline std::string TitleLogName(std::string_view name) {
   std::string clean;
   for (const char c : name) {
     const auto u = static_cast<unsigned char>(c);
@@ -47,7 +46,14 @@ inline std::string TitleLogHeader(std::string_view install, std::string_view nam
     clean.resize(cut);
   }
   while (!clean.empty() && clean.back() == ' ') clean.pop_back();
-  return std::string(kTitleLogHeader) + "install=" + std::string(install) + " name=" + clean + "\n";
+  return clean;
+}
+
+// The header line, newline included; empty for an install ID it can't carry. The name goes through TitleLogName,
+// so it stays one line.
+inline std::string TitleLogHeader(std::string_view install, std::string_view name) {
+  if (!title_log_detail::ValidInstall(install)) return {};
+  return std::string(kTitleLogHeader) + "install=" + std::string(install) + " name=" + TitleLogName(name) + "\n";
 }
 
 // The game a title log's first line names; nothing for a log without the header (one an older Playden copied)
