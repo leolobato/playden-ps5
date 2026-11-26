@@ -27,6 +27,10 @@ struct PublisherAccountSpec {
   std::string name;  // UI text
   std::vector<std::string> display_fields;
   std::vector<std::string> stage_fields;
+  // Optional: the sign-in fields of a second value the credential file carries on its second line, the first of them
+  // the sign-in holds as 1 to 1024 printable characters without spaces (Rockstar's RememberedMachineToken, without
+  // which an account with two-factor authentication is refused, #1252). A sign-in without one gets a one-line file.
+  std::vector<std::string> stage_extra_fields;
   std::size_t stage_min = 0;
   std::size_t stage_max = 0;
   std::size_t max_bytes = 0;
@@ -71,11 +75,15 @@ struct PublisherStageIni {
 };
 
 // Read after a session: when the file's trimmed content equals `expired`, the account expired;
-// when it equals `missing` (optional, "" = none), the game started without any sign-in.
+// when it equals `missing` (optional, "" = none), the game started without any sign-in; when it equals
+// `refused` (optional, "" = none), the publisher accepted the sign-in but refused this game for the account.
+// `detail` (optional, "" = none) is a file beside it naming the refused call, for the log only.
 struct PublisherStatusSpec {
   std::string file;
   std::string expired;
   std::string missing;
+  std::string refused;
+  std::string detail;
 };
 
 // A launcher the title runs beside the game, in a second process on the game's Wine server ([helper] in the

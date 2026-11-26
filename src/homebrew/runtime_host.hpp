@@ -1221,6 +1221,10 @@ class RuntimeHost {
   struct PublisherRequest;
   struct InstallPublisher;
   const InstallPublisher* PublisherOf(Composition& composition, const runtime::RuntimeInstall& record);
+  // Offers the launcher hints of publisher's games that wait for its pack, now that it is loaded: all but those naming
+  // an installer the pack covers (its runtime's installers and covered_installers) for a game it lists. Without the
+  // pack they keep waiting.
+  void OfferPublisherHints(Composition& composition, runtime::Publisher publisher);
   // Empty when the publisher's pack release and manifest are loaded, otherwise why not.
   std::string LoadPublisher(Composition& composition, runtime::Publisher publisher);
   std::string StagePublisher(Composition& composition, const runtime::RuntimeInstall& record);
@@ -1254,12 +1258,22 @@ class RuntimeHost {
   // before_launch: the recipe's before_launch_minutes is the age that counts (0: not renewed then),
   // otherwise its every_hours.
   void RenewPublisher(Composition& composition, runtime::Publisher publisher, bool before_launch);
+  // RenewPublisher's renewal itself, whatever the sign-in's age; `why` names it in the log (launch, schedule,
+  // refused) and age_s is the sign-in's age then. Returns the result, or nothing when no renewal was tried
+  // (no recipe or transport, the pack isn't loaded, nobody signed in).
+  std::optional<runtime::PublisherRefreshResult> RenewPublisherNow(Composition& composition,
+                                                                   runtime::Publisher publisher, const char* why);
   void RemovePublisherCredentialFor(Composition& composition, const runtime::RuntimeInstall& record);
   // Takes the credential out of every staged game folder of publisher.
   void RemovePublisherCredentialsOf(Composition& c, runtime::Publisher publisher);
   // Reads the status a game's last session left. from_home: a session Playden didn't start (from
-  // the PS5 Home screen), which the player is told about as a system notification.
-  void ApplyPublisherStatus(Composition& composition, const runtime::RuntimeInstall& record, bool from_home = false);
+  // the PS5 Home screen), which the player is told about as a system notification. A refused sign-in that
+  // Playden hasn't just renewed is renewed once. Only a renewal the server refuses, or a refused sign-in that
+  // was already older than the pack's before_launch_minutes with no renewal to try, expires the account; a
+  // fresh one refused is the publisher refusing the account's sign-in, and the account stays (#1252).
+  // before_play: read as Play starts, which places the (renewed) credential itself.
+  void ApplyPublisherStatus(Composition& composition, const runtime::RuntimeInstall& record, bool from_home = false,
+                            bool before_play = false);
   // Statuses left by starts from Home of publisher's stopped games with no Playden session pending.
   void ApplyHomeStatuses(Composition& composition, runtime::Publisher publisher);
   // ReportHomeStartsAtQuit's notification for app_id (worker, while stopping).

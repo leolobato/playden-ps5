@@ -103,6 +103,8 @@ int main() {
         "\"access_token\":\"\"",
         "transcode=AAAAAAAAAAAAAAAAAAAAAA",
         "step=app_info at=access_token error=protocol decode=0",
+        // #1252: the publisher's refusal, as Playden logs it.
+        "publisher status app=12210 expired=0 missing=0 signin-refused=1 detail=\"call=CreateTicketScAuthToken2 http=200 error=AuthenticationFailed\"",
     };
     using playden::diagnostics::RedactSecrets;
     for (const auto& [text, expected] : kCredentialCases) {

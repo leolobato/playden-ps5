@@ -24,6 +24,7 @@ struct PublisherAccount {
   std::string display;          // the account's display field ("" when the blob has none)
   std::uint64_t obtained_at = 0;  // unix seconds of the sign-in
   std::uint64_t renewed_at = 0;   // unix seconds of the last refresh (RefreshPublisherAccount), else obtained_at
+  bool refreshed = false;         // renewed at least once since the sign-in
 };
 
 // One refresh request and its answer, for the transport the caller provides (HTTPS in Playden, a
@@ -71,7 +72,8 @@ bool AcceptPublisherCredential(const std::string& state_root, Publisher publishe
 // The stored account; a missing or damaged file is kSignedOut.
 PublisherAccount LoadPublisherAccount(const std::string& state_root, Publisher publisher);
 
-// The stage value of a signed-in account, for the credential file. The caller wipes it
+// The stage value of a signed-in account, for the credential file: the stage field, then "\n" and the stage extra
+// field when the spec names one and the sign-in holds it (PublisherAccountSpec::stage_extra_fields). The caller wipes it
 // (steam::ZeroizeSecret) once written.
 bool PublisherStageValue(const std::string& state_root, Publisher publisher, const PublisherAccountSpec& spec,
                          std::string* value, std::string* reason);
@@ -100,11 +102,32 @@ bool NotePublisherUntestedNoticeSeen(const std::string& state_root, Publisher pu
 // Deletes the account. Signed out already is success.
 bool SignOutPublisherAccount(const std::string& state_root, Publisher publisher, std::string* reason);
 
-// After a session of a staged game: reads <title_folder>/<status.file> (links not followed).
-// When its trimmed content equals status.expired the account is marked expired and *expired
-// is set; when it equals status.missing (the game started without a sign-in) *missing is set
-// once the file is gone, and the account stays as it is. The file is deleted once read. A missing
-// file changes nothing.
+// What the status a session left says (PublisherStatusSpec).
+enum class PublisherSessionVerdict { kNone, kExpired, kMissing, kRefused };
+struct PublisherSessionStatus {
+  PublisherSessionVerdict verdict = PublisherSessionVerdict::kNone;
+  // The first line of status.detail, kept to letters, digits, spaces and =._:- and cut to 160 characters,
+  // its code= key written error= (the log redaction keeps that); "" when the pack names no detail file or the
+  // session left none. For the log, never for decisions.
+  std::string detail;
+  // When the launcher wrote the status (the file's modification time, unix seconds): a status older than the
+  // account's current credential was about an earlier one.
+  std::uint64_t written_at = 0;
+};
+
+// After a session of a staged game: reads <title_folder>/<status.file> and its detail file (links not
+// followed) without changing anything. A missing status file is kNone.
+bool ReadPublisherSessionStatus(const std::string& title_folder, const PublisherStatusSpec& status,
+                                PublisherSessionStatus* session, std::string* reason);
+
+// Deletes the status file and its detail file once their verdict is applied. Missing files are success.
+bool RemovePublisherSessionStatus(const std::string& title_folder, const PublisherStatusSpec& status,
+                                  std::string* reason);
+
+// Read, apply and remove in one: when the status says expired the account is marked expired and
+// *expired is set; when it says missing (the game started without a sign-in) *missing is set once
+// the file is gone, and the account stays as it is. The file is deleted once read, but stays when
+// the account could not be marked. A missing file changes nothing.
 bool ApplyPublisherSessionStatus(const std::string& state_root, Publisher publisher, const std::string& title_folder,
                                  const PublisherStatusSpec& status, bool* expired, std::string* reason,
                                  bool* missing = nullptr);

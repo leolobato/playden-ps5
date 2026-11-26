@@ -11599,6 +11599,12 @@ void PlaceRenewalRecipe(PublisherFixture& f, std::shared_ptr<RenewalServer> serv
 
 const char* kRenewableSignIn = R"({"token":"c2VjcmV0dG9rZW4=","name":"Player","Session":{"Access":"access-1"}})";
 
+// A status file as a launcher writes it an hour after a sign-in made now: a sign-in that old, refused, is expired.
+void AgeStatusAnHour(const fs::path& status) {
+  const struct timeval times[2] = {{::time(nullptr) + 3600, 0}, {::time(nullptr) + 3600, 0}};
+  CHECK(::utimes(status.c_str(), times) == 0);
+}
+
 void RenewsPublisherSignInBeforePlayAndOnCheck() {
   PublisherFixture f;
   auto server = std::make_shared<RenewalServer>();
@@ -11756,6 +11762,249 @@ void PublisherHelperKeptOnTitleBehind() {
   }
 }
 
+// #1252: the pack's launcher says the sign-in was refused. A sign-in that was never renewed is renewed once
+// and stays signed in (the renewed one goes to the game's folder); one renewed just before the start, or whose
+// renewal keeps it, is the publisher refusing the account's sign-in and stays too; only a renewal the server
+// refuses expires it. The pack's "refused" verdict (this game, not the sign-in) leaves the account as it is.
+// The detail file naming the refused call is logged and removed with the status.
+void RefusedPublisherSignInIsRenewedOnce() {
+  PublisherFixture f;
+  auto server = std::make_shared<RenewalServer>();
+  auto clock = std::make_shared<std::atomic<std::int64_t>>(1760000000);
+  PlaceRenewalRecipe(f, server, clock);
+  {
+    auto manifest = Read(f.pack / "stage.json");
+    const std::string missing = R"("missing": "state=none" })";
+    const auto at = manifest.find(missing);
+    CHECK(at != std::string::npos);
+    manifest.replace(at, missing.size(),
+                     R"("missing": "state=none", "refused": "state=denied", "detail": ".examplepub/detail" })");
+    Write(f.pack / "stage.json", manifest, 0644);
+  }
+  f.config.publisher_renew_first_check = std::chrono::hours(1);  // no scheduled check in this test
+  RuntimeHost host(f.config);
+  f.host = &host;
+  f.PrepareReady(host);
+  const auto sessions = f.fixture.root / "data/playden/games/steam-220/logs/sessions";
+  fs::create_directories(sessions);
+  CHECK(chmod((f.fixture.root / "data/playden/games/steam-220/logs").c_str(), 0700) == 0);
+  CHECK(chmod(sessions.c_str(), 0700) == 0);
+  // Plays, then ends the session with the status (and detail) the launcher left.
+  const auto play_and_end = [&](const std::string& status, const std::string& detail, const std::string& logged,
+                                std::int64_t written_at = 0) {
+    const auto launched = f.launches.size();
+    host.Play(220);
+    WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+    CHECK(host.Handoff() && f.launches.size() == launched + 1);
+    const std::string session = f.launches.back().second[0].substr(std::string("session=").size());
+    Write(f.title / ".examplepub/status", status, 0644);
+    if (!detail.empty()) Write(f.title / ".examplepub/detail", detail, 0644);
+    // Written now on Playden's clock, unless the step says when.
+    const std::int64_t at = written_at ? written_at : clock->load();
+    const struct timeval times[2] = {{at, 0}, {at, 0}};
+    CHECK(::utimes((f.title / ".examplepub/status").c_str(), times) == 0);
+    Write(sessions / (session + ".json"),
+          R"({"schema_version":1,"session_id":")" + session +
+              R"(","install_id":"steam-220","title_id":"FAKE78001","origin":"playden","settings_revision":0,)"
+              R"("runtime_bundle_id":"wine-wow64","phase":"exited"})" "\n", 0600);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!f.Logged(logged) && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(f.Logged(logged));
+    WaitFor(host, [](const RuntimeSnapshot& s) { return s.launch && s.launch->state == LaunchState::kExited; }, 30);
+    CHECK(!fs::exists(f.title / ".examplepub/status") && !fs::exists(f.title / ".examplepub/detail"));
+  };
+  const auto calls = [&] {
+    std::lock_guard<std::mutex> lock(server->mutex);
+    return server->calls;
+  };
+
+  // Straight from the sign-in page, a minute old: Play doesn't renew it, the launcher's sign-in is refused, and
+  // Playden renews it once instead of marking it expired.
+  CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, kRenewableSignIn, std::chrono::seconds(30)).ok);
+  clock->store(1760000000 + 60);
+  play_and_end("state=stale\n", "call=CreateTicketScAuthToken2 http=200 code=AuthenticationFailed.<b>\n",
+               "publisher status app=220 expired=0 missing=0 renewed=1 "
+               "detail=\"call=CreateTicketScAuthToken2 http=200 error=AuthenticationFailed.b\"");
+  CHECK(f.Logged("publisher refresh publisher=rockstar before=refused age_s=60 result=refreshed status=200"));
+  CHECK(calls() == 1);
+  CHECK(host.Snapshot().publishers.at(Publisher::kRockstar).account == PublisherAccountState::kSignedIn);
+  CHECK(Read(f.title / "credential.txt") == "bmV3dG9rZW4xMjM=\n");
+  CHECK(f.Notices().size() == 1 && f.Notices()[0].find("Playden renewed it. Start the game again.") != std::string::npos);
+
+  // A status written before that renewal (another game's, or one read but not removed) was about the old
+  // credential: it changes nothing.
+  clock->store(1760000000 + 90);
+  play_and_end("state=stale\n", "", "publisher status app=220 expired=0 missing=0 earlier-credential=1", 1760000030);
+  CHECK(calls() == 1);
+  CHECK(host.Snapshot().publishers.at(Publisher::kRockstar).account == PublisherAccountState::kSignedIn);
+
+  // The renewed sign-in is refused too, a minute later: renewing again wouldn't help, and a sign-in that new
+  // hasn't expired. Rockstar refuses this account's sign-in: the account and its credential stay.
+  clock->store(1760000000 + 120);
+  play_and_end("state=stale\n", "", "publisher status app=220 expired=0 missing=0 signin-refused=1");
+  CHECK(calls() == 1);
+  CHECK(host.Snapshot().publishers.at(Publisher::kRockstar).account == PublisherAccountState::kSignedIn);
+  CHECK(Read(f.title / "credential.txt") == "bmV3dG9rZW4xMjM=\n");
+  CHECK(f.Notices().size() == 2 &&
+        f.Notices()[1].find("refused your account's sign-in for this game. You're still signed in") != std::string::npos);
+
+  // Signed in again and refused; the renewal gets no usable answer (a server error): that says nothing about the
+  // sign-in, so it stays for the next start.
+  CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, kRenewableSignIn, std::chrono::seconds(30)).ok);
+  {
+    std::lock_guard<std::mutex> lock(server->mutex);
+    server->status = 500;
+  }
+  clock->store(1760000000 + 180);
+  play_and_end("state=stale\n", "", "publisher status app=220 expired=0 missing=0 renewal-failed=1");
+  CHECK(calls() == 2);
+  CHECK(host.Snapshot().publishers.at(Publisher::kRockstar).account == PublisherAccountState::kSignedIn);
+  CHECK(f.Notices().size() == 3 && f.Notices()[2].find("couldn't reach") != std::string::npos);
+
+  // Refused again; the renewal's answer keeps the refused credential: nothing was renewed, but the server
+  // accepted the account, so it stays.
+  {
+    std::lock_guard<std::mutex> lock(server->mutex);
+    server->status = 200;
+    server->token = "c2VjcmV0dG9rZW4=";
+  }
+  clock->store(1760000000 + 240);
+  play_and_end("state=stale\n", "", "publisher status app=220 expired=0 missing=0 signin-refused=1");
+  CHECK(calls() == 3);
+  CHECK(host.Snapshot().publishers.at(Publisher::kRockstar).account == PublisherAccountState::kSignedIn);
+  CHECK(f.Notices().size() == 4);
+
+  // A session that ran an hour on that sign-in is refused, and so is its renewal: that one expired.
+  {
+    std::lock_guard<std::mutex> lock(server->mutex);
+    server->status = 401;
+  }
+  clock->store(1760000000 + 300);
+  play_and_end("state=stale\n", "", "publisher status app=220 expired=1 missing=0", 1760000000 + 240 + 3600);
+  CHECK(calls() == 4);
+  CHECK(host.Snapshot().publishers.at(Publisher::kRockstar).account == PublisherAccountState::kExpired);
+  for (int i = 0; i < 300 && fs::exists(f.title / "credential.txt"); ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  CHECK(!fs::exists(f.title / "credential.txt"));
+
+  // Signed in again; the launcher says Rockstar refused this game for the account: the account stays signed in.
+  {
+    std::lock_guard<std::mutex> lock(server->mutex);
+    server->status = 200;
+  }
+  CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, kRenewableSignIn, std::chrono::seconds(30)).ok);
+  play_and_end("state=denied\n", "call=GetTitleAccessToken2 http=200 code=NotAllowed\n",
+               "publisher status app=220 expired=0 missing=0 refused=1 "
+               "detail=\"call=GetTitleAccessToken2 http=200 error=NotAllowed\"");
+  CHECK(calls() == 4);
+  CHECK(host.Snapshot().publishers.at(Publisher::kRockstar).account == PublisherAccountState::kSignedIn);
+  CHECK(fs::exists(f.title / "credential.txt"));
+  CHECK(f.Notices().size() == 5 &&
+        f.Notices()[4].find("refused to start this game for your account") != std::string::npos);
+  host.Shutdown();
+}
+
+// #1252, the tester's loop: a sign-in minutes old, then each Play ends with the pack's expired status (a pack
+// with no renewal recipe and no refused verdict). The sign-in is minutes old, so it hasn't expired: the
+// publisher refused it. The account and its credential stay, the next Play starts the game instead of asking
+// for a sign-in, and the player is told. A status with no usable time (mtime 0), read two hours later, can't
+// show the sign-in was old and is kept the same way.
+void RefusedFreshSignInKeepsTheAccount() {
+  PublisherFixture f;
+  auto clock = std::make_shared<std::atomic<std::int64_t>>(1760000000);
+  f.config.unix_time = [clock] { return clock->load(); };
+  RuntimeHost host(f.config);
+  f.host = &host;
+  f.PrepareReady(host);
+  CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, R"({"token":"c2VjcmV0dG9rZW4=","name":"Player"})",
+                                      std::chrono::seconds(30)).ok);
+  const auto sessions = f.fixture.root / "data/playden/games/steam-220/logs/sessions";
+  fs::create_directories(sessions);
+  CHECK(chmod((f.fixture.root / "data/playden/games/steam-220/logs").c_str(), 0700) == 0);
+  CHECK(chmod(sessions.c_str(), 0700) == 0);
+  for (int run = 1; run <= 3; ++run) {
+    if (run == 3) clock->store(1760000000 + 7200);
+    const auto launched = f.launches.size();
+    host.Play(220);
+    const auto ready = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return s.handoff_ready || s.play_refusal_codes.count(220);
+    }, 30);
+    CHECK(!ready.play_refusal_codes.count(220));
+    CHECK(host.Handoff() && f.launches.size() == launched + 1);
+    CHECK(Read(f.title / "credential.txt") == "c2VjcmV0dG9rZW4=\n");
+    const std::string session = f.launches.back().second[0].substr(std::string("session=").size());
+    Write(f.title / ".examplepub/status", "state=stale\n", 0644);
+    // Written a few minutes after the sign-in, on Playden's clock; the third with no time.
+    const std::int64_t written = run == 3 ? 0 : 1760000000 + 120 * run;
+    const struct timeval times[2] = {{written, 0}, {written, 0}};
+    CHECK(::utimes((f.title / ".examplepub/status").c_str(), times) == 0);
+    Write(sessions / (session + ".json"),
+          R"({"schema_version":1,"session_id":")" + session +
+              R"(","install_id":"steam-220","title_id":"FAKE78001","origin":"playden","settings_revision":0,)"
+              R"("runtime_bundle_id":"wine-wow64","phase":"exited"})" "\n", 0600);
+    WaitFor(host, [](const RuntimeSnapshot& s) { return s.launch && s.launch->state == LaunchState::kExited; }, 30);
+    for (int i = 0; i < 300 && fs::exists(f.title / ".examplepub/status"); ++i)
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CHECK(!fs::exists(f.title / ".examplepub/status"));
+    CHECK(f.Logged("publisher status app=220 expired=0 missing=0 signin-refused=1"));
+    CHECK(host.Snapshot().publishers.at(Publisher::kRockstar).account == PublisherAccountState::kSignedIn);
+    const auto notices = f.Notices();
+    CHECK(notices.size() == static_cast<std::size_t>(run) &&
+          notices.back().find("Rockstar Games refused your account's sign-in for this game") != std::string::npos);
+  }
+  CHECK(!f.Logged("expired=1"));
+  host.Shutdown();
+}
+
+// #1252: Rockstar refuses an account with two-factor authentication unless the game also sends the sign-in's
+// RememberedMachineToken. The pack's account.stage_extra_fields names it: the credential file carries it on its second
+// line, so it is written, renewed and removed with the credential. A sign-in without it (or with a value that isn't a
+// token) gets a one-line file, and nothing of an earlier sign-in's value is left.
+void CredentialCarriesTheSignInsExtraValue() {
+  PublisherFixture f;
+  {
+    auto manifest = Read(f.pack / "stage.json");
+    const std::string fields = R"("stage_fields": ["token"],)";
+    const auto at = manifest.find(fields);
+    CHECK(at != std::string::npos);
+    manifest.insert(at + fields.size(), R"( "stage_extra_fields": ["Machine", "machine"],)");
+    Write(f.pack / "stage.json", manifest, 0644);
+  }
+  RuntimeHost host(f.config);
+  f.host = &host;
+  f.PrepareReady(host);
+  const auto sessions = f.fixture.root / "data/playden/games/steam-220/logs/sessions";
+  fs::create_directories(sessions);
+  CHECK(chmod((f.fixture.root / "data/playden/games/steam-220/logs").c_str(), 0700) == 0);
+  CHECK(chmod(sessions.c_str(), 0700) == 0);
+  const auto play_and_end = [&](const char* sign_in) {
+    CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, sign_in, std::chrono::seconds(30)).ok);
+    const auto launched = f.launches.size();
+    host.Play(220);
+    WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+    CHECK(host.Handoff() && f.launches.size() == launched + 1);
+    const auto credential = Read(f.title / "credential.txt");
+    CHECK(FileMode(f.title / "credential.txt") == 0600);
+    const std::string session = f.launches.back().second[0].substr(std::string("session=").size());
+    Write(sessions / (session + ".json"),
+          R"({"schema_version":1,"session_id":")" + session +
+              R"(","install_id":"steam-220","title_id":"FAKE78001","origin":"playden","settings_revision":0,)"
+              R"("runtime_bundle_id":"wine-wow64","phase":"exited"})" "\n", 0600);
+    WaitFor(host, [](const RuntimeSnapshot& s) { return s.launch && s.launch->state == LaunchState::kExited; }, 30);
+    return credential;
+  };
+  CHECK(play_and_end(R"({"token":"c2VjcmV0dG9rZW4=","name":"Player","Machine":"m4ch1ne+/=Tok"})") ==
+        "c2VjcmV0dG9rZW4=\nm4ch1ne+/=Tok\n");
+  // Two-factor authentication turned off: the field is empty, and the file has one line again.
+  CHECK(play_and_end(R"({"token":"c2VjcmV0dG9rZW4=","name":"Player","Machine":""})") == "c2VjcmV0dG9rZW4=\n");
+  CHECK(play_and_end(R"({"token":"c2VjcmV0dG9rZW4=","name":"Player","machine":"m4ch1ne"})") ==
+        "c2VjcmV0dG9rZW4=\nm4ch1ne\n");
+  // A value that isn't a token is left out; Play goes on.
+  CHECK(play_and_end(R"({"token":"c2VjcmV0dG9rZW4=","name":"Player","Machine":"a b"})") == "c2VjcmV0dG9rZW4=\n");
+  host.Shutdown();
+}
+
 // A Rockstar game gets the pack's files when it is prepared; Play asks for the publisher's account
 // and places the credential last; a session that ends with the expired status asks again; the
 // maintenance action takes the files out and puts them back.
@@ -11825,13 +12074,15 @@ void StagesPublisherGameAndPlaysWithAccount() {
   CHECK(host.Snapshot().publishers.at(Publisher::kRockstar).display == "Player");
   CHECK(!f.Logged("publisher sign-in publisher=rockstar withdrawn"));  // it never reached the worker
 
-  // The session ends with the expired status: the account becomes Expired, the file is read once.
+  // The session ends with the expired status, written an hour after the sign-in (a fresh one refused is
+  // RefusedFreshSignInKeepsTheAccount): the account becomes Expired, the file is read once.
   const std::string session = f.launches[0].second[0].substr(std::string("session=").size());
   const auto sessions = f.fixture.root / "data/playden/games/steam-220/logs/sessions";
   fs::create_directories(sessions);
   CHECK(chmod((f.fixture.root / "data/playden/games/steam-220/logs").c_str(), 0700) == 0);
   CHECK(chmod(sessions.c_str(), 0700) == 0);
   Write(f.title / ".examplepub/status", "state=stale\n", 0644);
+  AgeStatusAnHour(f.title / ".examplepub/status");
   Write(sessions / (session + ".json"),
         R"({"schema_version":1,"session_id":")" + session +
             R"(","install_id":"steam-220","title_id":"FAKE78001","origin":"playden","settings_revision":0,)"
@@ -12381,6 +12632,130 @@ void PlacesPublisherCredentialForAStartFromHome() {
   }
 }
 
+// The smallest 32-bit program that imports d3d9.dll: what the title's note names looks like a game to Playden.
+void WriteGamePe(const fs::path& path) {
+  std::string bytes(0x2400, '\0');
+  const auto put32 = [&](std::size_t at, std::uint32_t value) {
+    for (int i = 0; i < 4; ++i) bytes[at + i] = static_cast<char>((value >> (8 * i)) & 0xff);
+  };
+  const auto put16 = [&](std::size_t at, std::uint16_t value) {
+    bytes[at] = static_cast<char>(value & 0xff);
+    bytes[at + 1] = static_cast<char>(value >> 8);
+  };
+  bytes[0] = 'M'; bytes[1] = 'Z'; put32(0x3c, 0x40);
+  bytes[0x40] = 'P'; bytes[0x41] = 'E';
+  put16(0x44, 0x014c); put16(0x46, 2); put16(0x54, 0xe0);
+  const std::size_t optional = 0x58, table = optional + 0xe0;
+  put16(optional, 0x10b); put32(optional + 16, 0x1010); put16(optional + 68, 2);
+  put32(optional + 96 + 8, 0x2000);  // the import table, at the start of .rdata
+  const auto section = [&](std::size_t row, const char* name, std::uint32_t address, std::uint32_t raw) {
+    for (std::size_t i = 0; name[i]; ++i) bytes[table + row * 40 + i] = name[i];
+    put32(table + row * 40 + 8, 0x1000); put32(table + row * 40 + 12, address);
+    put32(table + row * 40 + 16, 0x1000); put32(table + row * 40 + 20, raw);
+  };
+  section(0, ".text", 0x1000, 0x400);
+  section(1, ".rdata", 0x2000, 0x1400);
+  put32(0x1400 + 12, 0x2400);  // the import's name
+  bytes.resize(0x2800, '\0');
+  bytes.replace(0x1400 + 0x400, 8, "d3d9.dll");
+  fs::create_directories(path.parent_path());
+  std::ofstream(path, std::ios::binary) << bytes;
+}
+
+// #1252: a Rockstar game that starts without its sign-in asks for Rockstar's launcher installer, which the title
+// refuses and notes. The pack covers that installer, so Playden doesn't offer "Start through a launcher" with it
+// (started through it, the game only runs the installer and ends); another program the game asked for still is, and
+// so is the installer of a game the pack doesn't list. The offer waits for the pack's check after startup: a pack
+// missing then keeps it waiting until a later check finds one.
+void PublisherCoveredInstallerIsNoLauncherHint() {
+  for (const bool listed : {true, false}) {
+    PublisherFixture f(listed ? "220" : "999");
+    auto manifest = PublisherManifest(listed ? "220" : "999");
+    const std::string titles = R"(  "titles": {)";
+    const auto at = manifest.find(titles);
+    CHECK(at != std::string::npos);
+    manifest.insert(at, R"(  "covered_installers": ["redist/LAUNCHER-setup.exe"],
+)");
+    Write(f.pack / "stage.json", manifest, 0644);
+    auto pack_present = std::make_shared<std::atomic<bool>>(true);
+    f.config.publisher_release = [pack = f.pack, releases = f.releases, pack_present](Publisher) {
+      ++*releases;
+      if (!pack_present->load()) return PublisherReleaseResult{false, {}, "No publisher pack is installed."};
+      return PublisherReleaseResult{true, pack.string(), {}};
+    };
+    const auto game = f.fixture.root / "data/homebrew/FAKE77031/games/220";
+    WriteGamePe(game / "Redist/Launcher-Setup.exe");
+    WriteGamePe(game / "Redist/Example-Setup.exe");
+    WriteGamePe(game / "Other/Game.exe");
+    const auto prefix = f.fixture.root / "data/playden/games/steam-220/library/prefixes/game";
+    const auto note = [&](const std::string& image) {
+      fs::create_directories(prefix);
+      std::ofstream(prefix / ".pw-exec-refused", std::ios::binary)
+          << "pw-exec-refused 1\nimage=Z:\\data\\homebrew\\FAKE77031\\games\\220\\" << image << "\n";
+    };
+    {
+      RuntimeHost host(f.config);
+      f.host = &host;
+      f.PrepareReady(host);
+      host.Shutdown();
+    }
+    const auto publishers_checked = [](const RuntimeSnapshot& s) {
+      return s.status == RuntimeHostStatus::kReady && s.publishers.count(Publisher::kRockstar) &&
+             s.publishers.at(Publisher::kRockstar).pack_checked;
+    };
+    // Lines that decide a hint (offered or not), not the one saying it waits.
+    const auto verdicts = [&] {
+      std::lock_guard<std::mutex> lock(*f.log_mutex);
+      return std::count_if(f.log->begin(), f.log->end(), [](const std::string& line) {
+        return line.find("launcher hint app=220 ") != std::string::npos && line.find(" waits ") == std::string::npos;
+      });
+    };
+    const auto decided = [&](RuntimeHost& host, long before) {
+      for (int tries = 0; tries < 300 && verdicts() == before; ++tries)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      CHECK(verdicts() == before + 1);
+      return host.Snapshot().launcher_hints;
+    };
+    // The hints once the pack was checked after startup (and, with refresh, after a second check).
+    const auto hints_after_start = [&](const std::string& image, bool refresh = false) {
+      note(image);
+      const auto before = verdicts();
+      RuntimeHost host(f.config);
+      f.host = &host;
+      CHECK(host.Start());
+      WaitFor(host, publishers_checked, 30);
+      if (refresh) {
+        // The pack's check failed: the hint waits, undecided.
+        CHECK(host.Snapshot().launcher_hints.empty() && verdicts() == before);
+        pack_present->store(true);
+        host.RefreshPublishers();
+      }
+      const auto hints = decided(host, before);
+      host.Shutdown();
+      CHECK(!fs::exists(prefix / ".pw-exec-refused"));
+      return hints;
+    };
+    if (listed) {
+      // Covered installers, in any case and spelling the manifest uses: no hint.
+      CHECK(hints_after_start("Redist\\Launcher-Setup.exe").empty());
+      CHECK(f.Logged("launcher hint app=220 program=Redist/Launcher-Setup.exe waits for the publisher pack"));
+      CHECK(f.Logged("launcher hint app=220 program=Redist/Launcher-Setup.exe not offered: the publisher pack covers it"));
+      CHECK(hints_after_start("Redist\\Example-Setup.exe").empty());
+      CHECK(hints_after_start(".\\Redist\\Launcher-Setup.exe").empty());
+      // No pack at startup: nothing is offered until a check finds it, and then the covered installer still isn't.
+      pack_present->store(false);
+      CHECK(hints_after_start("Redist\\Launcher-Setup.exe", true).empty());
+      // Anything else is still offered, once the pack was checked.
+      const auto other = hints_after_start("Other\\Game.exe");
+      CHECK(other.size() == 1 && other.at(220) == "Other/Game.exe");
+    } else {
+      // The pack doesn't list this game: it doesn't stage it either, so the hint stays.
+      const auto hints = hints_after_start("Redist\\Launcher-Setup.exe");
+      CHECK(hints.size() == 1 && hints.at(220) == "Redist/Launcher-Setup.exe");
+    }
+  }
+}
+
 // Playden quits so the publisher game the player chose Play on starts from Home: a system
 // notification says when that start will lack the publisher's sign-in. A quit for anything else,
 // or Play on another game, says nothing about it.
@@ -12517,6 +12892,7 @@ void NotifiesAboutTheStatusOfAStartFromHome() {
     CHECK(f.Notices().empty());
     // The game ran from Home and left its status; it is still running when Playden starts again.
     Write(f.title / ".examplepub/status", expired ? "state=stale\n" : "state=none\n", 0644);
+    if (expired) AgeStatusAnHour(f.title / ".examplepub/status");  // a fresh sign-in refused keeps the account
     f.fixture.activity->store(static_cast<int>(NativeActivity::kActive));
     {
       RuntimeHost host(f.config);
@@ -12719,6 +13095,9 @@ int main(int argc, char** argv) {
   StagesPublisherGameAndPlaysWithAccount();
   RenewsPublisherSignInBeforePlayAndOnCheck();
   RenewsPublisherSignInOnSchedule();
+  RefusedPublisherSignInIsRenewedOnce();
+  RefusedFreshSignInKeepsTheAccount();
+  CredentialCarriesTheSignInsExtraValue();
   ExtractsPublisherRuntimeFromTheGamesInstaller();
   PublisherGamesThePackDoesNotCoverAreUntouched();
   PublisherHelperKeptOnTitleBehind();
@@ -12731,6 +13110,7 @@ int main(int argc, char** argv) {
   PublisherGameWithoutPackPointsToTheDownload();
   PublisherGameStartsWithAnEarlierPack();
   PlacesPublisherCredentialForAStartFromHome();
+  PublisherCoveredInstallerIsNoLauncherHint();
   NotifiesAtQuitWhenAHomeStartLacksTheSignIn();
   NotifiesAboutTheStatusOfAStartFromHome();
   StatusOfAPendingSessionIsNotAHomeStart();

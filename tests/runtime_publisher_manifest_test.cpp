@@ -108,6 +108,47 @@ int main() {
     CHECK(reason.find("status.missing must differ from status.expired") != std::string::npos);
   }
 
+  // The publisher refused this game for the account (optional): a single trimmed line, not the other two; and the
+  // detail file naming the refused call (optional): a safe relative path, not the status file.
+  {
+    CHECK(manifest.status->refused.empty() && manifest.status->detail.empty());
+    const std::string expired = "\"expired\": \"state=stale\"";
+    const std::string both = expired + ", \"missing\": \"state=none\"";
+    PublisherStageManifest with_refused;
+    CHECK(ParsePublisherStageManifest(
+        Replace(kManifest, expired, both + ", \"refused\": \"state=denied\", \"detail\": \".examplepub/detail\""),
+        &with_refused, &reason));
+    CHECK(with_refused.status && with_refused.status->refused == "state=denied");
+    CHECK(with_refused.status->detail == ".examplepub/detail" && with_refused.status->missing == "state=none");
+    for (const char* bad : {"\"\"", "\" state=denied\"", "\"state\\ndenied\"", "1"})
+      CHECK(!Parses(Replace(kManifest, expired, both + ", \"refused\": " + bad), &reason));
+    for (const char* same : {"\"state=stale\"", "\"state=none\""}) {
+      CHECK(!Parses(Replace(kManifest, expired, both + ", \"refused\": " + same), &reason));
+      CHECK(reason.find("status.refused must differ") != std::string::npos);
+    }
+    for (const char* bad : {"\"../detail\"", "\"/detail\"", "\"\"", "2"})
+      CHECK(!Parses(Replace(kManifest, expired, expired + ", \"detail\": " + bad), &reason));
+    CHECK(!Parses(Replace(kManifest, expired, expired + ", \"detail\": \".examplepub/status\""), &reason));
+    CHECK(reason.find("status.detail must differ from status.file") != std::string::npos);
+    // Nor any other title folder path: the credential would be logged and removed with the status.
+    CHECK(!Parses(Replace(kManifest, expired, expired + ", \"detail\": \"Credential.TXT\""), &reason));
+    CHECK(reason.find("used twice") != std::string::npos);
+  }
+
+  // #1252: account.stage_extra_fields (optional): 1 to 16 names.
+  {
+    CHECK(manifest.account.stage_extra_fields.empty());
+    const std::string fields = "\"stage_fields\"";
+    const auto at = kManifest.find(fields);
+    CHECK(at != std::string::npos);
+    PublisherStageManifest with_extra;
+    CHECK(ParsePublisherStageManifest(
+        kManifest.substr(0, at) + "\"stage_extra_fields\": [\"Machine\"], " + kManifest.substr(at), &with_extra, &reason));
+    CHECK(with_extra.account.stage_extra_fields == std::vector<std::string>{"Machine"});
+    for (const char* bad : {"[]", "\"Machine\"", "[\"\"]", "[1]"})
+      CHECK(!Parses(kManifest.substr(0, at) + "\"stage_extra_fields\": " + bad + ", " + kManifest.substr(at), &reason));
+  }
+
   // Ini lines with their variables.
   std::vector<std::string> lines;
   PublisherTitleSpec title;

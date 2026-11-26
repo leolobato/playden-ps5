@@ -130,6 +130,8 @@ bool ParseAccount(const Value& root, PublisherAccountSpec* account, std::string*
   if (account->name.empty() || HasControl(account->name)) return Fail(reason, "account.name must be a name");
   if (!Names(*object, "display_fields", 0, &account->display_fields, at, reason) ||
       !Names(*object, "stage_fields", 1, &account->stage_fields, at, reason) ||
+      (object->Find("stage_extra_fields") &&
+       !Names(*object, "stage_extra_fields", 1, &account->stage_extra_fields, at, reason)) ||
       !Size(*object, "max_bytes", &account->max_bytes, at, reason))
     return false;
   const Value* pattern = nullptr;
@@ -310,7 +312,9 @@ bool ParseStatus(const Value& root, std::optional<PublisherStatusSpec>* status, 
   PublisherStatusSpec spec;
   if (!Path(*object, "file", true, &spec.file, "status.", reason) ||
       !String(*object, "expired", true, &spec.expired, "status.", reason) ||
-      !String(*object, "missing", false, &spec.missing, "status.", reason))
+      !String(*object, "missing", false, &spec.missing, "status.", reason) ||
+      !String(*object, "refused", false, &spec.refused, "status.", reason) ||
+      !Path(*object, "detail", false, &spec.detail, "status.", reason))
     return false;
   const auto trimmed_line = [](const std::string& value) {
     return !value.empty() && !HasControl(value) && value.front() != ' ' && value.back() != ' ';
@@ -319,6 +323,11 @@ bool ParseStatus(const Value& root, std::optional<PublisherStatusSpec>* status, 
   if (object->Find("missing") && !trimmed_line(spec.missing))
     return Fail(reason, "status.missing must be a single trimmed line");
   if (spec.missing == spec.expired) return Fail(reason, "status.missing must differ from status.expired");
+  if (object->Find("refused") && !trimmed_line(spec.refused))
+    return Fail(reason, "status.refused must be a single trimmed line");
+  if (!spec.refused.empty() && (spec.refused == spec.expired || spec.refused == spec.missing))
+    return Fail(reason, "status.refused must differ from status.expired and status.missing");
+  if (!spec.detail.empty() && spec.detail == spec.file) return Fail(reason, "status.detail must differ from status.file");
   *status = std::move(spec);
   return true;
 }
@@ -507,6 +516,8 @@ bool ParsePublisherStageManifest(std::string_view text, PublisherStageManifest* 
   if (result.ini && !claim(result.ini->target)) return Fail(reason, "the title folder path " + result.ini->target + " is used twice");
   if (!claim(result.credential_file)) return Fail(reason, "the title folder path " + result.credential_file + " is used twice");
   if (result.status && !claim(result.status->file)) return Fail(reason, "the title folder path " + result.status->file + " is used twice");
+  if (result.status && !result.status->detail.empty() && !claim(result.status->detail))
+    return Fail(reason, "the title folder path " + result.status->detail + " is used twice");
   *manifest = std::move(result);
   return true;
 }

@@ -200,6 +200,47 @@ int main() {
   PublisherStatusSpec unsafe{"../status", "state=stale"};
   CHECK(!ApplyPublisherSessionStatus(state, Publisher::kRockstar, title.string(), unsafe, &expired, &reason));
 
+  // Read and remove apart (Playden renews a refused sign-in before it marks it expired): reading changes
+  // nothing; the refused verdict; the detail file's first line, kept to safe characters and cut to 160.
+  {
+    PublisherStatusSpec full{".examplepub/status", "state=stale", "state=none", "state=denied", ".examplepub/detail"};
+    PublisherSessionStatus session;
+    CHECK(ReadPublisherSessionStatus(title.string(), full, &session, &reason));
+    CHECK(session.verdict == PublisherSessionVerdict::kNone && session.detail.empty());
+    Write(title / ".examplepub/status", " state=stale\n");
+    Write(title / ".examplepub/detail", "call=Create<b>Ticket http=200 code=\"Auth\"\tFailed \nsecond line\n");
+    CHECK(ReadPublisherSessionStatus(title.string(), full, &session, &reason));
+    CHECK(session.verdict == PublisherSessionVerdict::kExpired);
+    CHECK(session.detail == "call=CreatebTicket http=200 error=AuthFailed");
+    CHECK(fs::exists(title / ".examplepub/status") && fs::exists(title / ".examplepub/detail"));
+    CHECK(LoadPublisherAccount(state, Publisher::kRockstar).state == PublisherAccountState::kSignedIn);
+    CHECK(RemovePublisherSessionStatus(title.string(), full, &reason));
+    CHECK(!fs::exists(title / ".examplepub/status") && !fs::exists(title / ".examplepub/detail"));
+    CHECK(RemovePublisherSessionStatus(title.string(), full, &reason));  // nothing left is success
+    Write(title / ".examplepub/status", "state=denied\n");
+    Write(title / ".examplepub/detail", std::string(400, 'x'));
+    CHECK(ReadPublisherSessionStatus(title.string(), full, &session, &reason));
+    CHECK(session.verdict == PublisherSessionVerdict::kRefused && session.detail == std::string(160, 'x'));
+    // Only a code= key is renamed.
+    Write(title / ".examplepub/detail", "code=NotAllowed.TitleAccessToken call=Get http=200 xcode=1\n");
+    CHECK(ReadPublisherSessionStatus(title.string(), full, &session, &reason));
+    CHECK(session.detail == "error=NotAllowed.TitleAccessToken call=Get http=200 xcode=1");
+    // Without "refused" in the manifest it is just another status; Apply leaves the account and removes both.
+    CHECK(ReadPublisherSessionStatus(title.string(), status, &session, &reason));
+    CHECK(session.verdict == PublisherSessionVerdict::kNone && session.detail.empty());
+    CHECK(ApplyPublisherSessionStatus(state, Publisher::kRockstar, title.string(), full, &expired, &reason));
+    CHECK(!expired && !fs::exists(title / ".examplepub/status") && !fs::exists(title / ".examplepub/detail"));
+    CHECK(LoadPublisherAccount(state, Publisher::kRockstar).state == PublisherAccountState::kSignedIn);
+    // A linked detail file is not followed: the verdict still counts, without a detail.
+    Write(title / ".examplepub/status", "state=denied\n");
+    Write(root / "elsewhere/detail", "call=Secret\n");
+    fs::create_symlink(root / "elsewhere/detail", title / ".examplepub/detail");
+    CHECK(ReadPublisherSessionStatus(title.string(), full, &session, &reason));
+    CHECK(session.verdict == PublisherSessionVerdict::kRefused && session.detail.empty());
+    CHECK(RemovePublisherSessionStatus(title.string(), full, &reason));
+    CHECK(fs::exists(root / "elsewhere/detail"));
+  }
+
   // Refresh: a made-up recipe renewing the token from a cookie pair kept in the sign-in.
   PublisherRefreshSpec recipe;
   recipe.url = "https://accounts.example.test/renew?device=%7B%7D";
@@ -255,7 +296,7 @@ int main() {
   CHECK(Mode(file) == 0600);
   account = LoadPublisherAccount(state, Publisher::kRockstar);
   CHECK(account.state == PublisherAccountState::kSignedIn && account.display == "Player");
-  CHECK(account.obtained_at == 1760001000 && account.renewed_at == 1760002000);
+  CHECK(account.obtained_at == 1760001000 && account.renewed_at == 1760002000 && account.refreshed);
   CHECK(PublisherStageValue(state, Publisher::kRockstar, spec, &value, &reason) && value == kRenewed);
   // The next refresh sends the renewed pair.
   next = good_answer();
@@ -304,7 +345,7 @@ int main() {
   outcome = RefreshPublisherAccount(state, Publisher::kRockstar, spec, recipe, racing, 1760007000);
   CHECK(outcome.result == PublisherRefreshResult::kFailed);
   account = LoadPublisherAccount(state, Publisher::kRockstar);
-  CHECK(account.obtained_at == 1760006000 && account.renewed_at == 1760006000);
+  CHECK(account.obtained_at == 1760006000 && account.renewed_at == 1760006000 && !account.refreshed);
   CHECK(PublisherStageValue(state, Publisher::kRockstar, spec, &value, &reason) && value == kToken);
 
   // An expired status: the account becomes Expired.

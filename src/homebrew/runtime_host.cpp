@@ -509,6 +509,12 @@ struct RuntimeHost::Composition {
   std::map<rt::Publisher, LoadedPublisher> publishers;
   std::map<rt::Publisher, std::string> publisher_failures;
   std::map<std::string, std::optional<InstallPublisher>> install_publishers;
+  // Launcher hints of publisher games, offered once the pack says whether it covers the program (OfferPublisherHints).
+  struct PublisherHint {
+    rt::Publisher publisher = rt::Publisher::kRockstar;
+    std::string program;
+  };
+  std::map<std::uint32_t, PublisherHint> publisher_hints;
 };
 
 RuntimeHost::RuntimeHost(RuntimeHostConfig config) : config_(std::move(config)) {
@@ -4457,7 +4463,7 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
       if (idle) HealBottle(c, record->data_root, record->title_id, &*record);
       // A publisher game: the status its last session left first (an expired sign-in asks for a
       // new one), then its files, then the credential, the last of them.
-      if (idle) ApplyPublisherStatus(c, *record);
+      if (idle) ApplyPublisherStatus(c, *record, false, true);
       std::string settings;
       if (!setup_program.empty()) {
         // Another program for one run: its profile is published now, so nothing of the game may be running.
@@ -7372,6 +7378,46 @@ const RuntimeHost::InstallPublisher* RuntimeHost::PublisherOf(Composition& c, co
   return slot ? &*slot : nullptr;
 }
 
+void RuntimeHost::OfferPublisherHints(Composition& c, rt::Publisher publisher) {
+  const auto loaded = c.publishers.find(publisher);
+  // Without the pack nobody knows yet: the hint waits for a check that finds it.
+  if (loaded == c.publishers.end()) return;
+  const auto& manifest = loaded->second.manifest;
+  const auto lower = [](std::string text) {
+    std::replace(text.begin(), text.end(), '\\', '/');
+    while (text.rfind("./", 0) == 0) text.erase(0, 2);
+    for (auto& ch : text) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return text;
+  };
+  std::map<std::uint32_t, std::string> offered;
+  for (auto it = c.publisher_hints.begin(); it != c.publisher_hints.end();) {
+    if (it->second.publisher != publisher) {
+      ++it;
+      continue;
+    }
+    const auto app = it->first;
+    const auto wanted = lower(it->second.program);
+    const auto covers = [&](const std::vector<std::string>& installers) {
+      return std::any_of(installers.begin(), installers.end(),
+                         [&](const std::string& installer) { return lower(installer) == wanted; });
+    };
+    // A game the pack lists gets its publisher's launcher from the pack, as InstallScriptsStep leaves those installers.
+    if (manifest.titles.count(std::to_string(app)) &&
+        (covers(manifest.covered_installers) || (manifest.runtime && covers(manifest.runtime->installers)))) {
+      Log("launcher hint app=" + std::to_string(app) + " program=" + it->second.program +
+          " not offered: the publisher pack covers it");
+    } else {
+      Log("launcher hint app=" + std::to_string(app) + " program=" + it->second.program);
+      offered[app] = it->second.program;
+    }
+    it = c.publisher_hints.erase(it);
+  }
+  if (!offered.empty())
+    Publish([&](RuntimeSnapshot& s) {
+      for (auto& [app, program] : offered) s.launcher_hints[app] = std::move(program);
+    });
+}
+
 std::string RuntimeHost::LoadPublisher(Composition& c, rt::Publisher publisher) {
   // This build's archive as it is on disk: its size and time, or "" when it isn't there.
   const auto pinned_stamp = [&] {
@@ -7737,16 +7783,28 @@ void RuntimeHost::RenewPublisher(Composition& c, rt::Publisher publisher, bool b
   const std::uint64_t max_age =
       before_launch ? static_cast<std::uint64_t>(recipe.before_launch_minutes) * 60 : std::uint64_t(recipe.every_hours) * 3600;
   if (before_launch && max_age == 0) return;
-  const auto root = PublisherAccountRoot().string();
-  const auto account = rt::LoadPublisherAccount(root, publisher);
+  const auto account = rt::LoadPublisherAccount(PublisherAccountRoot().string(), publisher);
   if (account.state != rt::PublisherAccountState::kSignedIn) return;
   const auto now = static_cast<std::uint64_t>(std::max<std::int64_t>(0, config_.unix_time()));
   // A clock set back makes the last renewal look new: renewing then is harmless.
   if (now >= account.renewed_at && now - account.renewed_at < max_age) return;
-  const auto outcome = rt::RefreshPublisherAccount(root, publisher, manifest.account, recipe, config_.publisher_refresh, now);
+  RenewPublisherNow(c, publisher, before_launch ? "launch" : "schedule");
+}
+
+std::optional<rt::PublisherRefreshResult> RuntimeHost::RenewPublisherNow(Composition& c, rt::Publisher publisher,
+                                                                         const char* why) {
+  if (!config_.publisher_refresh || !LoadPublisher(c, publisher).empty()) return std::nullopt;
+  const auto& manifest = c.publishers.at(publisher).manifest;
+  if (!manifest.refresh) return std::nullopt;
+  const auto root = PublisherAccountRoot().string();
+  const auto account = rt::LoadPublisherAccount(root, publisher);
+  if (account.state != rt::PublisherAccountState::kSignedIn) return std::nullopt;
+  const auto now = static_cast<std::uint64_t>(std::max<std::int64_t>(0, config_.unix_time()));
+  const auto outcome =
+      rt::RefreshPublisherAccount(root, publisher, manifest.account, *manifest.refresh, config_.publisher_refresh, now);
   const auto slug = std::string(rt::PublisherSlug(publisher));
   // Only the result and status are logged: the request and answer hold the sign-in's secrets.
-  Log("publisher refresh publisher=" + slug + (before_launch ? " before=launch" : " before=schedule") +
+  Log("publisher refresh publisher=" + slug + " before=" + why +
       " age_s=" + std::to_string(now >= account.renewed_at ? now - account.renewed_at : 0) +
       " result=" + rt::PublisherRefreshResultName(outcome.result) +
       (outcome.status ? " status=" + std::to_string(outcome.status) : std::string()) +
@@ -7754,9 +7812,9 @@ void RuntimeHost::RenewPublisher(Composition& c, rt::Publisher publisher, bool b
   if (outcome.result == rt::PublisherRefreshResult::kExpired) {
     RemovePublisherCredentialsOf(c, publisher);
     PublishPublishers(c);
-    return;
+    return outcome.result;
   }
-  if (outcome.result != rt::PublisherRefreshResult::kRefreshed) return;
+  if (outcome.result != rt::PublisherRefreshResult::kRefreshed) return outcome.result;
   // A start from Home reads the credential a game's folder already holds: those get the renewed one.
   for (const auto& record : c.repository.Snapshot()) {
     const auto* game = PublisherOf(c, record);
@@ -7774,27 +7832,98 @@ void RuntimeHost::RenewPublisher(Composition& c, rt::Publisher publisher, bool b
     playden::steam::ZeroizeSecret(value);
   }
   PublishPublishers(c);
+  return outcome.result;
 }
 
-void RuntimeHost::ApplyPublisherStatus(Composition& c, const rt::RuntimeInstall& record, bool from_home) {
-  const auto* game = PublisherOf(c, record);
-  if (!game || !LoadPublisher(c, game->publisher).empty()) return;
-  const auto& manifest = c.publishers.at(game->publisher).manifest;
+void RuntimeHost::ApplyPublisherStatus(Composition& c, const rt::RuntimeInstall& record, bool from_home,
+                                       bool before_play) {
+  const auto* found = PublisherOf(c, record);
+  if (!found || !LoadPublisher(c, found->publisher).empty()) return;
+  // Copies: the renewal below may load a newer pack, which replaces both.
+  const auto game = *found;
+  const auto manifest = c.publishers.at(game.publisher).manifest;
   if (!manifest.status) return;
-  bool expired = false, missing = false;
+  const auto root = PublisherAccountRoot().string();
+  const auto name = PublisherDisplayName(game.publisher);
+  rt::PublisherSessionStatus session;
   std::string reason;
-  const bool ok = rt::ApplyPublisherSessionStatus(PublisherAccountRoot().string(), game->publisher, game->title_folder,
-                                                  *manifest.status, &expired, &reason, &missing);
+  bool ok = rt::ReadPublisherSessionStatus(game.title_folder, *manifest.status, &session, &reason);
+  bool expired = false, renewed = false, unrenewed = false, earlier = false, signin_refused = false;
+  if (ok && session.verdict == rt::PublisherSessionVerdict::kExpired) {
+    const auto account = rt::LoadPublisherAccount(root, game.publisher);
+    const auto credential_at = std::max(account.obtained_at, account.renewed_at);
+    // A status written before the account's current credential (a sign-in or renewal since, another game's
+    // status that renewed it, a read that renewed but couldn't remove the file) was about an earlier one.
+    earlier = account.state == rt::PublisherAccountState::kSignedIn && session.written_at &&
+              session.written_at < credential_at;
+    // The publisher refused the sign-in the game was given. A renewal is what tells whether the account
+    // still holds: a sign-in that hasn't been renewed lately is renewed once. Its age is the age the game
+    // saw (when the status was written; the status may be read much later), and the pack's
+    // before_launch_minutes (30 when it has none) is "lately".
+    const std::uint64_t window =
+        manifest.refresh && manifest.refresh->before_launch_minutes ? manifest.refresh->before_launch_minutes * 60ULL : 1800;
+    // A status with no usable time can't show the sign-in was old: it counts as fresh.
+    const bool fresh = !session.written_at ||
+                       (session.written_at >= credential_at && session.written_at - credential_at < window);
+    const bool renewed_lately = account.refreshed && fresh;
+    std::optional<rt::PublisherRefreshResult> result;
+    bool same_credential = false;
+    if (!earlier && account.state == rt::PublisherAccountState::kSignedIn && !renewed_lately) {
+      std::string before, ignored;
+      rt::PublisherStageValue(root, game.publisher, manifest.account, &before, &ignored);
+      result = RenewPublisherNow(c, game.publisher, "refused");
+      std::string after;
+      if (result == rt::PublisherRefreshResult::kRefreshed) {
+        // A renewal whose answer kept the refused credential renewed nothing, but the account holds.
+        renewed = rt::PublisherStageValue(root, game.publisher, manifest.account, &after, &ignored) && after != before;
+        same_credential = !renewed;
+      }
+      playden::steam::ZeroizeSecret(before);
+      playden::steam::ZeroizeSecret(after);
+      // No answer, or one that wasn't understood, says nothing about the sign-in: it stays for the next start.
+      unrenewed = result == rt::PublisherRefreshResult::kFailed;
+    }
+    // #1252: Rockstar refused sign-ins minutes old, and each new sign-in the same way. Only the renewal can
+    // say the account expired (its server's refusal marked it already). A fresh credential the game was
+    // refused, or one the renewal kept, is the publisher refusing this account's sign-in for the game: the
+    // account stays, since signing in again gives the same refusal.
+    signin_refused = !earlier && account.state == rt::PublisherAccountState::kSignedIn && !renewed && !unrenewed &&
+                     result != rt::PublisherRefreshResult::kExpired && (same_credential || fresh);
+    // Only an account this read found signed in is marked: one it couldn't read stays as it is.
+    if (account.state == rt::PublisherAccountState::kSignedIn && !earlier && !renewed && !unrenewed && !signin_refused) {
+      // A renewal the server refused marked the account expired already; otherwise it is marked now.
+      ok = rt::MarkPublisherAccountExpired(root, game.publisher, &reason);  // the file stays for the next read
+      expired = ok;
+    }
+  }
+  if (ok) ok = rt::RemovePublisherSessionStatus(game.title_folder, *manifest.status, &reason);
+  const bool missing = ok && session.verdict == rt::PublisherSessionVerdict::kMissing;
+  const bool refused = ok && session.verdict == rt::PublisherSessionVerdict::kRefused;
   // An expired sign-in must not stay in any game's folder.
-  if (expired) RemovePublisherCredentialsOf(c, game->publisher);
-  if (expired || missing || !ok)
+  if (expired) RemovePublisherCredentialsOf(c, game.publisher);
+  if (session.verdict != rt::PublisherSessionVerdict::kNone || !ok)
     Log("publisher status app=" + std::to_string(record.runtime_number) + " expired=" + std::to_string(expired) +
-        " missing=" + std::to_string(missing) + (from_home ? " from Home" : "") +
+        " missing=" + std::to_string(missing) + (renewed ? " renewed=1" : "") + (unrenewed ? " renewal-failed=1" : "") +
+        (earlier ? " earlier-credential=1" : "") + (signin_refused ? " signin-refused=1" : "") +
+        (refused ? " refused=1" : "") +
+        (session.detail.empty() ? std::string() : " detail=\"" + session.detail + "\"") +
+        (from_home ? " from Home" : "") + (before_play ? " before Play" : "") +
         (ok ? std::string() : " failed=" + reason));
   if (expired) PublishPublishers(c);
+  // Neither is shown anywhere else, so the player is told; a Play starting now uses the renewed sign-in itself.
+  if (renewed && !before_play)
+    Notify(GameName(record) + ": " + name + " didn't accept your sign-in, so Playden renewed it. Start the game again.");
+  else if (unrenewed && !before_play)
+    Notify(GameName(record) + ": " + name + " didn't accept your sign-in, and Playden couldn't reach " + name +
+           " to renew it. Start the game again.");
+  else if (signin_refused)
+    Notify(GameName(record) + ": " + name + " refused your account's sign-in for this game. You're still signed in; "
+           "signing in again won't change this.");
+  else if (refused)
+    Notify(GameName(record) + ": " + name + " refused to start this game for your account. Signing in again won't "
+           "change this.");
   // Playden's own sessions end in Playden, which shows the account; a start from Home is told about.
   if (!from_home) return;
-  const auto name = PublisherDisplayName(game->publisher);
   // A status file that could not be removed is read again next time; say it once it is gone.
   if (expired && ok)
     Notify(GameName(record) + ": your " + name + " sign-in expired. Sign in again in Settings.");
@@ -7917,6 +8046,7 @@ void RuntimeHost::RunPublisherRequest(Composition* c, PublisherRequest& request)
     c->publisher_failures.erase(request.publisher);
     LoadPublisher(*c, request.publisher);
     PublishPublishers(*c);
+    OfferPublisherHints(*c, request.publisher);
     // Starts from the PS5 Home screen since Playden last ran left their statuses.
     ApplyHomeStatuses(*c, request.publisher);
     return;
@@ -8191,6 +8321,15 @@ bool RuntimeHost::RunServices() {
           const auto program = rt::TakeRefusedGameProgram((HostPath(record.data_root) / "library/prefixes/game").string(),
                                                           record.install_path, HostPath(record.install_path).string());
           if (program.empty()) continue;
+          // A publisher's own launcher installer (a Rockstar game that started without its sign-in asks for it) is
+          // the pack's job: started through it, the game only runs the installer and ends. Whether the pack covers
+          // the program is known once it is checked, after startup (RefreshPublishers).
+          if (const auto* game = PublisherOf(c, record)) {
+            Log("launcher hint app=" + std::to_string(record.runtime_number) + " program=" + program +
+                " waits for the publisher pack");
+            c.publisher_hints[record.runtime_number] = {game->publisher, program};
+            continue;
+          }
           Log("launcher hint app=" + std::to_string(record.runtime_number) + " program=" + program);
           hints[record.runtime_number] = program;
         }
