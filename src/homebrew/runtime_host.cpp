@@ -946,6 +946,7 @@ void RuntimeHost::SetSteamAccount(std::string account_name, std::uint64_t steam_
     steam_account_name_ = std::move(account_name);
     steam_id_ = steam_id;
     steam_account_changed_ = true;
+    steam_catch_up_due_ = true;  // the games whose emulator waited for the account (CatchUpSteamworks)
   }
   wake_.notify_all();
 }
@@ -1516,6 +1517,54 @@ void HandWorkshopItemsToSteam(const std::string& prefix, std::uint32_t app_id, b
 }
 }  // namespace
 
+// The games whose emulator waited for the Steam account (SteamworksStep) get their Steam files now that it is known,
+// so a start from the PS5 Home screen runs the emulator too. Only the Steam step runs, and no other game is touched. A
+// game that is busy (running, recovering) keeps waiting: the next sign-in or the next game that waits tries it again,
+// and Play applies it anyway.
+void RuntimeHost::CatchUpSteamworks(Composition& c) {
+  const auto waiting = steam_step_waiting_;
+  for (const auto& install_id : waiting) {
+    // A quit or a kit reload waits for one game at most.
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (stopping_ || kit_reload_requested_) {
+        steam_catch_up_due_ = true;
+        return;
+      }
+    }
+    const auto record = c.records.Find(install_id);
+    if (!record || record->state != rt::PreparationState::kReady) {
+      steam_step_waiting_.erase(install_id);
+      continue;
+    }
+    const auto app = std::to_string(record->runtime_number);
+    if (const auto busy = MaintenanceRefusal(c, *record); !busy.empty()) {
+      Log("steamworks catch-up app=" + app + " waits: " + busy);
+      continue;
+    }
+    GameFiles files{*record};
+    if (!FillGameFiles(c, files, false)) {
+      // Play reports the missing recipe or the invalid settings.
+      steam_step_waiting_.erase(install_id);
+      Log("steamworks catch-up app=" + app + " skipped: the game's settings can't be read");
+      continue;
+    }
+    const auto refused = SteamworksStep(files, true);
+    // Signed out meanwhile: the files name the emulator's default account, and the next sign-in tries again.
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!steam_id_) {
+        steam_step_waiting_.insert(install_id);
+        steam_catch_up_due_ = true;
+      }
+    }
+    // A first steamclient write makes the client's folder Wine-style (0700): an open bottle is opened again.
+    if (c.installer->OpensBottle(*record) && rt::BottleNeedsOpening(HostPath(record->data_root)))
+      SettleBottle(c, *record, "steamworks");
+    Log("steamworks catch-up app=" + app + " " + (refused.empty() ? std::string("applied") : "failed: " + refused));
+  }
+}
+
 // Steam-file step: the game's steam_api DLLs in the state its "Steam features" setting asks for, emulated
 // with its Steam app ID (SteamworksAppFor) and the signed-in account, or the game's own; then the legacy
 // steam.dll of a game from before Steamworks.
@@ -1552,6 +1601,14 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
   std::uint64_t client_steam_id = 0;  // the account the client's registry values name
   // The emulator's files name the signed-in account; before it is known they keep what Play wrote.
   const bool emulator_waits = (emulate || client) && !steam_account_known;
+  // A game whose emulator waits gets its Steam files once the account is known (CatchUpSteamworks), not only at Play.
+  if (emulator_waits) {
+    steam_step_waiting_.insert(record.install_id);
+    std::lock_guard<std::mutex> lock(mutex_);
+    steam_catch_up_due_ = true;
+  } else {
+    steam_step_waiting_.erase(record.install_id);
+  }
   // Valve's library reads steam_appid.txt from the working folder: each program's own, and the one the chosen program
   // starts in.
   const auto start_folders = [&] {
@@ -2661,12 +2718,10 @@ std::string RuntimeHost::DotnetHeapStep(const GameFiles& files) {
 // Mono, the bottle's Environment, MFC, the Visual C++ runtime key, the recipe's registry and INI values and files, the
 // .NET heap), GOG's install script registry and INI values, and Steam-file ones, which act only on the Steam files a game has
 // (SteamStub, Steamworks and steam.dll, install scripts and redistributables, Cloud save folders).
-std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::RuntimeInstall& record, bool steam_account_known,
-                                               bool run_through_launcher) {
-  MediaStep(c, record);
-  GameFiles files{record};
+bool RuntimeHost::FillGameFiles(Composition& c, GameFiles& files, bool run_through_launcher) {
+  const auto& record = files.record;
   files.recipe = RecipeOf(c, record);
-  if (!files.recipe) return {};  // publication reports the missing recipe
+  if (!files.recipe) return false;
   files.ini = &files.recipe->ini;
   files.steam_api_copies = &files.recipe->steam_api_copies;
   files.game_files_recipe = files.recipe;
@@ -2686,7 +2741,7 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   const auto kit = TitleKit(c, record);
   if (!rt::BuildEffectiveSettings(*files.recipe, preset, files.saved ? files.saved->overrides : none, kit, &files.settings,
                                   &error))
-    return {};  // publication reports invalid settings
+    return false;
   files.kit = kit;
   files.root = config_.host_namespace_prefix.empty()
       ? std::filesystem::path(record.install_path)
@@ -2708,6 +2763,15 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   const auto& through_launcher = files.settings.values.at("start_through_launcher");
   files.launcher_may_start = run_through_launcher || (kit.launcher_mode && !record.setup_program.empty()) ||
                              (through_launcher.available && through_launcher.value == "on");
+  return true;
+}
+
+std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::RuntimeInstall& record, bool steam_account_known,
+                                               bool run_through_launcher) {
+  MediaStep(c, record);
+  GameFiles files{record};
+  // A missing recipe or invalid settings: publication reports them.
+  if (!FillGameFiles(c, files, run_through_launcher)) return {};
   if (auto refused = SteamStubStep(files); !refused.empty()) return refused;
   if (auto refused = SteamworksStep(files, steam_account_known); !refused.empty()) return refused;
   // Steam sign-in follows the saved value at once, like the Steam files: kept now, or gone.
@@ -4094,7 +4158,8 @@ void RuntimeHost::RunDriveUpdateStep(Composition& c) {
   const auto& record = *next;
   bool published = false;
   std::string deferred;
-  // The Steam account may not be known yet: the emulator's files and install scripts wait for Play.
+  // The Steam account may not be known yet: install scripts wait for Play, the emulator's files for the account
+  // (CatchUpSteamworks).
   const auto refused = RepublishSettings(c, record, &published, false, nullptr, &deferred);
   Log("drive update app=" + std::to_string(record.runtime_number) + " " +
       (published ? std::string("republished") : !deferred.empty() ? "deferred: " + deferred : "failed: " + refused));
@@ -4595,6 +4660,11 @@ bool RuntimeHost::PollLaunch(Composition& c) {
           record && c.installer->OpensBottle(*record) &&
           c.coordinator->Activity(record->title_id) == rt::NativeActivity::kStopped)
         SettleBottle(c, *record, "session");
+    // A game that waited for the Steam account while this session made every title busy is tried again now.
+    if (finished.accepted && !steam_step_waiting_.empty()) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      steam_catch_up_due_ = true;
+    }
     // A title that failed before the game loaded the bridge leaves its Steam session behind. A kept one stays, but not
     // what the Play asked of the bridge once.
     if (const auto record = c.records.Find(snapshot.install_id);
@@ -8407,7 +8477,7 @@ bool RuntimeHost::RunServices() {
       // Games whose folder moved with the games root (0.6) start from Home only once their
       // publication names the new folder: republished now, busy titles wait for Play.
       // So are games published owned while the kit admits unowned folders (folders opened for
-      // mods). The Steam account is not known yet, so the emulator's files wait for Play.
+      // mods). The Steam account is not known yet, so the emulator's files wait for it (CatchUpSteamworks).
       for (const auto& record : c.repository.Snapshot()) {
         if (record.state != rt::PreparationState::kReady) continue;
         const bool moved = !record.moved_from.empty();
@@ -8430,7 +8500,7 @@ bool RuntimeHost::RunServices() {
       if (c.kit)
         for (const auto& record : c.repository.Snapshot()) {
           // Newer settings, and player presets whose file may have changed independently: the Steam
-          // account is not known yet, so Steam files wait for Play. Also restore a program's run
+          // account is not known yet, so Steam files wait for it (CatchUpSteamworks). Also restore a program's run
           // (RuntimeInstall::setup_program), whatever its revision.
           const auto saved = config_.settings_record ? config_.settings_record(GameOf(record)) : std::nullopt;
           const bool newer = saved && saved->revision > record.settings_revision;
@@ -8547,6 +8617,7 @@ bool RuntimeHost::RunServices() {
                gone_installs_changed_ ||
                installs_recheck_requested_ ||
                steam_account_changed_ ||
+               (steam_catch_up_due_ && steam_id_ != 0 && !snapshot_.handoff_ready) ||
                (!remove_requests_.empty() && !snapshot_.handoff_ready) ||
                (!kept_delete_requests_.empty() && !snapshot_.handoff_ready) ||
                (playden_removal_request_ && !snapshot_.handoff_ready) ||
@@ -8868,6 +8939,18 @@ bool RuntimeHost::RunServices() {
                std::chrono::steady_clock::now() >= drive_update_not_before_;
       }
       if (step) RunDriveUpdateStep(*composition);
+    }
+    // After the work that may leave a game's emulator waiting (the drive update, a program run that ended): with the
+    // account known, those games get their Steam files. Not while a handoff is pending, like maintenance.
+    {
+      bool catch_up = false;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        catch_up = steam_catch_up_due_ && steam_id_ != 0 && !snapshot_.handoff_ready && !stopping_;
+        if (catch_up) steam_catch_up_due_ = false;
+      }
+      // Without the services (no state root, records unreadable) nothing waits: the flag goes all the same.
+      if (catch_up && composition) CatchUpSteamworks(*composition);
     }
     // One preparation per pass, taken from the front of the queue only as it starts, so PrepareNext
     // reorders everything not started yet. A handoff that became ready during this pass reads install

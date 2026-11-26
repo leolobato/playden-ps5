@@ -7580,6 +7580,165 @@ void MovedGameStartupKeepsSteamAccount() {
   host.Shutdown();
 }
 
+// Settings applied before the Steam account is known (#1383; here the startup pass for settings saved while Playden
+// was closed) leave the emulator's files waiting. Once the account is known they are written, without waiting for
+// Play, so a start from the PS5 Home screen runs the emulator: only the waiting game's Steam step runs, and a game
+// that is busy keeps waiting until it can be tried again. Both modes that name the account wait this way.
+void EmulatorWaitingForAccountCatchesUp(const std::string& mode) {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-0000000000") + (uuids < 10 ? "0" : "") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  config.session_data_root = fixture.root / "data";
+  config.steamworks_dir = (fs::path(g_runtime_dir) / "steamworks").string();
+  std::mutex mutex;
+  std::map<std::uint32_t, GameSettingsRecord> saved;
+  config.settings_record = [&](const playden::GameId& game) -> std::optional<GameSettingsRecord> {
+    std::lock_guard<std::mutex> lock(mutex);
+    for (const auto& [app, record] : saved)
+      if (game == playden::GameId::Steam(app)) return record;
+    return std::nullopt;
+  };
+  const auto save = [&](std::uint32_t app, std::uint64_t revision, const std::string& features) {
+    std::lock_guard<std::mutex> lock(mutex);
+    saved[app].revision = revision;
+    saved[app].overrides["steam_features"] = features;
+  };
+  std::vector<std::string> lines;
+  config.log = [&](const std::string& line) { std::lock_guard<std::mutex> lock(mutex); lines.push_back(line); };
+  const auto logged = [&](const std::string& prefix) {
+    std::lock_guard<std::mutex> lock(mutex);
+    return std::any_of(lines.begin(), lines.end(), [&](const std::string& line) { return line.rfind(prefix, 0) == 0; });
+  };
+  const auto wait_logged = [&](const std::string& prefix) {
+    for (int i = 0; i < 3000 && !logged(prefix); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    return logged(prefix);
+  };
+  // The busy game: its title runs while every other title is stopped.
+  std::mutex busy_mutex;
+  std::string busy_title;
+  config.native.activity = [&](const std::string& title) {
+    std::lock_guard<std::mutex> lock(busy_mutex);
+    return !busy_title.empty() && title == busy_title ? NativeActivity::kActive : NativeActivity::kStopped;
+  };
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  const std::string own_api = pe + std::string("\0SteamUser021\0", 14);
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/4242";
+  Write(game / "Bin/Game.exe", pe, 0644);
+  Write(game / "Bin/steam_api64.dll", own_api, 0644);
+  const auto emulator = Read(fs::path(g_runtime_dir) / "steamworks/steam_api64.dll");
+  const auto bottle = fixture.root / "data/playden/games/steam-4242/library/prefixes/game";
+  const auto client = bottle / "drive_c/playden/steamclient";
+  const bool emulate = mode == "emulate";
+  // The emulator's files in place for the account, as Play would write them.
+  const auto emulated = [&](const char* account) {
+    const auto user = emulate ? Read(game / "Bin/steam_settings/configs.user.ini")
+                              : Read(client / "steam_settings/configs.user.ini");
+    const bool named = user.find(std::string("account_name=") + account + "\n") != std::string::npos;
+    if (emulate) return named && Read(game / "Bin/steam_api64.dll") == emulator;
+    return named && Read(game / "Bin/steam_api64.dll") == own_api && fs::exists(client / "steamclient64.dll") &&
+           Read(bottle / "user.reg").find("\"SteamClientDll64\"") != std::string::npos;
+  };
+  // The game's own files, with no emulator.
+  const auto own = [&] {
+    return Read(game / "Bin/steam_api64.dll") == own_api && Read(bottle / "user.reg").find("steamclient") == std::string::npos;
+  };
+  const auto clear_log = [&] {
+    std::lock_guard<std::mutex> lock(mutex);
+    lines.clear();
+  };
+
+  // The game plays with its own files.
+  save(4242, 1, "game");
+  {
+    RuntimeHost host(config);
+    host.SetSteamAccount("player", 76561198000000001ull);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    RuntimePrepareRequest request{4242, "/data/homebrew/FAKE77031/games/4242", "internal", "Example Game"};
+    request.launches = {{"", "", "Bin\\Game.exe", "", ""}};
+    host.Prepare(request);
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(4242) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    if (done.refusals.count(4242)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(4242).c_str());
+    CHECK(!done.refusals.count(4242));
+    host.Shutdown();
+  }
+  CHECK(own());
+  // A game whose Steam files didn't wait is left alone at sign-in: no Steam step of it runs.
+  clear_log();
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.SetSteamAccount("player", 76561198000000001ull);
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    CHECK(!logged("steamworks") && own());
+    host.Shutdown();
+  }
+  // Switched back while Playden was closed: the next start publishes it before the account is known.
+  save(4242, 2, mode);
+  clear_log();
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  const auto started = WaitFor(host, Started);
+  CHECK(started.kit_available);
+  CHECK(logged("startup settings app=4242 applied"));
+  CHECK(logged("steamworks app=4242 mode=" + mode + " waits: the Steam account is not known yet"));
+  CHECK(own());
+
+  // A busy game keeps waiting at sign-in, and nothing of it changes.
+  {
+    std::lock_guard<std::mutex> lock(busy_mutex);
+    for (const auto& install : started.installs)
+      if (install.runtime_number == 4242) busy_title = install.title_id;
+  }
+  CHECK(!busy_title.empty());
+  host.SetSteamAccount("player", 76561198000000001ull);
+  CHECK(wait_logged("steamworks catch-up app=4242 waits: Close the game first."));
+  CHECK(own());
+  // Stopped, the next sign-in gives it the emulator for the account.
+  {
+    std::lock_guard<std::mutex> lock(busy_mutex);
+    busy_title.clear();
+  }
+  host.SetSteamAccount("player", 76561198000000001ull);
+  CHECK(wait_logged("steamworks catch-up app=4242 applied"));
+  CHECK(emulated("player"));
+
+  // A game whose emulator waits while the account is already known (here a startup pass after a kit reload) gets its
+  // files without another sign-in.
+  save(4242, 3, "game");
+  host.ReloadKit();
+  CHECK(wait_logged("steamworks app=4242 mode=game"));
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.status == RuntimeHostStatus::kReady; });
+  CHECK(own());
+  clear_log();
+  save(4242, 4, mode);
+  host.ReloadKit();
+  CHECK(wait_logged("steamworks catch-up app=4242 applied"));
+  CHECK(logged("steamworks app=4242 mode=" + mode + " waits: the Steam account is not known yet"));
+  CHECK(emulated("player"));
+  host.Shutdown();
+}
+
 // A moved game whose publication can't be redone (here its saved settings are older than its
 // title's) is not prepared again behind the player's back: Play and Update refuse, name the
 // confirmed way out (Recreate bottle), and change nothing.
@@ -13069,6 +13228,8 @@ int main(int argc, char** argv) {
   MigrationRewritesInstallPathsAndRepublishes();
   MovedModdedGameRepublishesUnowned();
   MovedGameStartupKeepsSteamAccount();
+  EmulatorWaitingForAccountCatchesUp("emulate");
+  EmulatorWaitingForAccountCatchesUp("steamclient");
   StuckMovedGameOffersRecreateBottle();
   PlayBeforeRepublishRepublishesFirst();
   MigrationSkipsRecordsOutsideOldPrefix();

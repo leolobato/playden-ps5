@@ -930,7 +930,7 @@ class RuntimeHost {
   // whether an update ran. The title keeps the launch entry it was prepared with.
   // A moved game, or an owned publication with a kit that admits unowned folders
   // (NeedsUnownedPublication), is published again at its revision.
-  // steam_account_known false (at startup): the Steam emulator's files wait for Play.
+  // steam_account_known false (at startup): the Steam emulator's files wait for the account (CatchUpSteamworks).
   // *prepare_again: refused for a reason only a new preparation gets past (recipe or settings).
   // The unowned upgrade alone (not moved, no newer settings) never refuses: its failure is in
   // *upgrade_deferred and the owned publication stays, as it played before.
@@ -986,6 +986,8 @@ class RuntimeHost {
   // try again shortly; a refusal is logged and left for Play.
   void RunDriveUpdateStep(Composition& composition);
   std::set<std::string> drive_update_tried_;  // install IDs, this session; worker only
+  // Install IDs whose emulator's files waited for the Steam account (SteamworksStep); worker only.
+  std::set<std::string> steam_step_waiting_;
   void FinishGamesMove(Composition& composition);
   // Relocate on the worker.
   RuntimeRelocationResult RunRelocate(Composition& composition, const RuntimeRelocation& request);
@@ -1011,10 +1013,16 @@ class RuntimeHost {
   // generic steps for every store, and Steam-file steps that act on the Steam files a game has,
   // whatever its store (the steam_api DLLs follow its "Steam features" setting). Call only while the
   // game is stopped; empty on success, otherwise why not (for the player).
-  // steam_account_known false: the emulator's files (which name the account) are left as they are.
+  // steam_account_known false: the emulator's files (which name the account) are left as they are until the account is
+  // known (CatchUpSteamworks).
   // run_through_launcher: a program run once in launcher mode starts now, before the record names it.
   std::string ApplyPreparationSteps(Composition& composition, const runtime::RuntimeInstall& record,
                                     bool steam_account_known = true, bool run_through_launcher = false);
+  // The recipe, settings, folders and programs the steps act on; false when the recipe is missing or the settings are
+  // invalid (publication reports those).
+  bool FillGameFiles(Composition& composition, GameFiles& files, bool run_through_launcher);
+  // The Steam step, now with the account, for the games whose emulator waited for it (steam_step_waiting_).
+  void CatchUpSteamworks(Composition& composition);
   // Generic steps.
   void MediaStep(Composition& composition, const runtime::RuntimeInstall& record);
   std::string Ue3EulaStep(const GameFiles& files);
@@ -1386,6 +1394,7 @@ class RuntimeHost {
   std::atomic<bool> steam_online_notice_{true};
   bool title_names_changed_ = false;
   bool installs_recheck_requested_ = false;
+  bool steam_catch_up_due_ = false;  // guarded by mutex_: CatchUpSteamworks has games to try
   bool steam_account_changed_ = false;  // guarded by mutex_: kept Steam sessions follow the account
   // The Steam session for this batch of work, read before its effective-UID hold (worker thread only).
   std::optional<runtime::OnlineSession> batch_online_session_;
