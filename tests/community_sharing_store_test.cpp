@@ -197,7 +197,7 @@ void Votes(const fs::path& base) {
                      "\",\"revision\":\"" + kRevB + "\",\"vote\":\"up\"}],\"asked\":[{\"recipe_id\":\"" + kId +
                      "\",\"revision\":\"" + kRevA + "\"},{\"recipe_id\":\"" + kId + "\",\"revision\":\"" + kRevB +
                      "\"},{\"recipe_id\":\"community-steam-10-other\",\"revision\":\"" + kRevA + "\"}],\"feedback\":[{\"game\":"
-                     "\"steam-10\",\"kit\":\"0.19\",\"settings\":\"" + settings + "\",\"prompts\":1,\"answered\":false}]}\n");
+                     "\"steam-10\",\"kit\":\"0.19\",\"settings\":\"" + settings + "\",\"prompts\":1,\"answered\":false}],\"retests\":[]}\n");
   const auto back = LoadVoteState(root, &error);
   CHECK(back && back->voting == VotingPreference::kOn && back->votes.size() == 2 && back->asked.size() == 3 &&
         back->feedback.size() == 1 && back->feedback[0].prompts == 1);
@@ -219,9 +219,31 @@ void Votes(const fs::path& base) {
   dirty.votes.push_back(CastVote{"bad\"id", kRevA, "up", ""});
   dirty.asked.emplace_back(kId, "nothex");
   dirty.feedback.push_back(FeedbackSeen{"Steam 10", "0.19", settings, 1, false});
-  CHECK(SerializeVoteState(dirty) == "{\"format_version\":1,\"voting\":\"unset\",\"votes\":[],\"asked\":[],\"feedback\":[]}\n");
-  // A file from before feedback reads with none.
+  dirty.retests.emplace_back("Steam 10", "0.12.1");
+  dirty.retests.emplace_back("steam-10", "0.12.1+abc");
+  CHECK(SerializeVoteState(dirty) ==
+        "{\"format_version\":1,\"voting\":\"unset\",\"votes\":[],\"asked\":[],\"feedback\":[],\"retests\":[]}\n");
+  // A file from before feedback (or before retests) reads with none.
   CHECK(ParseVoteState("{\"format_version\":1,\"voting\":\"on\",\"votes\":[],\"asked\":[]}")->feedback.empty());
+  CHECK(ParseVoteState("{\"format_version\":1,\"voting\":\"on\",\"votes\":[],\"asked\":[]}")->retests.empty());
+
+  // "Did the fix work?" is asked once per game and Playden version, and remembered across a save.
+  {
+    VoteState retests;
+    CHECK(!retests.WasRetestAsked("steam-10", "0.12.1"));
+    retests.MarkRetestAsked("steam-10", "0.12.1");
+    retests.MarkRetestAsked("steam-10", "0.12.1");
+    CHECK(retests.retests.size() == 1 && retests.WasRetestAsked("steam-10", "0.12.1") &&
+          !retests.WasRetestAsked("steam-10", "0.12.2") && !retests.WasRetestAsked("steam-20", "0.12.1"));
+    const auto text = SerializeVoteState(retests);
+    CHECK(text.find("\"retests\":[{\"game\":\"steam-10\",\"playden\":\"0.12.1\"}]") != std::string::npos);
+    const auto again = ParseVoteState(text);
+    CHECK(again && again->WasRetestAsked("steam-10", "0.12.1") && again->retests.size() == 1);
+    const auto skipped = ParseVoteState(
+        "{\"format_version\":1,\"retests\":[{\"game\":\"steam-10\"},{\"game\":7,\"playden\":\"0.1.0\"},\"x\","
+        "{\"game\":\"steam-11\",\"playden\":\"0.13.0-beta.1\"}]}");
+    CHECK(skipped && skipped->retests.size() == 1 && skipped->WasRetestAsked("steam-11", "0.13.0-beta.1"));
+  }
   CHECK(!ParseVoteState("[]") && !ParseVoteState("{\"format_version\":2}") && !ParseVoteState("nope"));
 
   // A malformed file reads as empty, with a note.
@@ -242,6 +264,27 @@ void Votes(const fs::path& base) {
   CHECK(SaveVoteState(root, many, &error));
   const auto big = LoadVoteState(root, &error);
   CHECK(big && big->votes.size() == kVoteStateMaxEntries);
+  // Every list full at once, votes with both times: the file still reads back whole.
+  {
+    VoteState full;
+    for (std::size_t i = 0; i < kVoteStateMaxEntries; ++i) {
+      char revision[65];
+      std::snprintf(revision, sizeof revision, "%064zx", i);
+      CastVote vote{kId, revision, "down", "slow"};
+      vote.at = 1'800'000'000;
+      vote.previous = "up";
+      vote.previous_at = 1'700'000'000;
+      full.votes.push_back(vote);
+      full.asked.emplace_back(kId, revision);
+      full.feedback.push_back(FeedbackSeen{"steam-" + std::to_string(i), "0.19", settings, 1, true});
+    }
+    for (std::size_t i = 0; i < kVoteStateMaxRetests + 50; ++i) full.MarkRetestAsked("steam-" + std::to_string(i), "0.12.1");
+    CHECK(full.retests.size() == kVoteStateMaxRetests && full.retests.front().first == "steam-50");
+    const auto text = SerializeVoteState(full);
+    const auto read = ParseVoteState(text);
+    CHECK(read && read->votes.size() == kVoteStateMaxEntries && read->asked.size() == kVoteStateMaxEntries &&
+          read->feedback.size() == kVoteStateMaxEntries && read->retests.size() == kVoteStateMaxRetests);
+  }
 
   // Valid votes.
   CHECK(IsValidVote("up", "") && IsValidVote("down", "") && IsValidVote("down", "controls"));
@@ -298,6 +341,45 @@ void OwnVoteInCounts() {
     CHECK(cut.size() >= 3 && cut.compare(cut.size() - 3, 3, "\xE2\x80\xA6") == 0);
     CHECK(cut.size() >= 5 && cut.compare(cut.size() - 5, 2, "\xC3\xA9") == 0);  // "é…": no half character
     CHECK(list && list->at(GameRef::Steam(274520)).notes.empty());  // an API without notes: none
+  }
+  // Fix shipped (optional, newer API): retest and the release with the fix. A bool retest only, on a game the list
+  // doesn't have as Works; fixed_in only with it, and only a version. An older summary reads exactly as before.
+  {
+    const std::string with_retest =
+        R"({"recipes":{},"games":{"steam":{"1":{"status":"broken","notes":"Crash.","retest":true,"fixed_in":"0.12.1"},)"
+        R"("2":{"status":"broken","retest":true},"3":{"status":"partial","retest":"yes","fixed_in":"0.12.1"},)"
+        R"("4":{"status":"broken","retest":false,"fixed_in":"0.12.1"},"5":{"status":"broken","retest":true,"fixed_in":12},)"
+        R"("6":{"status":"works","reports":2,"retest":true,"fixed_in":"0.12.1"},)"
+        R"("7":{"status":"broken","retest":true,"fixed_in":"soon"},"8":{"status":"refused","retest":1},)"
+        R"("9":{"status":"partial","retest":true,"fixed_in":"0.13.0-beta.2"}}}})";
+    CHECK(ParseVoteSummary(with_retest, nullptr));
+    const auto listed = ParseCompatList(with_retest);
+    CHECK(listed && listed->size() == 9);
+    const auto at = [&listed](std::uint32_t app) { return listed->at(GameRef::Steam(app)); };
+    CHECK(listed && at(1) == (ListedGame{"broken", 0, "Crash.", true, "0.12.1"}));
+    CHECK(listed && at(2) == (ListedGame{"broken", 0, "", true, ""}));
+    CHECK(listed && at(3) == (ListedGame{"partial", 0, "", false, ""}));   // not a bool: absent
+    CHECK(listed && at(4) == (ListedGame{"broken", 0, "", false, ""}));    // no retest: fixed_in ignored
+    CHECK(listed && at(5) == (ListedGame{"broken", 0, "", true, ""}));     // fixed_in not a string: absent
+    CHECK(listed && at(6) == (ListedGame{"works", 2, "", false, ""}));     // never on a game that works
+    CHECK(listed && at(7) == (ListedGame{"broken", 0, "", true, ""}));     // not a version: absent
+    CHECK(listed && at(8) == (ListedGame{"refused", 0, "", false, ""}));
+    CHECK(listed && at(9) == (ListedGame{"partial", 0, "", true, "0.13.0-beta.2"}));
+    // Whether this Playden has the fix: the release or newer; a nightly sits right after the release it was built on.
+    const auto version = [](const char* text) { return *update::ParseVersion(text); };
+    CHECK(PlaydenHasFix("", version("0.1.0"), std::nullopt));
+    CHECK(PlaydenHasFix("0.12.1", version("0.12.1"), std::nullopt) && PlaydenHasFix("0.12.1", version("0.13.0"), std::nullopt));
+    CHECK(!PlaydenHasFix("0.12.1", version("0.12.0"), std::nullopt));
+    CHECK(!PlaydenHasFix("0.12.1", version("0.12.1-beta.2"), std::nullopt));  // a beta comes before its release
+    CHECK(PlaydenHasFix("0.12.1-beta.2", version("0.12.1-beta.3"), std::nullopt) &&
+          PlaydenHasFix("0.12.1-beta.2", version("0.12.1"), std::nullopt));
+    CHECK(!PlaydenHasFix("soon", version("9.0.0"), std::nullopt));
+    const auto nightly = version("0.12.0-nightly.20261122.1");
+    CHECK(PlaydenHasFix("0.12.0-beta.3", nightly, version("0.12.0-beta.3")));   // built on the release with the fix
+    CHECK(!PlaydenHasFix("0.12.0-beta.4", nightly, version("0.12.0-beta.3")));  // the fix came after it
+    CHECK(!PlaydenHasFix("0.12.0-beta.3", nightly, std::nullopt));               // base unknown: by its own version
+    // The older summary above, without the new keys: nothing set.
+    for (const auto& [game, entry] : *list) CHECK(!entry.retest && entry.fixed_in.empty());
   }
 
   const auto shown = [](std::uint32_t up, std::uint32_t down, const CastVote* own, std::int64_t at) {

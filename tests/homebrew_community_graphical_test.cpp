@@ -239,6 +239,70 @@ int main(int argc, char** argv) {
             while (!model.state().navigation.modals.empty()) model.action("circle");
         }
         {
+            // Fix shipped (summary.json's retest and fixed_in): the fixture runs 0.12.1. Αστρικό Ταξίδι's fix is in it,
+            // Łódź Nights' in 0.13.0; the other listed games have neither field.
+            const auto shot = [&](const std::string& name) {
+                for (int frame = 0; frame < 90; ++frame) renderer.draw(model, 1920, 1080);
+                check(renderer.capture_png(output / (name + ".png"), 1920, 1080), "capture written");
+            };
+            {
+                // The checks above changed the list: as the fixture has it.
+                auto catalog = model.state().community;
+                (*catalog.compat)[playden::GameRef::Steam(900003)] =
+                    CommunityListing{"broken", 0, "Starts, then stops on a black screen after the intro video.", true, "0.12.1"};
+                (*catalog.compat)[playden::GameRef::Steam(900006)] =
+                    CommunityListing{"broken", 0, "Crashes when a save is loaded. (#1120, firmware 12.20)", true, "0.13.0"};
+                model.UpdateCommunityCatalog(catalog);
+            }
+            while (!model.state().navigation.modals.empty()) model.action("circle");
+            check(model.action("details:900003") && find_row(model, "details-compat") &&
+                      find_row(model, "details-compat")->title == "Broken" &&
+                      find_row(model, "details-compat")->value == "Fixed in 0.12.1, needs a retest",
+                  "a fix in this release: the details ask for a retest");
+            shot("retest-details");
+            check(model.action("details:900006") && find_row(model, "details-compat") &&
+                      find_row(model, "details-compat")->value == "Fixed in 0.13.0, update Playden to try it",
+                  "a fix in a newer release: the details say to update Playden");
+            shot("retest-details-older");
+            check(model.action("details:900005") && find_row(model, "details-compat")->value.empty(),
+                  "a listed game without the new fields reads as before");
+            while (!model.state().navigation.modals.empty()) model.action("circle");
+            check(model.action("details:900006") && model.action("focus:details-install") && model.action("cross") &&
+                      model.view().surface == "install" && model.view().notice && model.view().notice->kind == "info" &&
+                      model.view().notice->title == "Compatibility list: Fix shipped" &&
+                      model.view().notice->body ==
+                          "A fix for this game is in Playden 0.13.0. Update Playden to try it. "
+                          "Crashes when a save is loaded. (#1120, firmware 12.20)",
+                  "Install for a game whose fix is in a newer Playden: news, not a warning, then the list's notes");
+            shot("retest-install");
+            while (!model.state().navigation.modals.empty()) model.action("circle");
+            check(model.action("details:900003") && model.action("options") && model.action("focus:compat-notes") &&
+                      model.action("cross") && model.view().notice && model.view().notice->kind == "info" &&
+                      model.view().notice->body.rfind("A fix for this game is in Playden 0.12.1. Play it and tell us whether it "
+                                                      "works now. Starts, then stops",
+                                                      0) == 0,
+                  "a fix this Playden has: Compatibility notes ask to play it");
+            while (!model.state().navigation.modals.empty()) model.action("circle");
+            // The focused tile: a circular arrow in the accent colour instead of the red cross.
+            check(model.action("route:library") && model.action("focus:game-900001"), "the Library");
+            // As the pad moves it (the grid follows the focus it moved): fourth row, second column.
+            for (const char* move : {"down", "down", "down", "right"}) model.action(move);
+            check(model.state().navigation.focus_key == "game-900003",
+                  "the Library with Αστρικό Ταξίδι focused");
+            shot("retest-tile");
+            while (!model.state().navigation.modals.empty()) model.action("circle");
+            // After playing it: "Did the fix work?", even with asking after games off.
+            check(model.scenario("feedback-retest") && model.view().surface == "feedback", "feedback-retest scenario loads");
+            check(model.state().navigation.modals.back().title == "Did the fix work?" &&
+                      model.view().subtitle.rfind("Crème Brûlée & Clockwork — déjà vu was broken before 0.12.1.", 0) == 0 &&
+                      find_row(model, "feedback-retest-works") && find_row(model, "feedback-retest-works")->title == "It works now" &&
+                      find_row(model, "feedback-retest-broken") && find_row(model, "feedback-retest-broken")->title == "Still broken" &&
+                      find_row(model, "cancel") && find_row(model, "cancel")->title == "Not now" && !find_row(model, "feedback-never"),
+                  "the prompt asks about the fix: It works now, Still broken, Not now");
+            shot("retest-prompt");
+            model.action("circle");
+        }
+        {
             // Without the list (not fetched yet, or an API that has none) the page says nothing about the community.
             auto catalog = model.state().community;
             catalog.compat.reset();

@@ -2101,11 +2101,25 @@ class Render::Impl
 
     // A game's status on the community's compatibility list (#977), drawn quietly like the download mark: a dark circle
     // with a thin ring and a glyph in the status colour (a tick for Works, "!" for Partial, a cross for Broken and
-    // Refused), or a plain white question mark for a game the list doesn't have (no status). The design system's filled
-    // status plates read as alarms on a tile.
-    void compat_mark(const std::string &status, float cx, float cy)
+    // Refused), or a plain white question mark for a game the list doesn't have (no status). A game whose fix shipped
+    // (retest) gets a circular arrow in the accent colour instead: try it again. The design system's filled status
+    // plates read as alarms on a tile.
+    void compat_mark(const std::string &status, bool retest, float cx, float cy)
     {
         scene_.circle(cx, cy, 15.0F, kBackground.with_alpha(0.8F));
+        if (retest && !status.empty() && status != "works")
+        {
+            // Angles from 12 o'clock, clockwise (DrawList::arc): an open circle with its gap at the top, and an arrow
+            // head on its end pointing on round.
+            scene_.ring(cx, cy, 15.0F, 2.0F, kAccent);
+            constexpr float start = 0.55F, sweep = 5.0F, middle = 6.0F;
+            scene_.arc(cx, cy, 7.1F, 2.2F, start, sweep, kAccent);
+            const float end = start + sweep;
+            const float px = cx + middle * std::sin(end), py = cy - middle * std::cos(end);
+            const float tx = std::cos(end), ty = std::sin(end);  // clockwise along the circle at the end
+            scene_.triangle({px + tx * 1.6F - 3.6F, py + ty * 1.6F - 3.6F, 7.2F, 7.2F}, kAccent, 0.0F, std::atan2(tx, -ty));
+            return;
+        }
         if (status.empty())
         {
             const gfx::Color ink = kText.with_alpha(0.85F);
@@ -2265,7 +2279,8 @@ class Render::Impl
         if (compat_badge)
         {
             scene_.push_opacity(amount);
-            compat_mark(listed != nullptr ? listed->status : std::string{}, rect.x + 26.0F, rect.y + 26.0F);
+            compat_mark(listed != nullptr ? listed->status : std::string{}, listed != nullptr && listed->retest, rect.x + 26.0F,
+                        rect.y + 26.0F);
             scene_.pop_opacity();
         }
         if (downloading && progress >= 0.0F)
@@ -4146,7 +4161,10 @@ class Render::Impl
         // "Recipe available" takes its own line under Compatibility; Setup (and the facts above it) make room.
         const float recipe_line = recipe != view.rows.end() ? 38.0F : 0.0F;
         // With the community's list: "Confirmed by N players" under Compatibility, and Your rating on a row of its own.
-        const float count_line = has_listed && !listed->value.empty() ? 30.0F : 0.0F;
+        // A longer line ("Fixed in 0.12.1, update Playden to try it") takes two.
+        const int count_lines = !has_listed || listed->value.empty() ? 0
+                              : fonts_.regular.font->wrap(listed->value, 20.0F, 270.0F).size() > 1 ? 2 : 1;
+        const float count_line = 30.0F * static_cast<float>(count_lines);
         const float rating_row = has_listed ? 76.0F + count_line : 0.0F;
         const float facts_top = (setup == view.rows.end() ? 754.0F : setup_detail.empty() ? 694.0F : 662.0F) -
                                 (setup == view.rows.end() && !has_listed ? 0.0F : recipe_line) - rating_row;
@@ -4164,8 +4182,8 @@ class Render::Impl
         {
             detail_cell("Compatibility", listed->title, left, facts_top + 152.0F, 240.0F);
             if (!listed->value.empty())
-                ui::text(scene_, fonts_.regular, fonts_.regular.font->fit(listed->value, 20.0F, 270.0F), left,
-                         facts_top + 152.0F + 82.0F, 20.0F, kSecondary);
+                ui::paragraph(scene_, fonts_.regular, listed->value, left, facts_top + 152.0F + 82.0F, 20.0F, 270.0F,
+                              28.0F, kSecondary, 2);
             detail_cell("Your rating", own_rating, left, facts_top + 228.0F + count_line + recipe_line, 240.0F);
         }
         else
@@ -4926,7 +4944,9 @@ class Render::Impl
     float draw_sheet_notice(const ViewNotice &notice, const FactsBounds &bounds)
     {
         sheet_notice_.style.theme = theme_;
-        sheet_notice_.style.kind = notice.kind == "warning" ? ui::StatusKind::warning : ui::StatusKind::danger;
+        sheet_notice_.style.kind = notice.kind == "warning" ? ui::StatusKind::warning
+                                 : notice.kind == "info"    ? ui::StatusKind::info
+                                                            : ui::StatusKind::danger;
         sheet_notice_.style.dismissable = false;
         sheet_notice_.style.back_dismisses = false;
         sheet_notice_.style.slide = 0.0F;

@@ -4149,6 +4149,44 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     activate(simulation, "feedback-started");
     check(find_row(simulation, "feedback-logs")->value == "Off", "going back to the question keeps the logs left out");
 
+    // A game the list has as Fix shipped asks "Did the fix work?" after play, once per game and Playden version, even
+    // with asking off; never for a fix in a newer release than this one (the fixture runs 0.12.1).
+    {
+        const auto retest_game = playden::GameId::Steam(900003), newer_fix = playden::GameId::Steam(900006);
+        check(simulation.scenario("feedback-retest"), "feedback-retest scenario loads");
+        check(top().id == "feedback" && top().title == "Did the fix work?" &&
+                  simulation.state().vote_memory.WasRetestAsked("steam-900002", "0.12.1"),
+              "the retest prompt shows and is remembered at once");
+        activate(simulation, "feedback-retest-broken");
+        check(find_row(simulation, "feedback-result-broken") && find_row(simulation, "feedback-result-broken")->checked &&
+                  find_row(simulation, "feedback-logs")->value == "Included" && has_row(simulation, "feedback-reason-crash"),
+              "Still broken: a problem report as Broken, with the logs");
+        simulation.action("circle");
+        check(top().id == "feedback" && has_row(simulation, "feedback-retest-works") &&
+                  simulation.state().navigation.focus_key == "feedback-retest-broken",
+              "Circle goes back to the question, on Still broken");
+        activate(simulation, "feedback-retest-works");
+        check(find_row(simulation, "feedback-logs")->value == "On" && has_row(simulation, "feedback-send"),
+              "It works now: a works report, logs on");
+        while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+        simulation.NotifySessionEnded(game, 900);
+        check(top().id == "feedback" && top().title.find("How did") == 0, "the fix is asked about once; then the usual question");
+        while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+        // Asking off: the retest still asks, once. A scenario starts with an empty feedback memory.
+        check(simulation.scenario("feedback-prompt"), "feedback-prompt scenario loads");
+        activate(simulation, "feedback-never");
+        check(!simulation.state().ask_after_games, "asking after games is off");
+        check(!simulation.state().vote_memory.WasRetestAsked("steam-900003", "0.12.1"), "the fix hasn't been asked about here");
+        simulation.NotifySessionEnded(retest_game, 30);
+        check(top().id == "feedback" && top().title == "Did the fix work?", "with asking off, the fix still asks");
+        simulation.action("circle");
+        check(simulation.state().navigation.modals.empty(), "Not now closes it");
+        simulation.NotifySessionEnded(retest_game, 900);
+        check(simulation.state().navigation.modals.empty(), "Not now is remembered: no second retest prompt");
+        simulation.NotifySessionEnded(newer_fix, 900);
+        check(simulation.state().navigation.modals.empty(), "a fix in a newer release doesn't ask");
+    }
+
     check(simulation.scenario("feedback-problems"), "feedback-problems scenario loads");
     {
         // Result first, as two ticked choices, then what went wrong, then the report.

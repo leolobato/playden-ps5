@@ -461,7 +461,8 @@ void SharingService::Handle(SharingRequest request) {
       break;
     }
     case SharingRequestKind::FeedbackSeen:
-      memory_.NoteFeedback(request.feedback_game, request.feedback_kit, request.feedback_settings, request.feedback_answered);
+      if (!request.retest_playden.empty()) memory_.MarkRetestAsked(request.feedback_game, request.retest_playden);
+      else memory_.NoteFeedback(request.feedback_game, request.feedback_kit, request.feedback_settings, request.feedback_answered);
       SaveMemory();
       break;
     case SharingRequestKind::ResetSharingId: {

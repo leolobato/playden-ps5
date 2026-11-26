@@ -7,8 +7,9 @@
 //    "votes":[{"recipe_id":"...","revision":"<64 hex>","vote":"up"|"down","reason":"slow","at":1762500000,
 //              "previous":"up","previous_at":1762400000}],
 //    "asked":[{"recipe_id":"...","revision":"<64 hex>"}],
-//    "feedback":[{"game":"steam-440","kit":"0.19","settings":"<16 hex>","prompts":1,"answered":false}]}
-// "feedback" came later in the same format_version: older Playden versions skip it.
+//    "feedback":[{"game":"steam-440","kit":"0.19","settings":"<16 hex>","prompts":1,"answered":false}],
+//    "retests":[{"game":"steam-440","playden":"0.12.1"}]}
+// "feedback" and "retests" came later in the same format_version: older Playden versions skip them.
 // Not thread-safe: one owner loads, changes and saves it.
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -28,6 +29,8 @@ inline constexpr std::int64_t kFeedbackMinPlayedSeconds = 180;
 inline constexpr int kFeedbackMaxPrompts = 2;
 // The file keeps at most this many votes and asked revisions each; the oldest go first.
 inline constexpr std::size_t kVoteStateMaxEntries = 1000;
+// And at most this many "Did the fix work?" records (one per game and Playden version): few, to keep the file small.
+inline constexpr std::size_t kVoteStateMaxRetests = 256;
 
 enum class VotingPreference { kUnset, kOn, kOff };
 
@@ -81,6 +84,12 @@ struct VoteState {
   // A feedback prompt was shown, or a report sent (answered), for these settings. Other settings
   // than the ones last asked about start the count again.
   void NoteFeedback(std::string_view game, std::string_view kit, std::string_view settings, bool answered);
+
+  // The games Playden asked "Did the fix work?" about, each with the Playden version that asked (one question per game
+  // and version, answered or not), oldest first.
+  std::vector<std::pair<std::string, std::string>> retests;
+  bool WasRetestAsked(std::string_view game, std::string_view playden) const;
+  void MarkRetestAsked(std::string_view game, std::string_view playden);
 };
 
 // "up" or "down", and a reason that fits it ("" or one of the five, down only).

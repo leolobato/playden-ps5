@@ -76,6 +76,13 @@ bool NeedsNewerPlayden(const IndexEntry& entry, const update::Version& playden) 
          std::make_tuple(needed->major, needed->minor, needed->patch);
 }
 
+bool PlaydenHasFix(std::string_view fixed_in, const update::Version& running,
+                   const std::optional<update::Version>& running_base) {
+  if (fixed_in.empty()) return true;
+  const auto fixed = update::ParseVersion(fixed_in);
+  return fixed && !update::TrackOlder(running, running_base, *fixed, std::nullopt);
+}
+
 std::string Sha256Hex(std::string_view bytes) { return runtime::HashArtifactBytes(bytes).value_or(""); }
 bool IsRevision(std::string_view text) { return LowerHex(text, 64); }
 bool IsRevisionPrefix(std::string_view text) { return LowerHex(text, 32); }
@@ -397,6 +404,14 @@ std::optional<CompatList> ParseCompatList(std::string_view json) {
           listed.reports = static_cast<std::uint32_t>(std::min<std::uint64_t>(*number, 0xffffffffu));
       // Notes are optional (an older API has none): anything but a string is no notes.
       if (const auto* notes = value.Find("notes"); notes && notes->is_string()) listed.notes = CompatNotesText(notes->text());
+      // A fix shipped (optional, newer API): only for a game the list doesn't have as Works. Anything but a bool is
+      // no retest, and the release that has the fix counts only with it, and only when it reads as a version.
+      if (const auto* retest = value.Find("retest"); retest && retest->is_bool() && retest->boolean() && how != "works") {
+        listed.retest = true;
+        if (const auto* fixed = value.Find("fixed_in"); fixed && fixed->is_string() && fixed->text().size() <= 64 &&
+                                                        update::ParseVersion(fixed->text()))
+          listed.fixed_in = fixed->text();
+      }
       list[game] = std::move(listed);
     }
   }

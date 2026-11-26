@@ -245,6 +245,7 @@ void set_up(Simulation& model, const std::filesystem::path& base, bool with_cata
     if (!with_catalog) return;
     playden::homebrew::CommunityCatalog catalog;
     catalog.release_tag = "r20261022.1";
+    catalog.fetched_at = 999'000;  // a copy Playden has (a session's question waits for one)
     catalog.games[kGameRef] = {offer(kRevision)};
     model.UpdateCommunityCatalog(catalog);
     model.SetCommunityRecipeLoader([](const std::string& revision) -> std::optional<rt::CommunityRecipe> {
@@ -721,6 +722,63 @@ void share_and_vote(const std::filesystem::path& base) {
         check(vote != other.end() && vote->vote.reason == "other" && vote->vote.reason_text == "The map screen flickers",
               "and so does its vote");
         while (!model.state().navigation.modals.empty()) model.action("circle");
+    }
+    // A game the list has as Fix shipped in this Playden (0.6.0): "Did the fix work?" after play, a works report from the
+    // prompt with the logs, and the worker remembers it was asked for this version.
+    {
+        auto listed = model.state().community;
+        const auto before = listed.compat;
+        listed.compat = std::map<playden::GameRef, playden::homebrew::CommunityListing>{{kGameRef, {"broken", 0, "", true, "0.6.0"}}};
+        model.UpdateCommunityCatalog(listed);
+        (void)model.TakeSharingRequests();
+        // A session that ends before the list is known waits for it (its saved copy or the first fetch).
+        auto unknown = listed;
+        unknown.compat.reset();
+        unknown.fetched_at = 0;
+        unknown.last_error.clear();
+        model.UpdateCommunityCatalog(unknown);
+        model.NotifySessionEnded(kGame, 900);
+        check(model.state().navigation.modals.empty(), "no question before the list is known");
+        model.UpdateCommunityCatalog(listed);
+        check(model.view().surface == "feedback" && model.state().navigation.modals.back().title == "Did the fix work?" &&
+                  contains(model.view().subtitle, "Darkwood was broken before 0.6.0."),
+              "a fix this Playden has: the prompt asks about it once the list arrives");
+        auto noted = model.TakeSharingRequests();
+        check(noted.size() == 1 && noted[0].kind == SharingRequestKind::FeedbackSeen && noted[0].feedback_game == "steam-274520" &&
+                  noted[0].retest_playden == "0.6.0",
+              "the worker is told the fix was asked about by this version");
+        activate(model, "feedback-retest-works");
+        check(find_row(model, "feedback-logs") && find_row(model, "feedback-logs")->selected, "It works now: logs on");
+        activate(model, "feedback-send");
+        const auto sent = model.TakeSharingRequests();
+        const auto report = std::find_if(sent.begin(), sent.end(), [](const SharingRequest& r) { return r.kind == SharingRequestKind::Report; });
+        check(report != sent.end() && report->report.result == "works" && report->report.origin == "prompt" && report->attach_logs,
+              "It works now sends a works report from the prompt, with the logs");
+        if (report != sent.end()) {
+            SharingResult counted;
+            counted.kind = SharingRequestKind::Report;
+            counted.ticket = report->ticket;
+            counted.game_id = kGame;
+            counted.report.ok = true;
+            counted.report.id = "r-retest";
+            counted.report.state = "counted";
+            model.ApplySharingResult(counted);
+        }
+        while (!model.state().navigation.modals.empty()) model.action("circle");
+        for (auto& request : noted) service.Submit(std::move(request));
+        service.Wait();
+        if (auto memory = service.Memory()) model.UpdateVoteMemory(*memory);
+        check(contains(read_text(base / "community-recipes" / cm::kVoteStateFileName),
+                       "\"retests\":[{\"game\":\"steam-274520\",\"playden\":\"0.6.0\"}]"),
+              "the worker saves it");
+        check(model.state().vote_memory.WasRetestAsked("steam-274520", "0.6.0"), "and the model keeps it");
+        model.NotifySessionEnded(kGame, 900);
+        check(model.state().navigation.modals.empty() || model.state().navigation.modals.back().title != "Did the fix work?",
+              "the fix is asked about once per Playden version");
+        while (!model.state().navigation.modals.empty()) model.action("circle");
+        (void)model.TakeSharingRequests();
+        listed.compat = before;
+        model.UpdateCommunityCatalog(listed);
     }
     // A newer revision: new settings ask again; Not now twice, then no more.
     auto catalog = model.state().community;
@@ -1390,6 +1448,9 @@ void feedback_prompt_waits_for_library(const std::filesystem::path& base) {
     game.id = kGame;
     game.title = "Darkwood";
     check(model.UpdateLibrary({{other, game}, false, {}, false, true, 100}), "library delivered");
+    // No compatibility list yet (whether a fix shipped for the game decides the question): it waits up to 30 seconds.
+    check(model.state().navigation.modals.empty(), "the prompt waits a moment for the compatibility list");
+    model.SetWallClock(1'000'031);
     check(model.view().surface == "feedback" && model.view().title == "Did Darkwood start?",
           "once the library lists the game, the prompt names it");
     playden::GameSummary third;

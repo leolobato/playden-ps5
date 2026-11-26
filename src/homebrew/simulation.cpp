@@ -20,6 +20,8 @@
 #include "stores/local/scanner.h"
 #include "steam/backend/json.h"
 #include "steam/secret.h"
+#include "community/recipe_release.h"
+#include "update/version.h"
 
 #include <cstring>
 #include <algorithm>
@@ -710,9 +712,20 @@ std::string CompatStatusLabel(const std::string& status) {
 }
 
 // The Install sheet's warning for a game the list has as Partial, Broken or Refused: what that status means, then the
-// list's notes when it has them (the list's Status table says the same).
-ViewNotice CompatNotice(const CommunityListing& listed) {
+// list's notes when it has them (the list's Status table says the same). A game whose fix shipped (retest) gets news
+// instead of a warning: which release has the fix, and that the list wants to hear how it runs now, or that this
+// Playden (has_fix false) is older than that release.
+ViewNotice CompatNotice(const CommunityListing& listed, bool has_fix) {
     ViewNotice notice;
+    if (listed.retest) {
+        notice.kind = "info";
+        notice.title = "Compatibility list: Fix shipped";
+        notice.body = (listed.fixed_in.empty() ? std::string("A fix for this game is in Playden.")
+                                               : "A fix for this game is in Playden " + listed.fixed_in + ".") +
+                      (has_fix ? " Play it and tell us whether it works now." : " Update Playden to try it.");
+        if (!listed.notes.empty()) notice.body += " " + listed.notes;
+        return notice;
+    }
     notice.kind = listed.status == "partial" ? "warning" : "danger";
     const std::string meaning = listed.status == "partial" ? "It plays, with a problem that gets in the way."
                               : listed.status == "broken" ? "It starts, but doesn't reach a playable state."
@@ -1451,6 +1464,7 @@ void Simulation::SetWallClock(std::int64_t unix_seconds) {
     state_.clock_ticks = unix_seconds;
     account_link_tick();
     settle_publisher_sign_in();
+    if (!feedback_prompts_.empty()) show_feedback_prompt();  // one that waited for the list long enough
     if (elapsed > 0 && live_notices_visible()) {
         for (auto& notice : state_.notices)
             if (!notice.persistent) notice.remaining_ticks -= static_cast<int>(elapsed);
@@ -7139,10 +7153,14 @@ void Simulation::seed_community_scenario(bool offline) {
     synthetic_community_[older.recipe.revision] = std::move(older);
     // The compatibility list: the first game Works, the second too with players' confirmations, the third is Broken,
     // the fifth Refused, the twelfth Partial, each of the last three with the list's notes; the fourth isn't listed.
+    // The third has a fix in the running fixture release (Fix shipped, kFixtureRunningVersion), the sixth (not
+    // installed) a fix in a newer release than that.
     catalog.compat = std::map<GameRef, CommunityListing>{
         {GameRef::Steam(900001), {"works", 0, ""}},
         {GameRef::Steam(900002), {"works", 14, ""}},
-        {GameRef::Steam(900003), {"broken", 0, "Starts, then stops on a black screen after the intro video. (#412, firmware 12.20)"}},
+        {GameRef::Steam(900003), {"broken", 0, "Starts, then stops on a black screen after the intro video. (#412, firmware 12.20)",
+                                  true, "0.12.1"}},
+        {GameRef::Steam(900006), {"broken", 0, "Crashes when a save is loaded. (#1120, firmware 12.20)", true, "0.13.0"}},
         {GameRef::Steam(900005), {"refused", 0, "Needs the EA app. (#851, firmware 12.20)"}},
         {GameRef::Steam(900012), {"partial", 0, "Plays, but the world can't be saved: the game sees less than 1 MB of free disk space. (#76, firmware 13.60)"}}};
     state_.community = std::move(catalog);
@@ -8027,6 +8045,9 @@ bool Simulation::scenario(const std::string& name) {
         const bool imported = name == "share-imported";
         if (imported) add_fixture_imported_game(state_);
         const auto id = imported ? fixture_imported_game() : GameId::Steam(900002);
+        // feedback-retest: the list has the game as Broken, with a fix in this (fixture) release.
+        if (name == "feedback-retest" && state_.community.compat)
+            (*state_.community.compat)[GameRef::Steam(900002)] = {"broken", 0, "", true, "0.12.1"};
         state_.account().authentication = AuthState::SignedIn;
         state_.navigation.modals.clear();
         state_.navigation.route = Route::Details;
@@ -8562,7 +8583,10 @@ void Simulation::rebuild_view() {
             // The same warning the Install sheet shows, for the game the menu is for. A list refreshed meanwhile may
             // have it as Works now, or not at all: then there is nothing to warn about.
             const auto id = state_.navigation.selected_game_id;
-            if (compat_notes_offered(id)) view_.notice = CompatNotice(*compat_listing(state_, id));
+            if (compat_notes_offered(id)) {
+                const auto& listed = *compat_listing(state_, id);
+                view_.notice = CompatNotice(listed, has_compat_fix(listed));
+            }
             else view_.subtitle = "The compatibility list has no notes for this game now.";
         }
         if (modal.id == "install") {
@@ -8570,7 +8594,7 @@ void Simulation::rebuild_view() {
             // notes. Install stays one press (#977).
             const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
             if (const auto* listed = compat_listing(state_, id); listed && listed->status != "works")
-                view_.notice = CompatNotice(*listed);
+                view_.notice = CompatNotice(*listed, has_compat_fix(*listed));
         }
         if (modal.id == "install" && live()) {
             // Shown when the game does not fit as is: say why, and where it would go.
@@ -8767,7 +8791,14 @@ void Simulation::rebuild_view() {
             const auto& draft = *feedback_;
             view_.eyebrow = "Feedback";
             const std::string recipe = draft.recipe ? " Your answer also rates the recipe \u201c" + draft.recipe_title + "\u201d." : "";
-            if (draft.step == "ask")
+            if (draft.step == "ask" && draft.retest) {
+                const auto* game = find_game(state_, draft.game);
+                const auto* listed = compat_listing(state_, draft.game);
+                const std::string name = game ? game->title : std::string("This game");
+                const std::string was = listed && listed->status == "partial" ? " had a problem" : " was broken";
+                view_.subtitle = name + was + (draft.fixed_in.empty() ? std::string(" before this fix.")
+                                                                       : " before " + draft.fixed_in + ".") + recipe;
+            } else if (draft.step == "ask")
                 view_.subtitle = (draft.short_session ? std::string("A short session: tell us whether it got past starting.")
                                                       : std::string("Your answer helps other players and the compatibility list.")) + recipe;
             else if (draft.step == "good")
@@ -9222,7 +9253,12 @@ void Simulation::rebuild_view() {
             }
             if (modal.id == "feedback" && feedback_) {
                 const auto& draft = *feedback_;
-                if (action_key == "feedback-good" || action_key == "feedback-started") {
+                if (action_key == "feedback-retest-works" || action_key == "feedback-retest-broken") {
+                    const bool works = action_key == "feedback-retest-works";
+                    item.kind = RowKind::Choice;
+                    item.title = works ? "It works now" : "Still broken";
+                    item.subtitle = works ? "It played as it should." : "It crashed, didn't start, or still has the problem.";
+                } else if (action_key == "feedback-good" || action_key == "feedback-started") {
                     item.kind = RowKind::Choice;
                     item.subtitle = action_key == "feedback-good" ? "It played as it should." : "It reached its menu or started playing.";
                 } else if (action_key == "feedback-problems" || action_key == "feedback-no-start") {
@@ -9278,7 +9314,8 @@ void Simulation::rebuild_view() {
                     item.subtitle = "Playden stops asking after games. Settings › Accounts turns it on again.";
                 } else if (action_key == "cancel") {
                     item.title = "Not now";
-                    if (draft.after_play && draft.step == "ask") item.subtitle = "Game details › Share feedback… asks again later.";
+                    if (draft.retest && draft.step == "ask") item.subtitle = "Not asked again in this version. Share feedback… in Game details still works.";
+                    else if (draft.after_play && draft.step == "ask") item.subtitle = "Game details › Share feedback… asks again later.";
                 }
             }
             const bool sharing_sheet = modal.id == "share-recipe" || modal.id == "vote-recipe";
@@ -11174,6 +11211,10 @@ void Simulation::rebuild_view() {
             auto& cell = row("details-compat", RowKind::Status, listed ? CompatStatusLabel(listed->status) : "Untested", "");
             if (listed && listed->reports > 0)
                 cell.value = "Confirmed by " + std::to_string(listed->reports) + (listed->reports == 1 ? " player" : " players");
+            // Fix shipped: "Broken · fixed in 0.12.1, needs a retest", or "…, update Playden to try it" on an older one.
+            if (listed && listed->retest)
+                cell.value = (listed->fixed_in.empty() ? std::string("Fixed") : "Fixed in " + listed->fixed_in) +
+                             (has_compat_fix(*listed) ? ", needs a retest" : ", update Playden to try it");
             cell.enabled = false;
         }
         // Invite friends, beside Play, for a game set to Online (online-steam).
@@ -11573,7 +11614,7 @@ void Simulation::rebuild_view() {
         auto& ask = add("settings-ask-after-games", RowKind::Toggle, "Ask how games ran", "toggle-ask-after-games");
         ask.selected = state_.ask_after_games;
         ask.subtitle = state_.ask_after_games ? "After you play, Playden asks how the game ran. Nothing is sent until you choose Send."
-                                              : "Off: Playden doesn't ask. Share feedback… in a game's actions still works.";
+                                              : "Off: Playden doesn't ask, apart from whether a fix the list names worked. Share feedback… in a game's actions still works.";
         auto& votes = add("settings-recipe-votes", RowKind::Toggle, "Recipe votes", "toggle-recipe-votes");
         votes.selected = state_.recipe_votes == playden::RecipeVotesPreference::kOn;
         votes.subtitle = state_.recipe_votes == playden::RecipeVotesPreference::kOn
@@ -12620,7 +12661,8 @@ void Simulation::cancel() {
             feedback_->error.clear();
             refresh_share_sheet();
             auto& modal = state_.navigation.modals.back();
-            const std::string answer = feedback_->short_session ? (good ? "feedback-started" : "feedback-no-start")
+            const std::string answer = feedback_->retest        ? (good ? "feedback-retest-works" : "feedback-retest-broken")
+                                     : feedback_->short_session ? (good ? "feedback-started" : "feedback-no-start")
                                                                 : (good ? "feedback-good" : "feedback-problems");
             if (const auto found = std::find(modal.action_keys.begin(), modal.action_keys.end(), answer); found != modal.action_keys.end()) {
                 modal.focused_action = static_cast<int>(found - modal.action_keys.begin());
@@ -15181,8 +15223,7 @@ void Simulation::activate() {
         save_profile();
     }
     else if (action_name == "toggle-ask-after-games") {
-        state_.ask_after_games = !state_.ask_after_games;
-        if (!state_.ask_after_games) feedback_prompts_.clear();
+        state_.ask_after_games = !state_.ask_after_games;  // asking off: show_feedback_prompt keeps only retests
         save_profile();
     }
     else if (action_name == "web-forget-browsers") {
@@ -15286,7 +15327,17 @@ void Simulation::activate() {
             if (state_.recipe_votes == playden::RecipeVotesPreference::kOn) send_vote();
         }
     }
-    else if (feedback_ && (action_name == "feedback-good" || action_name == "feedback-started")) {
+    else if (feedback_ && feedback_->ticket == 0 && action_name == "feedback-retest-broken") {
+        // Still broken: a problem report, as Broken, with the logs.
+        feedback_->step = "problems";
+        feedback_->result = "broken";
+        feedback_->reason.clear();
+        feedback_->share_recipe = false;
+        feedback_->error.clear();
+        refresh_share_sheet();
+    }
+    else if (feedback_ && (action_name == "feedback-good" || action_name == "feedback-started" ||
+                           action_name == "feedback-retest-works")) {
         feedback_->step = "good";
         feedback_->result = "works";
         feedback_->reason.clear();
@@ -15352,8 +15403,7 @@ void Simulation::activate() {
     }
     else if (action_name == "feedback-never") {
         // Only the question stops: votes and Share feedback… still work.
-        state_.ask_after_games = false;
-        feedback_prompts_.clear();
+        state_.ask_after_games = false;  // queued sessions of games whose fix shipped still ask (show_feedback_prompt)
         close_sheet("feedback");
         feedback_.reset();
         save_profile();
@@ -18196,6 +18246,7 @@ void Simulation::forget_gog_games() {
 void Simulation::UpdateCommunityCatalog(CommunityCatalog catalog) {
     if (catalog == state_.community) return;
     state_.community = std::move(catalog);
+    show_feedback_prompt();  // a session waiting for the list (whether its game's fix shipped)
     // A refresh may bring back an object that could not be read: ask again.
     for (auto it = community_objects_.begin(); it != community_objects_.end();)
         it = it->second ? std::next(it) : community_objects_.erase(it);
@@ -20410,10 +20461,20 @@ void Simulation::send_vote() {
 }
 
 void Simulation::show_feedback_prompt() {
-    if (!state_.ask_after_games) {
-        feedback_prompts_.clear();
+    // Whether the game's fix shipped decides what to ask: a session waits for the compatibility list (its saved copy or
+    // the first fetch, which can come a moment after the game) for at most kFeedbackListWaitSeconds.
+    constexpr std::int64_t kFeedbackListWaitSeconds = 30;
+    const auto& community = state_.community;
+    const bool list_known = !live() || community.compat || community.fetched_at > 0 || !community.last_error.empty();
+    if (!list_known && !feedback_prompts_.empty() &&
+        state_.clock_ticks - feedback_prompts_.front().queued_at < kFeedbackListWaitSeconds)
         return;
-    }
+    // With asking off, only "Did the fix work?" is left to ask (a game the list has as Fix shipped).
+    if (!state_.ask_after_games)
+        std::erase_if(feedback_prompts_, [this](const FeedbackPrompt& prompt) {
+            const auto* listed = compat_listing(state_, prompt.game);
+            return !listed || !listed->retest;
+        });
     if (feedback_prompts_.empty() || (live() && !state_.vote_memory_loaded)) return;
     const auto route = state_.navigation.route;
     if (!state_.navigation.modals.empty() || state_.editor.active || route == Route::Startup || route == Route::SignIn ||
@@ -20430,6 +20491,12 @@ void Simulation::show_feedback_prompt() {
             return;
         }
         feedback_prompts_.erase(feedback_prompts_.begin());
+        // A game whose fix shipped asks about the fix instead, even when the player turned asking off: once per game
+        // and Playden version, whatever the answer, and only on a Playden that has the fix.
+        if (retest_due(prompt.game)) {
+            open_retest(prompt.game);
+            return;
+        }
         const auto question = cm::NextFeedbackQuestion(state_.vote_memory, ToInstallId(prompt.game), feedback_kit(),
                                                        feedback_settings(prompt.game), prompt.played_seconds,
                                                        state_.ask_after_games);
@@ -20459,7 +20526,7 @@ void Simulation::NotifyStartFailed(GameId id, std::string message) {
 
 void Simulation::NotifySessionEnded(GameId id, std::int64_t played_seconds) {
     if (!id.valid() || played_seconds < 0) return;
-    feedback_prompts_.push_back({id, played_seconds});
+    feedback_prompts_.push_back({id, played_seconds, state_.clock_ticks});
     show_feedback_prompt();
     rebuild_view();
 }
@@ -20562,12 +20629,73 @@ void Simulation::open_feedback(GameId id, bool short_session, bool after_play) {
                 feedback_actions(), 0, false});
 }
 
+std::string Simulation::running_playden_version() const {
+    // In synthetic data, the release the fixture compatibility list's fixes compare with (one is in it, one newer).
+    std::string text = !sharing_playden_version_.empty() ? sharing_playden_version_
+                     : live()                            ? state_.self_update.current
+                                                         : std::string("0.12.1");
+    if (const auto plus = text.find('+'); plus != std::string::npos) text.resize(plus);  // build metadata
+    return playden::update::ParseVersion(text) ? text : std::string();
+}
+
+bool Simulation::has_compat_fix(const CommunityListing& listed) const {
+    if (listed.fixed_in.empty()) return true;
+    const auto running = playden::update::ParseVersion(running_playden_version());
+    // Without a running version to compare, Playden can't tell: as for a newer release, it doesn't ask.
+    if (!running) return false;
+    // This build, when it is a nightly, sits after the release it was built on.
+    const auto base = *running == playden::update::CurrentVersion() ? playden::update::NightlyBase()
+                                                                     : std::optional<playden::update::Version>{};
+    return cm::PlaydenHasFix(listed.fixed_in, *running, base);
+}
+
+bool Simulation::retest_due(GameId id) const {
+    const auto* listed = compat_listing(state_, id);
+    if (!listed || !listed->retest || listed->status == "works" || !has_compat_fix(*listed)) return false;
+    const auto playden = running_playden_version();
+    return !playden.empty() && !state_.vote_memory.WasRetestAsked(ToInstallId(id), playden);
+}
+
+void Simulation::open_retest(GameId id) {
+    const auto* listed = compat_listing(state_, id);
+    if (!listed) return;
+    FeedbackDraft draft;
+    draft.game = id;
+    draft.after_play = true;  // a report from the prompt after playing (origin "prompt"), however long the session
+    draft.retest = true;
+    draft.fixed_in = listed->fixed_in;
+    draft.kit = feedback_kit();
+    draft.settings = feedback_settings(id);
+    if (const auto applied = AppliedCommunityRecipe(id); applied && !cm::IsImportedRecipeId(applied->recipe_id)) {
+        draft.recipe = applied;
+        draft.recipe_title = community_title(id, applied->recipe_id, applied->revision);
+    }
+    draft.recipe_offer = changes_worth_sharing(id);
+    // Shown is asked: Not now doesn't bring it back for this Playden version.
+    const auto key = ToInstallId(id);
+    const auto playden = running_playden_version();
+    state_.vote_memory.MarkRetestAsked(key, playden);
+    if (live()) {
+        SharingRequest request;
+        request.kind = SharingRequestKind::FeedbackSeen;
+        request.ticket = ++next_sharing_ticket_;
+        request.game_id = id;
+        request.feedback_game = key;
+        request.retest_playden = playden;
+        pending_sharing_requests_.push_back(std::move(request));
+    }
+    feedback_ = std::move(draft);
+    open_modal({"feedback", "Did the fix work?", state_.navigation.focus_key, feedback_actions(), 0, false});
+}
+
 std::vector<std::string> Simulation::feedback_actions() const {
     if (!feedback_) return {"cancel"};
     const auto& draft = *feedback_;
     std::vector<std::string> actions;
     // Groups: the answer, the report's details, then the actions apart.
-    if (draft.step == "ask") {
+    if (draft.step == "ask" && draft.retest) {
+        actions = {"feedback-retest-works", "feedback-retest-broken", "divider"};
+    } else if (draft.step == "ask") {
         if (draft.short_session) actions = {"feedback-started", "feedback-no-start"};
         else actions = {"feedback-good", "feedback-problems"};
         actions.push_back("divider");
@@ -20792,6 +20920,7 @@ void Simulation::UpdateVoteMemory(cm::VoteState memory) {
         }
         memory.feedback.push_back(std::move(merged));
     }
+    for (const auto& [game, playden] : state_.vote_memory.retests) memory.MarkRetestAsked(game, playden);
     state_.vote_memory = std::move(memory);
     state_.vote_memory_loaded = true;
     show_feedback_prompt();

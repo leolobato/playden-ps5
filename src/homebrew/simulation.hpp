@@ -423,11 +423,14 @@ inline std::string CommunityRecipeLabel(const CommunityRecipeOffer& offer) { ret
 // game gets those of its GameRef (Simulation::community_ref: a Steam game's app ID, an imported game's Steam app ID).
 // Search by name (the chooser's "Search recipes by game name…") finds any game here that has recipes, by its name.
 // A game of the community's compatibility list: how it is listed ("works", "partial", "broken" or "refused"), how
-// many players confirmed a game listed as Works, and the list's notes for it (empty: none).
+// many players confirmed a game listed as Works, and the list's notes for it (empty: none). retest: a fix shipped and
+// the list wants the game tried again, in the Playden release fixed_in (empty: not said).
 struct CommunityListing {
     std::string status;
     std::uint32_t reports = 0;
     std::string notes;
+    bool retest = false;
+    std::string fixed_in;
     bool operator==(const CommunityListing&) const = default;
 };
 struct CommunityCatalog {
@@ -475,6 +478,8 @@ struct SharingRequest {
     // FeedbackSeen: a feedback prompt was shown (or a report sent: answered) for the game's settings.
     std::string feedback_game, feedback_kit, feedback_settings;
     bool feedback_answered = false;
+    // FeedbackSeen: "Did the fix work?" was asked about feedback_game by this Playden version (no settings or kit).
+    std::string retest_playden;
     bool use_account = false;  // Submit, Report: send the linked account (the player shares as it)
 };
 struct SharingResult {
@@ -2122,6 +2127,8 @@ private:
         bool short_session = false;  // asks "Did it start?"
         bool after_play = false;     // the prompt after a session, not Share feedback…
         bool from_failure = false;   // Report the problem from "couldn't start": no question to go back to
+        bool retest = false;         // asks "Did the fix work?" about a game the list has as fixed (Fix shipped)
+        std::string fixed_in;        // the release with the fix, as the list says it
         std::string step = "ask";    // ask, good or problems
         std::string result;          // works, partial, broken or no-start
         std::string reason;          // a problem's reason (the vote reasons)
@@ -2139,7 +2146,7 @@ private:
         std::string idempotency_key;
     };
     std::optional<FeedbackDraft> feedback_;
-    struct FeedbackPrompt { GameId game; std::int64_t played_seconds = 0; };
+    struct FeedbackPrompt { GameId game; std::int64_t played_seconds = 0; std::int64_t queued_at = 0; };
     std::vector<FeedbackPrompt> feedback_prompts_;  // sessions that may ask, oldest first
     std::vector<SharingRequest> pending_sharing_requests_;
     std::map<std::uint64_t, playden::community::CastVote> votes_in_flight_;  // by ticket
@@ -2159,6 +2166,14 @@ private:
     void apply_account_answer(SharingRequestKind kind, const SharingResult::AccountAnswer& answer);
     void account_link_tick();
     void open_feedback(GameId id, bool short_session, bool after_play);
+    // "Did the fix work?" after a session of a game the list has as Fix shipped, once per game and Playden version.
+    void open_retest(GameId id);
+    // This Playden's version as the retest memory keys it ("0.12.1", "0.12.1-beta.2"): no build metadata; empty when
+    // not known. In synthetic data, a fixture release.
+    std::string running_playden_version() const;
+    // Whether this Playden has the fix the list names: running fixed_in or newer (true when the list names no release).
+    bool has_compat_fix(const CommunityListing& listed) const;
+    bool retest_due(GameId id) const;
     [[nodiscard]] std::vector<std::string> feedback_actions() const;
     void send_feedback();
     void open_feedback_privacy();

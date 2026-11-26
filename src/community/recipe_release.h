@@ -48,6 +48,12 @@ struct IndexEntry {
 // the release numbers count, so every nightly and beta of 0.13.0 reads a recipe for 0.13.0.
 bool NeedsNewerPlayden(const IndexEntry& entry, const update::Version& playden);
 
+// Whether a Playden running `running` has a fix that shipped in the release `fixed_in`: it is that release or newer on
+// the update track, where a nightly sits right after the release it was built on (running_base, update::NightlyBase;
+// update::TrackOlder). True when the list names no release; false when fixed_in isn't a version.
+bool PlaydenHasFix(std::string_view fixed_in, const update::Version& running,
+                   const std::optional<update::Version>& running_base);
+
 // A game index.json lists: its name (the newest recipe's game.name; empty when not a game name) and its recipes.
 struct IndexGame {
   std::string name;
@@ -103,11 +109,15 @@ std::optional<VoteTotals> ParseVoteSummary(std::string_view json, std::string* e
 
 // A game of the compatibility list, from summary.json's "games": how it is listed ("works", "partial", "broken" or
 // "refused"), how many players confirmed a game listed as Works, and the list's notes for it (plain text; empty when
-// the API sends none, as before it had them).
+// the API sends none, as before it had them). retest: a release fixed what kept the game from working, and the list
+// wants players to try it again; fixed_in is that Playden release ("0.12.1"; empty when not said). Both are optional
+// (an older API has neither), and fixed_in is kept only with retest.
 struct ListedGame {
   std::string status;
   std::uint32_t reports = 0;
   std::string notes;
+  bool retest = false;
+  std::string fixed_in;
   bool operator==(const ListedGame&) const = default;
 };
 using CompatList = std::map<GameRef, ListedGame>;

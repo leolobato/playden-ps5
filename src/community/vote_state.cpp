@@ -61,9 +61,9 @@ const char* VotingName(VotingPreference voting) {
 }
 
 template <typename T>
-void KeepNewest(std::vector<T>* items) {
-  if (items->size() > kVoteStateMaxEntries)
-    items->erase(items->begin(), items->begin() + static_cast<std::ptrdiff_t>(items->size() - kVoteStateMaxEntries));
+void KeepNewest(std::vector<T>* items, std::size_t most = kVoteStateMaxEntries) {
+  if (items->size() > most)
+    items->erase(items->begin(), items->begin() + static_cast<std::ptrdiff_t>(items->size() - most));
 }
 
 }  // namespace
@@ -146,6 +146,17 @@ void VoteState::NoteFeedback(std::string_view game, std::string_view kit, std::s
   KeepNewest(&feedback);
 }
 
+bool VoteState::WasRetestAsked(std::string_view game, std::string_view playden) const {
+  return std::any_of(retests.begin(), retests.end(),
+                     [&](const auto& item) { return item.first == game && item.second == playden; });
+}
+
+void VoteState::MarkRetestAsked(std::string_view game, std::string_view playden) {
+  if (WasRetestAsked(game, playden)) return;
+  retests.emplace_back(std::string(game), std::string(playden));
+  KeepNewest(&retests, kVoteStateMaxRetests);
+}
+
 FeedbackQuestion NextFeedbackQuestion(const VoteState& state, std::string_view game, std::string_view kit,
                                       std::string_view settings, std::int64_t played_seconds, bool ask) {
   if (!ask || game.empty()) return FeedbackQuestion::kNone;
@@ -200,12 +211,21 @@ std::string SerializeVoteState(const VoteState& state) {
             ",\"answered\":" + (seen.answered ? "true" : "false") + "}";
     first = false;
   }
+  text += "],\"retests\":[";
+  first = true;
+  for (const auto& [game, playden] : state.retests) {
+    if (!IsFeedbackKey(game) || !IsKitText(playden)) continue;
+    text += std::string(first ? "" : ",") + "{\"game\":\"" + game + "\",\"playden\":\"" + playden + "\"}";
+    first = false;
+  }
   return text + "]}\n";
 }
 
 std::optional<VoteState> ParseVoteState(std::string_view json) {
   steam::json::Limits limits;
-  limits.max_values = 16 * kVoteStateMaxEntries;
+  // Room for full lists of all four kinds: a vote with both times is 8 values, an asked revision 3, a feedback entry 6
+  // and a retest 3 (16 per entry was too few for full lists).
+  limits.max_values = 24 * kVoteStateMaxEntries + 4 * kVoteStateMaxRetests;
   const auto doc = steam::json::Parse(json, limits);
   if (!doc || !doc->is_object()) return std::nullopt;
   const auto* format = doc->Find("format_version");
@@ -259,6 +279,12 @@ std::optional<VoteState> ParseVoteState(std::string_view json) {
       if (!IsFeedbackKey(seen.game) || !IsKitText(seen.kit) || !IsFingerprintText(seen.settings)) continue;
       state.feedback.push_back(std::move(seen));
       KeepNewest(&state.feedback);
+    }
+  if (const auto* retests = doc->Find("retests"); retests && retests->is_array())
+    for (const auto& item : retests->array()) {
+      if (!item.is_object()) continue;
+      const std::string game = text(item, "game"), playden = text(item, "playden");
+      if (IsFeedbackKey(game) && IsKitText(playden)) state.MarkRetestAsked(game, playden);
     }
   return state;
 }
