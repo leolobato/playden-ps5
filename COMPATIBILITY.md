@@ -6,7 +6,7 @@ Games tested on a PS5 on firmware 13.60, plus community test reports (linked in 
 > Games were checked on runtime kit **0.10**, the first stable kit, unless the Kit column names a newer one.
 > OpenGL games draw through Mesa (Zink on Vulkan). See [Kits](#kits) for what each kit version changes.
 
-Did you test a game? [Open a test report](../../issues/new?template=test-report.yml), even when it works.
+Did you test a game? [Open a test report](https://github.com/leolobato/playden-ps5-compat/issues/new?template=test-report.yml), even when it works.
 
 ## Status
 
@@ -1271,4 +1271,4 @@ To see which kit your console has, look at Settings › System › About, or the
 - **Denuvo Anti-Tamper** games (for example Hi-Fi RUSH) cannot run, and support is not planned.
 - **Kernel anti-cheat** games (for example Easy Anti-Cheat or BattlEye in kernel mode) cannot run, and support is not planned.
 - Games that need a **third-party launcher or account** (EA app, Ubisoft Connect, Rockstar) are not supported yet, except Grand Theft Auto IV and Grand Theft Auto V Legacy through the Rockstar Games Launcher.
-- **Imported games** (added from a folder, see [Import Windows games](README.md#import-windows-games)) are listed only when a test report covers them, and the row says so. If you test one, [open a test report](../../issues/new?template=test-report.yml) and say it was imported.
+- **Imported games** (added from a folder, see [Import Windows games](README.md#import-windows-games)) are listed only when a test report covers them, and the row says so. If you test one, [open a test report](https://github.com/leolobato/playden-ps5-compat/issues/new?template=test-report.yml) and say it was imported.

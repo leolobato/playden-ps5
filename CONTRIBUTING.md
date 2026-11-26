@@ -18,7 +18,7 @@ To build Playden, run its tests or put it on a console, see [docs/building.md](d
 ## Ways to help
 
 - **Test games.** Play a game from your Steam library and send a test report, whether it worked or not: Playden asks
-  how it ran after you play and sends the report itself, or [open one by hand](../../issues/new?template=test-report.yml).
+  how it ran after you play and sends the report itself, or [open one by hand](https://github.com/leolobato/playden-ps5-compat/issues/new?template=test-report.yml).
   See [Report a game test](#report-a-game-test).
 - **Add a recipe for a game.** A recipe tells Playden how to start one game. Community recipes go to
   [playden-ps5-recipes](https://github.com/leolobato/playden-ps5-recipes). See
@@ -50,7 +50,7 @@ To build Playden, run its tests or put it on a console, see [docs/building.md](d
 
    It lists the games that have a log, the most recently run first, asks which one to collect, prints the same
    table and writes the same kind of zip. Use `--all-titles` to collect every game.
-5. [Open a test report](../../issues/new?template=test-report.yml), paste the table from `summary.md` (or the
+5. [Open a test report](https://github.com/leolobato/playden-ps5-compat/issues/new?template=test-report.yml), paste the table from `summary.md` (or the
    script) and attach the zip. The [sample report](docs/sample-test-report.md) shows what to fill in.
 
 ## One pull request, one change

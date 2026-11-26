@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Game test report
+    url: https://github.com/leolobato/playden-ps5-compat/issues/new?template=test-report.yml
+    about: Tell us how a game ran. Test reports live in playden-ps5-compat; Playden can send one for you after you play.
   - name: Questions and help on Discord
     url: https://discord.gg/wd8UjExpPA
     about: Ask about setup, installing or anything that isn't a bug.

@@ -7,7 +7,7 @@ body:
       value: |
         For questions and help with setup, ask on [Discord](https://discord.gg/wd8UjExpPA) or
         [r/Playden_PS5](https://www.reddit.com/r/Playden_PS5/) instead. A problem with one game goes in a
-        [game test report](https://github.com/leolobato/playden-ps5/issues/new?template=test-report.yml), and a problem
+        [game test report](https://github.com/leolobato/playden-ps5-compat/issues/new?template=test-report.yml), and a problem
         installing, updating or starting Playden in an
         [install or update problem](https://github.com/leolobato/playden-ps5/issues/new?template=install-problem.yml).
 

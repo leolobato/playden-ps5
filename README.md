@@ -533,7 +533,7 @@ question off; votes and **Share feedback…** still work.
    If Playden doesn't open, or you prefer a script, run `python3 tools/collect_logs.py --host <PS5 IP>` from your
    computer instead (Python 3, no packages). It needs an FTP server on the PS5 on port 2120, such as zftpd, and
    writes the same kind of zip.
-3. [Open a game test report](../../issues/new?template=test-report.yml) and attach the zip. See a
+3. [Open a game test report](https://github.com/leolobato/playden-ps5-compat/issues/new?template=test-report.yml) and attach the zip. See a
    [sample report](docs/sample-test-report.md) for what to fill in.
 
 For a problem that is not about one game, [open a bug report](../../issues/new?template=bug-report.yml) with the

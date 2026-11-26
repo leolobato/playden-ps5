@@ -1,6 +1,6 @@
 # Sample game test report
 
-This is what a good [game test report](../../../issues/new?template=test-report.yml) looks like. The issue form asks
+This is what a good [game test report](https://github.com/leolobato/playden-ps5-compat/issues/new?template=test-report.yml) looks like. The issue form asks
 for each part below. The example is a game that did not work on kit G, so it includes logs. (A Short Hike works
 on kit H.)
 
