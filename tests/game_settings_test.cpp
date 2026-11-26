@@ -2470,22 +2470,27 @@ int main(int argc, char** argv) {
     std::ofstream(bottle / "system.reg") << "WINE REGISTRY Version 2\n;; All keys relative to REGISTRY\\\\Machine\n\n#arch=win64\n";
     ::chmod((bottle / "system.reg").c_str(), 0600);
     std::ofstream(game / "base" / "STEAM_doomkey") << "%CDKEY%\r\n// Do not give this file to ANYONE.\r\n";
-    std::ofstream(game / "base" / "doomkey") << "";  // the depot's empty file
+    std::ofstream(game / "base" / "doomkey") << "";  // an empty file, as the game leaves it without a key
     const std::string install_dir = "Z:\\data\\playden-games\\9050";
 
-    std::vector<FileTemplate> parsed;
-    std::vector<std::string> dropped;
-    CHECK(ParseFileTemplates(ReadText(game / "instscript.vdf"), install_dir, &parsed, &dropped, &reason));
-    CHECK(parsed.size() == 1 && dropped.empty() && parsed[0].name == "doomkey_template" &&
-          parsed[0].has_run_key == "HKEY_CURRENT_USER\\Software\\Valve\\Steam\\Apps\\9050" &&
-          parsed[0].template_file == "Z:\\data\\playden-games\\9050\\base\\STEAM_doomkey" &&
-          parsed[0].output_file == "Z:\\data\\playden-games\\9050\\base\\doomkey" &&
-          parsed[0].fields == (std::vector<std::pair<std::string, std::string>>{
-                                  {"cdkey", "HKEY_CURRENT_USER\\Software\\Valve\\TestApp9050\\SteamKey"}}));
-    CHECK(ParseFileTemplates("\"InstallScript\" { \"File Template\" { \"a\" { \"HasRunKey\" \"HKCU\\\\x\" "
-                             "\"template_file\" \"%NOPE%\\\\t\" \"output_file\" \"o\" } \"b\" { \"HasRunKey\" \"HKCU\\\\x\" } } }",
-                             install_dir, &parsed, &dropped, &reason));
-    CHECK(parsed.size() == 1 && dropped == (std::vector<std::string>{"a: unknown %NOPE%", "b: no template or output file"}));
+    InstallScriptValues parsed;
+    CHECK(ParseInstallScript(ReadText(game / "instscript.vdf"), install_dir, "", &parsed, &reason));
+    const auto& entries = parsed.templates;
+    CHECK(entries.size() == 1 && parsed.dropped.empty() && entries[0].name == "doomkey_template" &&
+          entries[0].has_run_key == "HKEY_CURRENT_USER\\Software\\Valve\\Steam\\Apps\\9050" &&
+          entries[0].template_file == "Z:\\data\\playden-games\\9050\\base\\STEAM_doomkey" &&
+          entries[0].output_file == "Z:\\data\\playden-games\\9050\\base\\doomkey" &&
+          entries[0].fields == (std::vector<std::pair<std::string, std::string>>{
+                                   {"cdkey", "HKEY_CURRENT_USER\\Software\\Valve\\TestApp9050\\SteamKey"}}));
+    InstallScriptValues bad;
+    CHECK(ParseInstallScript("\"InstallScript\" { \"File Template\" { \"a\" { \"HasRunKey\" \"HKCU\\\\x\" "
+                             "\"template_file\" \"%NOPE%\\\\t\" \"output_file\" \"o\" } \"b\" { \"HasRunKey\" \"HKCU\\\\x\" } "
+                             "\"c\" { \"template_file\" \"t\" \"output_file\" \"o\" } "
+                             "\"\xc3\xa9\" { \"HasRunKey\" \"HKCU\\\\x\" \"template_file\" \"t\" \"output_file\" \"o\" } } }",
+                             install_dir, "", &bad, &reason));
+    CHECK(bad.templates.empty() && bad.dropped_count == 4 &&
+          bad.dropped == (std::vector<std::string>{"a: unknown %NOPE%", "b: no template or output file", "c: no has-run key",
+                                                   "??: name isn't plain ASCII"}));
 
     // Without a key: the Registry values go in, the template waits for a later start.
     auto applied = ApplyInstallScripts(game.string(), install_dir, "", bottle.string(), 1791500000);
@@ -2509,6 +2514,28 @@ int main(int argc, char** argv) {
     std::ofstream(game / "base" / "doomkey") << "typed by the player";
     applied = ApplyInstallScripts(game.string(), install_dir, "", bottle.string(), 1791700000, &key);
     CHECK(applied.ok && applied.templates.empty() && ReadText(game / "base" / "doomkey") == "typed by the player");
+
+    // The bottle outlives the game's files, has-run value and all: Uninstall with saves kept and Install again bring a
+    // game folder without base\doomkey, and the next prepare fills it in again. So it does for an empty file, and for
+    // one holding the bytes the install's file tree lists for it (an update puts back a file a depot ships); bytes the
+    // tree doesn't list stay.
+    std::filesystem::remove(game / "base" / "doomkey");
+    applied = ApplyInstallScripts(game.string(), install_dir, "", bottle.string(), 1791710000, &key);
+    CHECK(applied.ok && applied.templates == std::vector<std::string>{"base/doomkey"});
+    CHECK(ReadText(game / "base" / "doomkey") == "SYNTHETICKEY0001\r\n// Do not give this file to ANYONE.\r\n");
+    std::ofstream(game / "base" / "doomkey", std::ios::trunc).flush();
+    applied = ApplyInstallScripts(game.string(), install_dir, "", bottle.string(), 1791720000, &key);
+    CHECK(applied.ok && applied.templates == std::vector<std::string>{"base/doomkey"});
+    std::ofstream(game / kDepotFileTree) << "v1\na9993e364706816aba3e25717850c26c9cd0d89d\t3\tbase/DOOMKEY\n";
+    std::ofstream(game / "base" / "doomkey") << "abc";  // the depot's bytes (SHA-1 of "abc")
+    CHECK(SameAsDepotFile(game.string(), "base/doomkey"));
+    applied = ApplyInstallScripts(game.string(), install_dir, "", bottle.string(), 1791730000, &key);
+    CHECK(applied.ok && applied.templates == std::vector<std::string>{"base/doomkey"});
+    CHECK(ReadText(game / "base" / "doomkey") == "SYNTHETICKEY0001\r\n// Do not give this file to ANYONE.\r\n");
+    std::ofstream(game / "base" / "doomkey") << "abd";  // same size, other bytes: the player's
+    CHECK(!SameAsDepotFile(game.string(), "base/doomkey"));
+    applied = ApplyInstallScripts(game.string(), install_dir, "", bottle.string(), 1791740000, &key);
+    CHECK(applied.ok && applied.templates.empty() && ReadText(game / "base" / "doomkey") == "abd");
 
     // A key with a method Playden doesn't know only names that; nothing else changes.
     const LegacyKey disk{"disk", "base\\cdkey.txt", "SYNTHETICKEY0001"};

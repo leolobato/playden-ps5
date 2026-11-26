@@ -4,11 +4,14 @@
 #include "runtime/profile_save_folder.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include <sys/types.h>
 
 namespace playden::runtime {
 
@@ -204,5 +207,16 @@ struct LegacyKey {
 bool WriteLegacyKey(const std::string& install_root, const LegacyKey& key);
 // None when the file is missing, unreadable or not this format, or a field is empty.
 std::optional<LegacyKey> ReadLegacyKey(const std::string& install_root);
+
+// The files a finished install's depots hold (steam/backend/depot_installer.h DepotInstaller::kFileTree): "v1", then
+// "<sha1 hex>\t<size>\t<path>" a line each, path as installed.
+inline constexpr const char* kDepotFileTree = ".playden-tree";
+// Whether relative ('/' separators) under install_root is a regular file with the size and SHA-1 the install's file
+// tree lists for it, as a download or an update leaves it. False without a tree, or when the tree doesn't list it.
+bool SameAsDepotFile(const std::string& install_root, const std::string& relative);
+
+// Writes bytes to path in place of what is there, through a temporary file in the same folder (".playden-<name>.tmp"),
+// synced, given mode and then renamed; never through a link. The folder must exist.
+bool WriteFileAtomically(const std::filesystem::path& path, std::string_view bytes, mode_t mode);
 
 }  // namespace playden::runtime

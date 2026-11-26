@@ -288,6 +288,43 @@ std::size_t ValueCount(const steam::VdfNode& entries, const std::string& languag
   return count;
 }
 
+// The File Template section's entries, into values->templates; one that can't be filled in is counted and named in
+// values->dropped.
+void ReadFileTemplates(const steam::VdfNode& script, const std::string& install_dir, InstallScriptValues* values) {
+  const auto* section = script.Find("File Template");
+  if (!section || !section->is_dict) return;
+  for (const auto& [name, node] : section->children) {
+    if (!node.is_dict) continue;
+    FileTemplate entry;
+    entry.name = name;
+    std::string why, unknown;
+    for (const auto& [field, value] : node.children) {
+      if (value.is_dict) continue;
+      const auto key = Lower(field);
+      std::string* path = key == "template_file" ? &entry.template_file : key == "output_file" ? &entry.output_file
+                        : key == "hasrunkey" ? &entry.has_run_key : nullptr;
+      // MinimumHasRunValue isn't a token: Steam's client fills an entry in again while its has-run value is below it (1
+      // when left out). Playden sets 1 and only looks for the value, which is the same for an entry without one, as
+      // DOOM 3's.
+      if (path) {
+        if (!Substitute(value.value, install_dir, path, &unknown) && why.empty()) why = "unknown " + unknown;
+      } else if (key != "minimumhasrunvalue") {
+        entry.fields.emplace_back(Lower(field), value.value);
+      }
+    }
+    if (why.empty() && (entry.template_file.empty() || entry.output_file.empty())) why = "no template or output file";
+    if (why.empty() && entry.has_run_key.empty()) why = "no has-run key";
+    // The entry's name is the has-run value's name, which Playden writes as ASCII only.
+    if (why.empty() && !Ascii(entry.name)) why = "name isn't plain ASCII";
+    if (!why.empty()) {
+      ++values->dropped_count;
+      if (values->dropped.size() < kDroppedNamed) values->dropped.push_back(LogSafe(name) + ": " + why);
+      continue;
+    }
+    values->templates.push_back(std::move(entry));
+  }
+}
+
 }  // namespace
 
 std::vector<std::string> InstallScriptKeys(bool machine, const std::string& subkey) {
@@ -329,6 +366,7 @@ bool ParseInstallScript(std::string_view text, const std::string& install_dir, c
   const auto root = steam::ParseVdf(utf8);
   if (!root) return fail("not a valid install script");
   const auto* script = ScriptSection(*root);
+  ReadFileTemplates(*script, install_dir, values);
   const auto* registry = script->Find("Registry");
   if (!registry) return true;
   // Values a script sets in one registry view. They go in last, so a plain HKLM key's copy for the other view
@@ -464,44 +502,6 @@ bool ParseRunProcess(std::string_view text, const std::string& install_dir, std:
       if (!Substitute(value.value, install_dir, target) || !Ascii(*target)) usable = false;
     }
     if (usable && !entry.process.empty()) entries->push_back(std::move(entry));
-  }
-  return true;
-}
-
-bool ParseFileTemplates(std::string_view text, const std::string& install_dir, std::vector<FileTemplate>* templates,
-                        std::vector<std::string>* dropped, std::string* reason) {
-  auto utf8 = ScriptText(text);
-  while (!utf8.empty() && utf8.back() == '\0') utf8.pop_back();
-  const auto root = steam::ParseVdf(utf8);
-  if (!root) {
-    if (reason) *reason = "not a valid install script";
-    return false;
-  }
-  const auto* section = ScriptSection(*root)->Find("File Template");
-  if (!section || !section->is_dict) return true;
-  for (const auto& [name, node] : section->children) {
-    if (!node.is_dict) continue;
-    FileTemplate entry;
-    entry.name = name;
-    std::string why, unknown;
-    for (const auto& [field, value] : node.children) {
-      if (value.is_dict) continue;
-      const auto key = Lower(field);
-      std::string* path = key == "template_file" ? &entry.template_file : key == "output_file" ? &entry.output_file
-                        : key == "hasrunkey" ? &entry.has_run_key : nullptr;
-      if (path) {
-        if (!Substitute(value.value, install_dir, path, &unknown) && why.empty()) why = "unknown " + unknown;
-      } else if (key != "minimumhasrunvalue") {
-        entry.fields.emplace_back(Lower(field), value.value);
-      }
-    }
-    if (why.empty() && (entry.template_file.empty() || entry.output_file.empty())) why = "no template or output file";
-    if (why.empty() && (entry.has_run_key.empty() || !Ascii(entry.name))) why = "no has-run key";
-    if (!why.empty()) {
-      if (dropped) dropped->push_back(LogSafe(name) + ": " + why);
-      continue;
-    }
-    templates->push_back(std::move(entry));
   }
   return true;
 }
@@ -669,8 +669,8 @@ std::optional<std::string> ReadHive(const std::string& prefix_dir, const char* h
 }
 
 // Writes bytes to relative under game_root in place of what is there (a regular file, whose mode is kept; a new one is
-// open, 0666, as the game's own files), through a temporary file in the same folder. Unchanged bytes are not written;
-// written says whether they were.
+// open, 0666, as the game's own files), with WriteFileAtomically. Unchanged bytes are not written; written says whether
+// they were.
 bool WriteGameFile(const std::string& game_root, const std::string& relative, const std::string& bytes, bool* written) {
   *written = false;
   const auto slash = relative.rfind('/');
@@ -687,24 +687,7 @@ bool WriteGameFile(const std::string& game_root, const std::string& relative, co
   } else if (errno != ENOENT) {
     return false;
   }
-  const auto temporary = path + ".playden-tmp";
-  ::unlink(temporary.c_str());
-  const int file = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode);
-  if (file < 0) return false;
-  std::size_t done = 0;
-  bool ok = true;
-  while (ok && done < bytes.size()) {
-    const auto count = ::write(file, bytes.data() + done, bytes.size() - done);
-    if (count < 0 && errno == EINTR) continue;
-    if (count <= 0) ok = false;
-    else done += static_cast<std::size_t>(count);
-  }
-  ok = ok && ::fchmod(file, mode) == 0 && ::fsync(file) == 0;
-  ok = ::close(file) == 0 && ok;
-  if (!ok || ::rename(temporary.c_str(), path.c_str()) != 0) {
-    ::unlink(temporary.c_str());
-    return false;
-  }
+  if (!WriteFileAtomically(path, bytes, mode)) return false;
   *written = true;
   return true;
 }
@@ -753,11 +736,7 @@ InstallScriptResult ApplyInstallScripts(const std::string& game_root, const std:
     // A later script's value replaces an earlier one's, in Playden's own order (file names, sorted byte by byte).
     for (auto& value : parsed.machine) SetRegistryValue(&values.machine, std::move(value));
     for (auto& value : parsed.user) SetRegistryValue(&values.user, std::move(value));
-    std::vector<FileTemplate> entries;
-    std::vector<std::string> dropped;
-    ParseFileTemplates(text, install_dir, &entries, &dropped, nullptr);
-    for (const auto& why : dropped) note(name, why);
-    for (auto& entry : entries) templates.emplace_back(name, std::move(entry));
+    for (auto& entry : parsed.templates) templates.emplace_back(name, std::move(entry));
   }
   // The account's CD key where Steam's client puts it before a script runs.
   std::optional<ValuePath> key_path;
@@ -774,7 +753,10 @@ InstallScriptResult ApplyInstallScripts(const std::string& game_root, const std:
       result.legacy_key = true;
     }
   }
-  // File Templates, once each: their has-run value says whether one was filled in before.
+  // File Templates, once each: their has-run value says whether one was filled in before. The bottle outlives the
+  // game's files: Uninstall with saves kept and Install again bring a game folder without DOOM 3's base\doomkey, and
+  // an update puts back a file a depot ships. So an output file that is missing, empty or the depots' own bytes is
+  // filled in again; any other file is the one the game or the player left.
   std::optional<std::string> hives[2];
   bool hive_read[2] = {false, false};
   for (const auto& [script, entry] : templates) {
@@ -784,16 +766,27 @@ InstallScriptResult ApplyInstallScripts(const std::string& game_root, const std:
       note(where, "has-run key not supported");
       continue;
     }
+    const auto template_file = GameRelative(install_dir, entry.template_file);
+    const auto output_file = GameRelative(install_dir, entry.output_file);
+    if (!template_file || !output_file) {
+      note(where, "file outside the game folder");
+      continue;
+    }
     const int hive = has_run->machine ? 0 : 1;
     if (!hive_read[hive]) {
       hives[hive] = ReadHive(prefix_dir, has_run->machine ? "system.reg" : "user.reg");
       hive_read[hive] = true;
     }
     const auto has_run_keys = InstallScriptKeys(has_run->machine, has_run->key);
-    if (hives[hive] && std::any_of(has_run_keys.begin(), has_run_keys.end(), [&](const std::string& key) {
-          return RegistryData(*hives[hive], key, has_run->name).has_value();
-        }))
-      continue;
+    struct stat output {};
+    const bool output_left = ::lstat((game_root + "/" + *output_file).c_str(), &output) == 0 &&
+                             (!S_ISREG(output.st_mode) || output.st_size > 0) &&
+                             !SameAsDepotFile(game_root, *output_file);
+    const auto set_under = [&](const std::string& key) {
+      return RegistryData(*hives[hive], key, has_run->name).has_value();
+    };
+    const bool has_run_set = hives[hive] && std::any_of(has_run_keys.begin(), has_run_keys.end(), set_under);
+    if (output_left && has_run_set) continue;
     // The tokens Steam's client sets: each field's registry value, and the key as %CDKEY%.
     std::vector<std::pair<std::string, std::string>> tokens;
     std::string missing;
@@ -809,12 +802,8 @@ InstallScriptResult ApplyInstallScripts(const std::string& game_root, const std:
       else if (missing.empty()) missing = token;
     }
     if (key_path) tokens.emplace_back("cdkey", legacy_key->key);
-    const auto template_file = GameRelative(install_dir, entry.template_file);
-    const auto output_file = GameRelative(install_dir, entry.output_file);
     std::string text, filled, unknown;
-    if (!template_file || !output_file) {
-      note(where, "file outside the game folder");
-    } else if (!PlainFileUnder(game_root, *template_file) || !ReadScript(game_root + "/" + *template_file, &text)) {
+    if (!PlainFileUnder(game_root, *template_file) || !ReadScript(game_root + "/" + *template_file, &text)) {
       note(where, "template not readable");
     } else if (!Substitute(text, install_dir, &filled, &unknown, &tokens)) {
       note(where, Lower(unknown) == "%cdkey%" || (!missing.empty() && Lower(unknown) == "%" + missing + "%")
