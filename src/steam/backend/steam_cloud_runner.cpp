@@ -50,12 +50,17 @@ const char* StateName(CloudState state) {
     case CloudState::kNeedsAccount: return "needs-account";
     case CloudState::kUnsupported: return "unsupported";
     case CloudState::kFailed: return "failed";
+    case CloudState::kWaiting: return "waiting";
     default: return "other";
   }
 }
 
 // The service only hands Steam games to the runner.
 std::uint32_t App(const CloudLocation& location) { return location.id.steam_app().value_or(0); }
+
+// An installed game without its bottle yet (not set up): its Windows folders are a stand-in the game never
+// reads, so no transfer may run (#72) and no choice can be applied (#1395).
+bool NotSetUp(const CloudLocation& location) { return location.prefix_root.empty() && !location.game_root.empty(); }
 
 }  // namespace
 
@@ -81,6 +86,17 @@ CloudReport SteamCloudRunner::Check(const StoredSession& session, const CloudLoc
   current_app_ = App(location);
   auto plan = sync_.Check(session, SaveLocation(location), cancel);
   auto report = Report(plan);
+  if (NotSetUp(location) && (report.state == CloudState::kSyncing || report.state == CloudState::kConflict ||
+                             report.state == CloudState::kNeedsAccount)) {
+    // Compared with the empty stand-in, Cloud saves of a game synced here before look deleted on this console
+    // (#1395). Nothing moves and nothing is offered to choose until the game is set up.
+    report.state = CloudState::kWaiting;
+    report.message = "Saves sync once the game is set up.";
+    report.conflicts = report.changed_both = report.deleted_here = report.deleted_in_cloud = 0;
+    report.first_sync = report.first_overwrite = false;
+    report.use_local = report.use_cloud = {};
+    report.choices = false;
+  }
   if (log_)
     log_(App(location), (std::string("check-") + StateName(report.state)).c_str(),
          plan.detail.empty() ? report.message : report.message + " (" + plan.detail + ")");
@@ -96,7 +112,7 @@ CloudReport SteamCloudRunner::Apply(const StoredSession& session, const CloudLoc
     report.message = "Check this game's saves again.";
     return report;
   }
-  if (location.prefix_root.empty() && !location.game_root.empty()) {
+  if (NotSetUp(location)) {
     // No bottle yet: Windows-folder saves would land where the game never looks.
     CloudReport report;
     report.message = "Saves move once the game is set up. Press Play first.";

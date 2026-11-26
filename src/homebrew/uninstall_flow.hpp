@@ -43,7 +43,7 @@ struct UninstallFacts {
 class UninstallFlow {
  public:
   // Starts an uninstall; false when one already runs for the game. With Cloud the
-  // saves sync first, unless the player chose to go on after a failed sync.
+  // saves sync first, unless this is the uninstall right after a stop that offered going on without syncing.
   bool Begin(GameId id, bool delete_saves, bool cloud_available);
   // The game whose Cloud sync should be issued now (each once), the first waiting one in
   // order, while no other sync is out.

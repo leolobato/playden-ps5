@@ -108,6 +108,27 @@ int main() {
   CHECK(flow.Begin(SteamId(45), false, true) && flow.Step(SteamId(45)) == UninstallStep::kRemoveTitle);
   CHECK(flow.TakeSyncRequests().empty());
 
+  // Not set up (#1395): the check waits for a bottle, so no choice is asked for. It says why once, and the next
+  // uninstall goes on without waiting on Cloud.
+  CHECK(flow.Begin(SteamId(1395), true, true));
+  flow.TakeSyncRequests();
+  flow.SyncDispatched(SteamId(1395));
+  action = flow.CloudSettled(SteamId(1395), CloudStatus::Waiting);
+  CHECK(action.kind == Kind::kStop && action.reason.find("Choose which Cloud saves") == std::string::npos &&
+        action.reason.find("set up") != std::string::npos && action.reason.find("Uninstall again") != std::string::npos);
+  CHECK(flow.Begin(SteamId(1395), true, true) && flow.Step(SteamId(1395)) == UninstallStep::kRemoveTitle);
+  CHECK(flow.TakeSyncRequests().empty());
+  flow.Abandon(SteamId(1395));
+  // That pass is used once, also by an uninstall without Cloud: a later one syncs first again.
+  CHECK(flow.Begin(SteamId(1395), true, true));
+  flow.TakeSyncRequests();
+  flow.SyncDispatched(SteamId(1395));
+  CHECK(flow.CloudSettled(SteamId(1395), CloudStatus::Waiting).kind == Kind::kStop);
+  CHECK(flow.Begin(SteamId(1395), true, false) && flow.Step(SteamId(1395)) == UninstallStep::kRemoveTitle);
+  flow.Abandon(SteamId(1395));
+  CHECK(flow.Begin(SteamId(1395), true, true) && flow.Step(SteamId(1395)) == UninstallStep::kSync);
+  flow.Abandon(SteamId(1395));
+
   // A running title stops a waiting sync; a game with nothing to sync continues.
   CHECK(flow.Begin(SteamId(46), false, true));
   CHECK(flow.CloudRefused(SteamId(46)).kind == Kind::kNone);  // not issued yet: nothing to refuse

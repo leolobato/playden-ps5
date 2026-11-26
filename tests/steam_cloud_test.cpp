@@ -773,6 +773,48 @@ void DamagedCloudCopyDoesNotBlockUploads() {
   std::filesystem::remove_all(base);
 }
 
+// A game synced here before, uninstalled with its bottle and installed again, but not set up yet (#1395): its
+// Cloud saves are not deleted here, the bottle just isn't there. The check offers no choice (one that could not
+// be applied, and "Use this console's" would delete the Cloud copies); it waits until the game is set up.
+void NotSetUpOffersNoChoice() {
+  const auto base = std::filesystem::temp_directory_path() / ("playden-cloud-not-set-up-" + std::to_string(getpid()));
+  std::filesystem::remove_all(base);
+  CloudLocation managed{SteamId(kApp), (base / "game").string(), (base / "cloud").string()};
+  managed.prefix_root = (base / "bottle").string();
+  std::filesystem::create_directories(managed.game_root);
+  std::filesystem::create_directories(managed.prefix_root);
+  FakeCloud remote;
+  remote.files["%WinMyDocuments%My Games/Cloud Game/cloud.sav"] = {Bytes("cloud progress"), 1'000, false};
+  SteamCloudRunner runner(remote.Hooks());
+  const StoredSession session{kSteamId, "user", "refresh", "access", {}};
+  std::atomic<bool> cancel{false};
+  auto report = runner.Check(session, managed, cancel);
+  CHECK(report.state == CloudState::kSyncing && report.downloads == 1);
+  report = runner.Apply(session, managed, CloudResolution::kAutomatic, true, cancel);
+  CHECK(report.state == CloudState::kSynced);
+  // Set up, the same check finds the saves in step.
+  CHECK(runner.Check(session, managed, cancel).state == CloudState::kUpToDate);
+
+  CloudLocation not_set_up = managed;
+  not_set_up.prefix_root.clear();
+  report = runner.Check(session, not_set_up, cancel);
+  CHECK(report.state == CloudState::kWaiting);
+  CHECK(!report.choices && report.conflicts == 0 && report.deleted_here == 0);
+  CHECK(report.message.find("set up") != std::string::npos);
+  // No choice moves anything either: the Cloud copy stays.
+  report = runner.Apply(session, not_set_up, CloudResolution::kUseLocal, true, cancel);
+  CHECK(report.state == CloudState::kFailed);
+  CHECK(remote.files.count("%WinMyDocuments%My Games/Cloud Game/cloud.sav") == 1);
+  // An uninstalled game's kept bottle (no game folder) still gets its choices.
+  CloudLocation kept = managed;
+  kept.game_root.clear();
+  std::filesystem::remove_all(managed.prefix_root);
+  std::filesystem::create_directories(managed.prefix_root);
+  report = runner.Check(session, kept, cancel);
+  CHECK(report.state == CloudState::kConflict && report.choices && report.deleted_here == 1);
+  std::filesystem::remove_all(base);
+}
+
 void ManagedPrefixAndPlanBinding() {
   const auto base = std::filesystem::temp_directory_path() /
                     ("playden-cloud-managed-" + std::to_string(getpid()));
@@ -1243,6 +1285,7 @@ void SessionFailuresSayWhy() {
 int main() {
   SessionFailuresSayWhy();
   ManagedPrefixAndPlanBinding();
+  NotSetUpOffersNoChoice();
   MessagesRoundTrip();
   ParsesUfsAndMaps();
   SkipsOtherPlatformLocations();

@@ -11,7 +11,9 @@ bool UninstallFlow::Begin(GameId id, bool delete_saves, bool cloud_available) {
   if (entries_.count(id)) return false;
   Entry entry;
   entry.delete_saves = delete_saves;
-  entry.step = cloud_available && !without_sync_.erase(id) ? UninstallStep::kSync : UninstallStep::kRemoveTitle;
+  // Going on without syncing is allowed once, by the uninstall right after the stop that offered it.
+  const bool without_sync = without_sync_.erase(id) > 0;
+  entry.step = cloud_available && !without_sync ? UninstallStep::kSync : UninstallStep::kRemoveTitle;
   entry.order = next_order_++;
   entries_[id] = entry;
   return true;
@@ -58,6 +60,11 @@ UninstallAction UninstallFlow::CloudSettled(GameId id, CloudStatus status) {
     case CloudStatus::Conflict:
     case CloudStatus::NeedsAccount:
       return Stop(id, "Choose which Cloud saves to keep, then uninstall again.");
+    case CloudStatus::Waiting:
+      // Not set up (no bottle the game reads): no sync or choice can apply, so none is asked for (#1395). Its
+      // folder or an unusable bottle may still hold saves Cloud never got, so the player is told once.
+      without_sync_.insert(id);
+      return Stop(id, "Its saves can't sync until the game is set up. Uninstall again to go on; Steam Cloud keeps its saves.");
     default:
       without_sync_.insert(id);
       return Stop(id, "Cloud saves could not be synced. Uninstall again to go on without syncing.");
