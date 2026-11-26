@@ -522,10 +522,11 @@ bool SharingService::ReportLogs(std::uint32_t app, const std::string& name, std:
   auto index = source.Index();
   // A report carries logs only: not screenshots or dumps another tool left in the folder (web access keeps them).
   std::erase_if(index.playden, [](const web::PlaydenLog& log) { return !ReportLogName(log.name); });
-  // The game's own log; a title no log has gives Playden's logs only (never another game's).
+  // The game's own log; a title no log has gives Playden's logs only (never another game's). By name only a game still
+  // on the console: a removed game's log keeps its name, and another store's game can have the same one.
   std::string title = "none";
   for (const auto& game : index.games)
-    if ((app != 0 && game.app == app) || (app == 0 && !name.empty() && game.name == name)) {
+    if ((app != 0 && game.app == app) || (app == 0 && !name.empty() && game.name == name && !game.removed)) {
       title = game.title;
       break;
     }

@@ -49,6 +49,27 @@ class CollectLogsTests(unittest.TestCase):
         self.assertIn('Half-Life 2  (FAKE78001, app 220', table)
         self.assertIn('last run never', table)
 
+    def test_a_log_names_its_game_after_the_title_is_gone(self):
+        header = 'PLAYDEN_TITLE_LOG/1 install=steam-271590 name=Grand Theft Auto V Legacy\n'
+        gta = header + title_log(271590, time=500)
+        reused = ('PLAYDEN_TITLE_LOG/1 install=local-7c4b name=profile=playden-steam-9\n'
+                  '== session-1.log\nPW_REPORT/1 profile=playden-local-7c4b time=400\n')
+        self.assertEqual(collect_logs.title_app(gta), 271590)
+        self.assertIsNone(collect_logs.title_app(reused))
+        self.assertIsNone(collect_logs.title_header('PLAYDEN_TITLE_LOG/1 install=a b name=x\n'))
+        logs = {'FAKE78045': gta, 'FAKE78005': reused}
+        # The header's name wins over the one a later game's title has.
+        rows = collect_logs.games(logs, {'FAKE78005': 'Another Game'})
+        self.assertEqual([(row['title'], row['name'], row['last_run']) for row in rows],
+                         [('FAKE78045', 'Grand Theft Auto V Legacy', 500),
+                          ('FAKE78005', 'profile=playden-steam-9', 400)])
+        self.assertEqual(collect_logs.pick_title(logs, app=271590), 'FAKE78045')
+        # The header's store wins over the body, and a game's name is no account name.
+        self.assertIsNone(collect_logs.title_app('PLAYDEN_TITLE_LOG/1 install=gog-5 name=G\n' + title_log(7)))
+        self.assertIsNone(collect_logs.title_app('PLAYDEN_TITLE_LOG/1 install=steam-22-extra name=G\n' + title_log(22)))
+        evil = 'PLAYDEN_TITLE_LOG/1 install=local-9 name=Evil L"SteamUser" L"\n' + 'x L"SteamUser" L"Carol"\n'
+        self.assertEqual(collect_logs.account_names([evil]), {'Carol'})
+
     def test_title_names_lose_any_store_suffix(self):
         self.assertEqual(collect_logs.without_store_suffix('Half-Life 2 (Steam)'), 'Half-Life 2')
         self.assertEqual(collect_logs.without_store_suffix('Delores (Epic)'), 'Delores')

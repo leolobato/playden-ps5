@@ -2563,6 +2563,8 @@ void PreparesGameWithoutShippedRecipe() {
   const auto reloaded = WaitFor(restarted, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
   CHECK(reloaded.generated_recipes[0].id == "steam-4242-auto");
   const auto title_log = title_log_of("FAKE78001");
+  // Its first line names the game, without the store the title adds: the log keeps it once the title is gone.
+  CHECK(title_log.rfind("PLAYDEN_TITLE_LOG/1 install=steam-4242 name=Example Game\n== session-0.log\n", 0) == 0);
   CHECK(title_log.find("== session-0.log\nPW_REPORT/1 stopped") != std::string::npos);
   CHECK(title_log.find("AppData/LocalLow/Studio/Game/Player.log\nNullReferenceException at Boot") != std::string::npos);
   // No Steam host ran: neither of its logs is there.

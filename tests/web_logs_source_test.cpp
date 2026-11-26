@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Also built as web_logs_source_native_policy with PLAYDEN_PLATFORM_PS5=1: the console's walk by path.
 #include "web/logs_source.h"
+#include "web/title_log_header.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -58,6 +59,19 @@ int main() {
   CHECK(TitleNameFromParam(Param("Half-Life 2 (Steam)")) == "Half-Life 2");
   CHECK(TitleNameFromParam(R"({"localizedParameters":{"defaultLanguage":"ja-JP","ja-JP":{"titleName":"Game"}}})") == "Game");
   CHECK(TitleNameFromParam("not json").empty() && TitleNameFromParam("{}").empty());
+  // The game a copied title log names: one line, whatever the name holds.
+  CHECK(TitleLogHeader("steam-440", "Team Fortress 2") == "PLAYDEN_TITLE_LOG/1 install=steam-440 name=Team Fortress 2\n");
+  CHECK(TitleLogHeader("steam-440", "a\nb\tc ") == "PLAYDEN_TITLE_LOG/1 install=steam-440 name=a b c\n");
+  CHECK(TitleLogHeader("bad id", "x").empty() && TitleLogHeader("", "x").empty());
+  CHECK(TitleLogHeader("local-1", std::string(600, 'x')).size() == std::string("PLAYDEN_TITLE_LOG/1 install=local-1 name=\n").size() + 512);
+  CHECK(TitleLogHeader("local-1", std::string(511, 'x') + "\xc3\xa9").find("\xc3") == std::string::npos);  // never half a character
+  {
+    const auto parsed = ParseTitleLogHeader(TitleLogHeader("gog-1", "Name with name= inside") + "rest");
+    CHECK(parsed && parsed->install == "gog-1" && parsed->name == "Name with name= inside");
+    CHECK(TitleLogHeaderLength(TitleLogHeader("gog-1", "N") + "rest") == TitleLogHeader("gog-1", "N").size());
+  }
+  CHECK(!ParseTitleLogHeader("== session-1.log\n") && !ParseTitleLogHeader("PLAYDEN_TITLE_LOG/1 install=x name=y"));
+  CHECK(!ParseTitleLogHeader("PLAYDEN_TITLE_LOG/1 install=a b name=y\n") && TitleLogHeaderLength("no header") == 0);
 
   std::set<std::string> names;
   const std::string text = TitleLog(220) + "cloud user=alice id=76561198000000001 path=C:/users/Alice/saves\n";
@@ -232,7 +246,9 @@ int main() {
   CHECK(!index.HasFile("recipe-526870.json") && !index.HasFile("recipe-local-2bb7b7fa-e2f3-4b55-a118-7d33aaba5a8f.json") &&
         !index.HasFile("recipe-440.json.tmp"));
   const auto json = source.IndexJson(index);
-  CHECK(json.find("{\"title\":\"FAKE78002\",\"app\":40800,\"name\":null,\"last_run\":300,") != std::string::npos);
+  CHECK(json.find("{\"title\":\"FAKE78002\",\"app\":40800,\"name\":null,\"store\":\"steam\",\"removed\":true,\"last_run\":300,") !=
+        std::string::npos);
+  CHECK(json.find("\"title\":\"FAKE78001\",\"app\":220,\"name\":\"Half-Life 2\",\"store\":\"steam\",\"removed\":false,") != std::string::npos);
   CHECK(json.find("\"name\":\"Half-Life 2\"") != std::string::npos && json.find("\"app\":null") != std::string::npos);
 
   // The facts: the latest firmware, the current kit folder first and the others named.
@@ -358,6 +374,65 @@ for name in z.namelist():
     CHECK(std::system(("python3 -I '" + (root / "check_gog.py").string() + "' '" + (root / "gog.zip").string() +
                        "' '" + (root / "gog-expected.txt").string() + "'").c_str()) == 0);
     fs::remove(logs / "gog.log");
+  }
+
+  // Logs that outlive their game: the header Playden writes names the game, whatever the title holds now.
+  {
+    const auto header = [](const std::string& install, const std::string& name) { return TitleLogHeader(install, name); };
+    // Removed: its title is gone, yet the name and app stay.
+    Put(logs / "title-FAKE78045.log", header("steam-271590", "Grand Theft Auto V Legacy") + TitleLog(271590, "Alice", 500));
+    // A later game reuses the title ID before it has run: the old log keeps its own game's name.
+    Put(logs / "title-FAKE78005.log", header("local-7c4b582a", "Hello Neighbor Alpha Version") +
+                                          "== session-1.log\nPW_REPORT/1 profile=playden-local-7c4b582a time=400\n");
+    Put(homebrew / "FAKE78005/sce_sys/param.json", Param("Another Game"));
+    // Still installed (the title's name carries the store suffix the header leaves out).
+    Put(logs / "title-FAKE78006.log", header("gog-1207658930", "Gothic") + "PW_REPORT/1 profile=playden-gog-1207658930 time=450\n");
+    Put(homebrew / "FAKE78006/sce_sys/param.json", Param("Gothic (GOG)"));
+    // A name can't pass for a profile, nor a header for another line.
+    Put(logs / "title-FAKE78007.log", header("local-1", "profile=playden-steam-9\nPW_REPORT/1 time=999") + "PW_REPORT/1 time=420\n");
+    Put(homebrew / "FAKE78007/sce_sys/param.json", Param("profile=playden-steam-9 PW_REPORT/1 time=999"));
+    Put(logs / "title-FAKE78052.log", "== session-1.log\nPW_REPORT/1 profile=playden-local-584fd0d9 time=410\n");
+    Put(logs / "title-FAKE78063.log", "== session-1.log\nPW_REPORT/1 profile=playden-epic-6a398fcd time=405\n");
+    Put(logs / "title-FAKE78064.log", header("epic-6a398fcd", "Delores") + "PW_REPORT/1 time=406\n");
+    // A header's store wins over the body: no Steam app for a GOG game, nor for a malformed Steam install ID.
+    Put(logs / "title-FAKE78065.log", header("gog-5", "Gog Game") + "PW_REPORT/1 profile=playden-steam-7 time=401\n");
+    Put(logs / "title-FAKE78066.log", header("steam-22-extra", "Odd") + "PW_REPORT/1 profile=playden-steam-22 time=402\n");
+    // A game's name is no account name, even one that looks like Wine's.
+    Put(logs / "title-FAKE78067.log", header("local-9", "Evil L\"SteamUser\" L\"") + "x L\"SteamUser\" L\"Carol\"\n");
+    const auto named = source.Index();
+    {
+      const auto* gog = named.Game("FAKE78065");
+      CHECK(gog && gog->store == "gog" && gog->app == 0);
+      CHECK(named.Game("FAKE78066") && named.Game("FAKE78066")->app == 0);
+      const auto evil = source.ReadLog(named, "title-FAKE78067.log", {});
+      CHECK(evil && evil->find("Carol") == std::string::npos && evil->find("name=Evil L\"SteamUser\" L\"\n") != std::string::npos);
+    }
+    const auto* gta = named.Game("FAKE78045");
+    CHECK(gta && gta->name == "Grand Theft Auto V Legacy" && gta->app == 271590 && gta->store == "steam" && gta->removed);
+    CHECK(gta->last_run == 500 && gta->files.front() == "title-FAKE78045.log");
+    const auto* reused = named.Game("FAKE78005");
+    CHECK(reused && reused->name == "Hello Neighbor Alpha Version" && reused->app == 0 && reused->store == "local" &&
+          reused->removed && reused->last_run == 400);
+    const auto* gothic = named.Game("FAKE78006");
+    CHECK(gothic && gothic->name == "Gothic" && gothic->store == "gog" && !gothic->removed && gothic->app == 0);
+    const auto* odd = named.Game("FAKE78007");
+    CHECK(odd && odd->app == 0 && odd->last_run == 420 && !odd->removed);
+    // An older Playden's copy of a removed game: no name to give.
+    const auto* old = named.Game("FAKE78002");
+    CHECK(old && old->name.empty() && old->removed && old->app == 40800 && old->store == "steam");
+    // ... still says an imported game's store, from the kit's profile.
+    const auto* old_import = named.Game("FAKE78052");
+    CHECK(old_import && old_import->name.empty() && old_import->removed && old_import->store == "local");
+    CHECK(named.Game("FAKE78063") && named.Game("FAKE78063")->store == "epic");
+    CHECK(named.Game("FAKE78064") && named.Game("FAKE78064")->store == "epic" && named.Game("FAKE78064")->name == "Delores");
+    const auto json_named = source.IndexJson(named);
+    CHECK(json_named.find("\"title\":\"FAKE78045\",\"app\":271590,\"name\":\"Grand Theft Auto V Legacy\",\"store\":\"steam\","
+                          "\"removed\":true,") != std::string::npos);
+    for (const char* title : {"FAKE78045", "FAKE78005", "FAKE78006", "FAKE78007", "FAKE78052", "FAKE78063", "FAKE78064", "FAKE78065", "FAKE78066", "FAKE78067"})
+      fs::remove(logs / ("title-" + std::string(title) + ".log"));
+    fs::remove_all(homebrew / "FAKE78005");
+    fs::remove_all(homebrew / "FAKE78006");
+    fs::remove_all(homebrew / "FAKE78007");
   }
 
   // A logs folder that isn't there: an empty index, not an error.

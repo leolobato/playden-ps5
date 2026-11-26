@@ -118,7 +118,7 @@ int main() {
   CHECK(Body(answer).find("\"version\":\"0.9.0\"") != std::string::npos);
   CHECK(Body(answer).find("\"collected\":\"2026-10-10 03:12 UTC\"") != std::string::npos);
   answer = Get(on.port, "GET /api/logs");
-  CHECK(Body(answer).find("{\"title\":\"FAKE78012\",\"app\":1332010,\"name\":\"Stray\",\"last_run\":300,") != std::string::npos);
+  CHECK(Body(answer).find("{\"title\":\"FAKE78012\",\"app\":1332010,\"name\":\"Stray\",\"store\":\"steam\",\"removed\":false,\"last_run\":300,") != std::string::npos);
   CHECK(Body(answer).find("{\"name\":\"steam.log\",") != std::string::npos);
 
   // One log, redacted with the account Playden is signed in with.

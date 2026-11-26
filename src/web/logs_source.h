@@ -37,7 +37,12 @@ struct Redaction {
 struct GameLog {
   std::string title;      // FAKE78012
   std::uint32_t app = 0;  // 0: unknown
-  std::string name;       // from the title's param.json, without Playden's store suffix; empty: unknown
+  // The game the log names (web/title_log_header.h), else the title's param.json, without Playden's store suffix;
+  // empty: unknown (a log an older Playden copied, of a game since removed)
+  std::string name;
+  std::string store;      // "steam", "gog", "epic", "local" (imported), from the header or the kit's profile; empty: unknown
+  // The game is no longer on the console: its title is gone, or a later game reuses the title ID.
+  bool removed = false;
   std::int64_t last_run = 0;
   std::uint64_t size = 0;          // the title log and its extras
   std::vector<std::string> files;  // title-FAKE78012.log first, then its extras (title-FAKE78012.*)

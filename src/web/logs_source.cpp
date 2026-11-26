@@ -6,6 +6,7 @@
 #include "library/recipe_exports.h"
 #include "platform/directory_walk.h"
 #include "steam/backend/json.h"
+#include "web/title_log_header.h"
 #include "web/zip.h"
 
 #include <algorithm>
@@ -226,7 +227,8 @@ void AddAccountNames(std::string_view text, std::set<std::string>* names) {
       const auto start = at + key.size();
       const auto end = text.find('"', start);
       if (end == std::string_view::npos) break;
-      if (end > start && end - start <= 256) names->insert(std::string(text.substr(start, end - start)));
+      const auto found = text.substr(start, end - start);
+      if (!found.empty() && found.size() <= 256 && found.find('\n') == std::string_view::npos) names->insert(std::string(found));
     }
   }
 }
@@ -490,9 +492,39 @@ LogsIndex LogsSource::Index() const {
       game.title = *title;
       game.files.push_back(entry.name);
       game.size = entry.size;
+      std::optional<TitleLogGame> header;
       if (const auto text = ReadLogFile(entry.name)) {
-        game.app = TitleApp(*text);
-        game.last_run = LastRun(*text);
+        header = ParseTitleLogHeader(*text);
+        // The kit's own lines, after the header: a name can't pass for a profile.
+        const auto kit_text = std::string_view(*text).substr(TitleLogHeaderLength(*text));
+        game.app = TitleApp(kit_text);
+        game.last_run = LastRun(kit_text);
+        // A log an older Playden copied still has the kit's profile, which names the store.
+        const auto profile = kit_text.substr(0, 4096);
+        if (game.app) game.store = "steam";
+        else if (profile.find("profile=playden-gog-") != std::string_view::npos) game.store = "gog";
+        else if (profile.find("profile=playden-local-") != std::string_view::npos) game.store = "local";
+        else if (profile.find("profile=playden-epic-") != std::string_view::npos) game.store = "epic";
+      }
+      if (header) {
+        constexpr std::string_view kSteam = "steam-", kGog = "gog-", kLocal = "local-", kEpic = "epic-";
+        const std::string_view install = header->install;
+        // The header names the game: a Steam app ID only for a whole steam-<digits> install ID, never the body's.
+        game.app = 0;
+        if (install.substr(0, kSteam.size()) == kSteam) {
+          game.store = "steam";
+          const auto digits = install.substr(kSteam.size());
+          if (!digits.empty() && digits.size() <= 10 &&
+              std::all_of(digits.begin(), digits.end(), [](char c) { return Digit(c); }))
+            game.app = TitleApp("profile=playden-" + header->install);
+        } else if (install.substr(0, kGog.size()) == kGog) {
+          game.store = "gog";
+        } else if (install.substr(0, kLocal.size()) == kLocal) {
+          game.store = "local";
+        } else if (install.substr(0, kEpic.size()) == kEpic) {
+          game.store = "epic";
+        }
+        game.name = header->name;
       }
       // Per-title extras such as registry dumps go with their title.
       const std::string prefix = "title-" + game.title + ".";
@@ -503,8 +535,11 @@ LogsIndex LogsSource::Index() const {
           game.size += extra.size;
         }
       std::sort(game.files.begin() + 1, game.files.end());
-      if (const auto param = ReadFile(paths_.homebrew + "/" + game.title + "/sce_sys", "param.json", 64 * 1024))
-        game.name = TitleNameFromParam(*param);
+      // The title now: gone once its game was uninstalled, or another game's when a later game reuses the ID.
+      const auto param = ReadFile(paths_.homebrew + "/" + game.title + "/sce_sys", "param.json", 64 * 1024);
+      const auto title_name = param ? TitleNameFromParam(*param) : std::string();
+      if (game.name.empty()) game.name = title_name;
+      game.removed = !param || (header && !header->name.empty() && !title_name.empty() && header->name != title_name);
       index.games.push_back(std::move(game));
     } else if (entry.name.compare(0, kTitlePrefix.size(), kTitlePrefix) != 0) {
       index.playden.push_back({entry.name, entry.changed, entry.size});
@@ -587,6 +622,8 @@ std::string LogsSource::IndexJson(const LogsIndex& index) const {
     out += (i ? "," : "") + std::string("{\"title\":") + JsonString(game.title) +
            ",\"app\":" + (game.app ? std::to_string(game.app) : "null") +
            ",\"name\":" + (game.name.empty() ? "null" : JsonString(game.name)) +
+           ",\"store\":" + (game.store.empty() ? "null" : JsonString(game.store)) +
+           ",\"removed\":" + (game.removed ? "true" : "false") +
            ",\"last_run\":" + std::to_string(game.last_run) + ",\"size\":" + std::to_string(game.size) + ",\"files\":[";
     for (std::size_t j = 0; j < game.files.size(); ++j) out += (j ? "," : "") + JsonString(game.files[j]);
     out += "]}";
@@ -604,7 +641,8 @@ std::set<std::string> LogsSource::FoundNames(const LogsIndex& index) const {
   // Names come from every log, so a game that stopped before Wine named the user is still covered.
   std::set<std::string> names;
   const auto add = [&](const std::string& file) {
-    if (const auto text = ReadLogFile(file)) AddAccountNames(*text, &names);
+    // Not from a title log's header: a game's name is no account name.
+    if (const auto text = ReadLogFile(file)) AddAccountNames(std::string_view(*text).substr(TitleLogHeaderLength(*text)), &names);
   };
   for (const auto& log : index.playden) add(log.name);
   for (const auto& game : index.games)

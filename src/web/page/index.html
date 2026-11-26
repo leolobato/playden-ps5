@@ -333,11 +333,15 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
   };
 
   const gameRow = (game) => {
-    const label = game.name || "Unknown game";
+    // A removed game keeps its log; an older Playden didn't record which game that was.
+    const label = game.name || (game.removed ? "Removed game" : "Unknown game");
+    const source = game.app ? `app ${game.app}` : game.store === "gog" ? "GOG" : game.store === "epic" ? "Epic"
+      : game.store === "local" ? "imported" : "app unknown";
+    const detail = game.removed && game.name ? `${source} · removed` : source;
     const radio = element("input", { type: "radio", name: "game", value: game.title, "aria-label": `Pick ${label}` });
     const row = element("tr", { class: "pick", "data-title": game.title },
       element("td", { class: "radio" }, radio),
-      element("td", { class: "name" }, label, element("span", { text: game.app ? `app ${game.app}` : "app unknown" })),
+      element("td", { class: "name" }, label, element("span", { text: detail })),
       element("td", { class: "soft title", text: game.title }),
       element("td", { class: "soft when-wide", text: when(game.last_run) }),
       element("td", { class: "num soft size", text: size(game.size) }),

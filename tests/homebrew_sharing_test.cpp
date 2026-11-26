@@ -1249,13 +1249,14 @@ void report_with_logs(const std::filesystem::path& base) {
     report.playden_version = "0.10.0";
     // A game set to Online names Valve's Steam client version: after the logs' facts.
     report.versions = {{"Steam client", "1792618285"}};
+    const auto sent_report = report;
     service.Submit(std::move(request));
     service.Wait();
     const auto results = service.TakeResults();
     check(results.size() == 1 && results[0].report.ok && results[0].report.issue_url.find("/issues/809") != std::string::npos &&
               !results[0].idempotency_key.empty(),
           "the report with logs is sent");
-    std::lock_guard<std::mutex> lock(api.mutex);
+    std::unique_lock<std::mutex> lock(api.mutex);
     check(api.requests.size() == 2 && api.requests[0].url.find("/v1/attachments") != std::string::npos &&
               api.requests[1].url.find("/v1/reports") != std::string::npos,
           "the logs go first, then the report");
@@ -1274,6 +1275,34 @@ void report_with_logs(const std::filesystem::path& base) {
           "the report's own row comes after the logs' facts");
     check(contains(body, "capability-number-1") && !contains(body, "capability-number-39") && contains(body, "\u2026"),
           "a long fact is shortened to fit a version row, not refused");
+
+    lock.unlock();
+    // An imported game named like a removed Steam game, whose log keeps that name: never the other game's log.
+    write(base / "logs" / "title-FAKE78013.log",
+          "PLAYDEN_TITLE_LOG/1 install=steam-1207 name=Darkwood\n== session-1.log\nPW_REPORT/1 profile=playden-steam-1207 time=3000\n");
+    api.answer_with({answer(201, R"({"id":"att_10","url":"https://attachments.playden.club/att_10/playden-logs.zip"})"),
+                     answer(201, R"({"id":"r_10","state":"open","issue_url":"https://github.com/leolobato/playden-ps5/issues/810"})")});
+    SharingRequest imported;
+    imported.kind = SharingRequestKind::Report;
+    imported.ticket = 2;
+    imported.game_id = kGame;
+    imported.attach_logs = true;
+    imported.logs_app = 0;
+    imported.logs_name = "Darkwood";
+    imported.report = sent_report;
+    imported.report.store = "local";
+    imported.report.store_id = "local-1";
+    service.Submit(std::move(imported));
+    service.Wait();
+    check(service.TakeResults().size() == 1, "the imported game's report is sent");
+    {
+        std::lock_guard<std::mutex> lock(api.mutex);
+        check(!api.requests.empty() && api.requests[0].url.find("/v1/attachments") != std::string::npos, "its logs go first");
+        const std::string other_zip(api.requests[0].body.begin(), api.requests[0].body.end());
+        check(contains(other_zip, "playden.log") && !contains(other_zip, "title-FAKE78013.log") &&
+                  !contains(other_zip, "title-FAKE78011.log"),
+              "a removed game's log is never matched by name");
+    }
     service.Shutdown();
 }
 

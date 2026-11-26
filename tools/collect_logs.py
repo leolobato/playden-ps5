@@ -40,8 +40,10 @@ KITS = "/data/playden/kits"
 KIT_ID = "playden-kit"
 TITLE_LOG = re.compile(r"^title-(FAKE\d{5})\.log$")
 PROFILE = re.compile(r"profile=playden-steam-(\d+)")
+# The game a title log belongs to, the first line Playden writes when it copies the log (web/title_log_header.h).
+TITLE_HEADER = re.compile(r"\APLAYDEN_TITLE_LOG/1 install=([A-Za-z0-9._-]{1,128}) name=([^\x00-\x1f\x7f]*)\r?\n")
 REPORT_TIME = re.compile(r"^PW_REPORT/1 .*?\btime=(\d+)", re.MULTILINE)
-ACCOUNT = re.compile(r'L"Steam(?:App)?User" L"([^"]+)"')
+ACCOUNT = re.compile(r'L"Steam(?:App)?User" L"([^"\n]+)"')
 STEAM_ID = re.compile(r"\b7656119\d{10}\b")
 # 32-bit account IDs from older versions. owner=0 is no account, and owners=<n> without a colon is a count.
 OWNER_ID = re.compile(r"\bowner=(?!0\b)[0-9]+\b")
@@ -111,10 +113,29 @@ def fetch(ftp, path):
     return buffer.getvalue()
 
 
+def title_header(text):
+    """The (install ID, name) a title log's first line names, or None for a log without one."""
+    match = TITLE_HEADER.match(text)
+    if not match or len(match.group(2).encode("utf-8")) > 512:
+        return None
+    return match.group(1), match.group(2)
+
+
 def title_app(text):
-    """The Steam app ID a title log belongs to, from its first report lines."""
+    """The Steam app ID a title log belongs to, from its header or else its first report lines."""
+    header = title_header(text)
+    if header:
+        # The header names the game: a Steam app ID only for a whole steam-<digits> install ID, never the body's.
+        install = re.fullmatch(r"steam-(\d{1,10})", header[0])
+        return int(install.group(1)) if install and int(install.group(1)) <= 0xFFFFFFFF else None
     match = PROFILE.search(text[:4096])
     return int(match.group(1)) if match else None
+
+
+def log_name(text):
+    """The game's name a title log's header records, or None."""
+    header = title_header(text)
+    return header[1] or None if header else None
 
 
 def last_run(text):
@@ -124,7 +145,8 @@ def last_run(text):
 
 def games(title_logs, names):
     """The games with a log, the most recently run first."""
-    rows = [{"title": title, "app": title_app(text), "name": names.get(title), "last_run": last_run(text)}
+    rows = [{"title": title, "app": title_app(text), "name": log_name(text) or names.get(title),
+             "last_run": last_run(text)}
             for title, text in title_logs.items()]
     return sorted(rows, key=lambda row: (-row["last_run"], row["title"]))
 
@@ -191,7 +213,9 @@ def ask(rows):
 def account_names(texts):
     names = set()
     for text in texts:
-        names.update(match.group(1) for match in ACCOUNT.finditer(text))
+        header = TITLE_HEADER.match(text) if title_header(text) else None
+        body = text[header.end():] if header else text  # a game's name is no account name
+        names.update(match.group(1) for match in ACCOUNT.finditer(body))
     return names
 
 

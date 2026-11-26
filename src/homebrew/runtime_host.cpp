@@ -51,6 +51,8 @@
 #include "steam/backend/workshop_legacy.h"
 #include "steam/secret.h"
 #include "stores/local/scanner.h"
+#include "web/logs_source.h"
+#include "web/title_log_header.h"
 
 #include <algorithm>
 #include <cctype>
@@ -7383,7 +7385,18 @@ void RuntimeHost::CopyTitleLogs(const Composition& c) {
         : config_.host_namespace_prefix / std::filesystem::path(record.install_path).relative_path();
     const auto program = record.install_path.empty() || record.launch_path.empty()
         ? std::filesystem::path() : install / record.launch_path;
-    if (const auto text = NewestSessionLog(root, program)) config_.title_log(record.title_id, *text);
+    const auto text = NewestSessionLog(root, program);
+    if (!text) continue;
+    // The log names its game, so it keeps that name once the title is gone or a later game reuses the title ID.
+    // Read as the web page reads the title's name (logs_source.cpp), which tells a reused title by a changed name.
+    const auto param = InstalledTitleParameters(record);
+    std::string name = param ? web::TitleNameFromParam(*param) : std::string();
+    if (name.empty()) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (const auto found = title_names_.find(record.runtime_number); found != title_names_.end())
+        name = WithoutStoreSuffix(found->second);  // TitleNameFromParam takes one suffix off already
+    }
+    config_.title_log(record.title_id, web::TitleLogHeader(record.install_id, name) + *text);
   }
 }
 
