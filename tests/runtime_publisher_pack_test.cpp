@@ -248,7 +248,7 @@ int main(int argc, char** argv) {
   {
     const auto& earlier = EarlierPublisherPacks();
     CHECK(!earlier.empty());
-    // "20261125.5": a date and that day's build.
+    // "20261126.1": a date and that day's build.
     const auto order = [](const std::string& version) {
       const auto dot = version.find('.');
       CHECK(dot == 8);
@@ -266,8 +266,8 @@ int main(int argc, char** argv) {
 
   // The pinned releases: the Rockstar archive alone.
   CHECK(PinnedPublisherReleases().size() == 1);
-  CHECK(PinnedPublisherRelease(Publisher::kRockstar).archive == "playden-rgschost-20261125.5.tzst");
-  CHECK(std::string(kPublisherPackVersion) == "20261125.5");
+  CHECK(PinnedPublisherRelease(Publisher::kRockstar).archive == "playden-rgschost-20261126.1.tzst");
+  CHECK(std::string(kPublisherPackVersion) == "20261126.1");
   // dependencies.lock.json (read by the upload tool) pins the same pack.
   if (argc > 1) {
     playden::steam::json::Limits limits;
