@@ -470,7 +470,8 @@ SteamStubInfo Inspect20(const Reader& read, const Layout& layout, const Row& bin
 // pushad; sub esp, 0x1000; mov esi, header; mov ecx, dwords; ... popad; mov eax, entry; jmp eax.
 // The header (each byte XORed with its index squared) names the stub, which must be the entry
 // point; the code is not encrypted. Steamless only knows the 0x6A-dword header; Return to Castle
-// Wolfenstein's is 0x6B dwords, with one more import before the stub (as 2.0's 884 vs 856).
+// Wolfenstein's is 0x6B dwords, with one more import before the stub (as 2.0's 884 vs 856), and
+// DOOM 3's is 0x6D dwords, with the stub and app id where 0x6B has them.
 SteamStubInfo Inspect10(const Reader& read, const Layout& layout, const Row& bind, Wrapper* out) {
   SteamStubInfo info;
   std::vector<unsigned char> data(std::min<std::size_t>(bind.raw_size, 4u * 1024u * 1024u));
@@ -478,7 +479,7 @@ SteamStubInfo Inspect10(const Reader& read, const Layout& layout, const Row& bin
   const auto start = FindPattern(data, "60 81 EC 00 10 00 00 BE ?? ?? ?? ?? B9 ?? 00 00 00");
   if (!start) return info;
   const std::uint32_t size = U32(data.data() + *start + 13) * 4;
-  if (size != 0x6A * 4 && size != 0x6B * 4) return info;
+  if (size != 0x6A * 4 && size != 0x6B * 4 && size != 0x6D * 4) return info;
   info.kind = SteamStubKind::kUnsupported;
   const std::uint32_t header_va = U32(data.data() + *start + 8);
   if (header_va < layout.image_base) {

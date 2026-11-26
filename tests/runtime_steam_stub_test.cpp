@@ -192,7 +192,7 @@ int main() {
       CHECK(bytes.substr(fx::kCodeRaw, fx::kCodeSize) == fx::PlainCode());
       CHECK(fx::Get32(bytes, fx::kOptional + 16) == fx::kOriginalEntry && Sections(bytes) == 2);
     }
-  for (const std::size_t size : {std::size_t{0x6A * 4}, std::size_t{0x6B * 4}}) {  // Variant 1.0: only the entry point comes back.
+  for (const std::size_t size : {std::size_t{0x6A * 4}, std::size_t{0x6B * 4}, std::size_t{0x6D * 4}}) {  // Variant 1.0: only the entry point comes back.
     auto bytes = fx::BuildOld(true, 0, 0, size);
     const auto root = base / ("v10-" + std::to_string(size));
     Write(root / "Game.exe", bytes);
