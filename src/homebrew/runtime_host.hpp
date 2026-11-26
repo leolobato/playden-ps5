@@ -222,6 +222,8 @@ struct RuntimeHostConfig {
   // How long removal waits for the console to drop an unregistered title.
   int removal_confirm_polls = 30;
   std::chrono::milliseconds removal_poll_interval{1000};
+  // How often the mounter is asked about titles waiting for the PS5 while Playden runs.
+  std::chrono::milliseconds registration_poll_interval{5000};
   // Canonical /data as this process sees it, for the wrapper's session records.
   std::filesystem::path session_data_root = "/data";
   // The user storage root, for Playden's own play history (`play-history.v1`, #446). Empty: none is kept.
@@ -301,8 +303,8 @@ struct RuntimeInstallView {
   // A durable journal is present while no preparation runs. Recovery is
   // explicit; startup never resumes it.
   bool recovery_pending = false;
-  // Staged and its registration submitted: ShadowMountPlus registers it once no
-  // title runs, so the game is ready to play from the PS5 Home screen.
+  // Staged and its registration submitted: the mounter registers it at its next scan (an older ShadowMountPlus
+  // once Playden quits), so the game is ready to play from the PS5 Home screen.
   bool awaiting_registration = false;
   // False when a Ready title was made from an earlier kit; Prepare updates it.
   bool title_current = true;
@@ -506,6 +508,10 @@ struct RuntimeSnapshot {
   // Games whose preparation is asked for but not started yet, in the order they will start: each
   // waits behind another game's preparation, or for the runtime to finish starting.
   std::vector<std::uint32_t> queued_prepares;
+  // Games waiting for the PS5 whose title the mounter now lists as registered, by runtime number: each is named once
+  // (registered_serial counts the changes), for the UI to check it the way it does at startup.
+  std::set<std::uint32_t> registered_waiting;
+  std::uint64_t registered_serial = 0;
   // How far the current copy or deletion (including a leftover title) is, when
   // that is measurable; absent for steps whose progress is unknown.
   std::optional<float> work_progress;
@@ -1003,6 +1009,15 @@ class RuntimeHost {
   std::string RunMaintenance(Composition& composition, std::uint32_t runtime_number, RuntimeMaintenance action, bool* ok);
   // RuntimeMaintenance::kRegisterAgain for a Ready, stopped record.
   std::string RegisterTitleAgain(Composition& composition, const runtime::RuntimeInstall& record, bool* ok);
+  // Asks the mounter about each game waiting for the PS5 and names the ones it lists registered (registered_waiting).
+  // Only a query: an armed registration is never submitted again.
+  void CheckWaitingRegistrations(Composition& composition);
+  // Schedules the next CheckWaitingRegistrations while a game waits for the PS5, and stops when none does.
+  void ScheduleRegistrationCheck(Composition* composition);
+  bool RegistrationCheckDueLocked() const {
+    return registration_check_at_ && !snapshot_.handoff_ready && !launch_poll_ &&
+           std::chrono::steady_clock::now() >= *registration_check_at_;
+  }
   std::filesystem::path SaveBackupRoot(const std::string& install_id) const;
   // The preset a saved record names: a built-in one or one of the player's. One of the player's that is gone plays as
   // Playden default: *record loses its preset_id (its own changes stay), logged once per preset.
@@ -1370,6 +1385,10 @@ class RuntimeHost {
   // When the worker next checks whether a publisher sign-in needs renewing (RenewPublisher): a minute
   // after startup, then hourly. Guarded by mutex_.
   std::chrono::steady_clock::time_point renew_check_at_{};
+  // When the worker next asks the mounter about titles waiting for the PS5; empty while none waits. Guarded by mutex_.
+  std::optional<std::chrono::steady_clock::time_point> registration_check_at_;
+  // Worker thread only: waiting installs already named in registered_waiting.
+  std::set<std::string> registered_named_;
   std::uint32_t report_home_start_ = 0;  // guarded by mutex_: the app ReportHomeStartsAtQuit names
   bool cleanup_requested_ = false;
   bool measure_requested_ = false;

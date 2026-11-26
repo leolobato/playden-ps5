@@ -69,8 +69,8 @@ TitleRegistration TitleRegistry::Query(const std::string& title) {
         Flag(game, "source_available") == false)
       continue;
     // A title just unregistered with its folder kept (registered again, #1001): ShadowMount lists the folder as
-    // unmanaged until its next scan, which registers the folder again. That scan waits while any title runs,
-    // Playden included. The coordinator still checks the folder is Playden's.
+    // unmanaged until its next scan, which registers the folder again (an older ShadowMountPlus waits while any
+    // title runs, Playden included). The coordinator still checks the folder is Playden's.
     if (!*managed && path == source && Text(game, "runtime_path") == path && Text(game, "source_type") == "folder" &&
         Flag(game, "installed") == false && Flag(game, "mounted") == false && Flag(game, "source_available") == true) {
       result = {RegistrationState::kPending, path, {}};
@@ -95,12 +95,16 @@ std::string TitleRegistry::DescribeVersion() {
   const auto v = bytes->size() <= 65536 ? json::Parse(*bytes, {65536, 16, 4096, 4096}) : std::nullopt;
   if (!v || !Success(*v)) return "shadowmount=bad-answer";
   auto version = Text(*v, "shadowmount_version");
+  // Kraken Mount answers this API on the same port and names only its own version.
+  const auto kraken = Text(*v, "kraken_mount_version");
+  const bool is_kraken = version.empty() && !kraken.empty();
+  if (is_kraken) version = kraken;
   // Keep a log line one line whatever the API sends.
   if (version.size() > 64) version.resize(64);
   for (auto& c : version) if (c < 0x21 || c > 0x7e) c = '?';
   const auto* api = v->Find("api_version");
   const auto api_number = api ? api->AsUint64() : std::nullopt;
-  return "shadowmount=" + (version.empty() ? std::string("unknown") : version) +
+  return (is_kraken ? "kraken_mount=" : "shadowmount=") + (version.empty() ? std::string("unknown") : version) +
          " api=" + (api_number ? std::to_string(*api_number) : std::string("unknown"));
 }
 TitleResult TitleRegistry::Post(const std::string& route, const std::string& body) {
@@ -139,5 +143,9 @@ TitleResult TitleRegistry::RemoveManualSource(const std::string& title) {
 TitleResult TitleRegistry::Unregister(const std::string& title) {
   if (!IsPlaydenGameTitle(title)) return {false, EINVAL, "title-id"};
   return Post("/api/v1/games/uninstall", "{\"title_id\":\"" + title + "\"}");
+}
+TitleResult TitleRegistry::TurnOverlayOff(const std::string& title) {
+  if (!IsPlaydenGameTitle(title)) return {false, EINVAL, "title-id"};
+  return Post("/api/v1/games/fakelib", "{\"title_id\":\"" + title + "\",\"mode\":\"disabled\"}");
 }
 }  // namespace playden::ps5

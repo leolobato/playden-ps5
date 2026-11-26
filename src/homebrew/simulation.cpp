@@ -11147,8 +11147,8 @@ void Simulation::rebuild_view() {
                 if (position > 0 && queue.waiting.size() > 1)
                     hint = std::to_string(position) + " of " + std::to_string(queue.waiting.size()) + " waiting. " + hint;
             }
-            else if (waiting && imported) hint = "The PS5 adds the game to Home when Playden quits.";
-            else if (waiting) hint = "Quit Playden and " + game->title + " appears on the PS5 Home screen.";
+            else if (waiting && imported) hint = "On Home soon, or once you quit Playden.";
+            else if (waiting) hint = game->title + " is on Home soon, or once you quit Playden.";
             else if (status == "Registration pending") hint = "The PS5 hasn't confirmed " + game->title + " yet.";
             else if (status == "Removal incomplete") hint = "Removing " + game->title + " from the PS5 Home screen stopped partway.";
             else if (status == "Needs repair") hint = "Some of " + game->title + "'s setup files changed.";
@@ -14866,7 +14866,7 @@ void Simulation::activate() {
             heading = "Register the PS5 title again?";
             body = "The PS5 removes " + title + "'s title and registers it again with the parameters Playden writes now, "
                    "so it no longer keeps a 337 MB download area. The PS5 forgets the title's play time and may move it on "
-                   "Home. It is back on Home once you close Playden. Saves, settings and game files are not touched.";
+                   "Home. It is back on Home soon, or once you quit Playden. Saves, settings and game files are not touched.";
         } else if (action_name == "maintenance-backup") {
             heading = "Back up saves?";
             body = "The Windows user folders of " + title + " are copied aside on this console. Playden keeps the newest 3 backups. Saves the game keeps in its own folder are not included.";

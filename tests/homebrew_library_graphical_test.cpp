@@ -326,7 +326,7 @@ int main(int argc,char** argv) {
         // Prepared and waiting for the PS5: Finish setup explains quitting to Home.
         LiveRuntimeGame waiting; waiting.game_id= SteamId(42); waiting.status="Waiting for the PS5"; waiting.has_title=true;
         waiting.awaiting_registration=true; waiting.can_prepare=true;
-        waiting.detail="Waiting for the PS5, which adds the game to Home when Playden quits";
+        waiting.detail="On Home soon, or once you quit Playden";
         live.UpdateRuntime(RuntimeState::Ready, {waiting});
         capture_live("details-ready-to-play.png");
         live.NotifyReadyToPlay(SteamId(42));

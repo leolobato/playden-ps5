@@ -2140,6 +2140,7 @@ PackageActionResult FilesystemPackageInstaller::StageTitle(
   // Until the new title is complete, nothing records what Playden put into it (AdoptCustomTitleArt).
   if (const auto record_path = TitleMetadataPath(record, kInstalledTitleArt); !record_path.empty())
     ::unlink(record_path.c_str());
+  if (operations_.before_title_published) operations_.before_title_published(record.title_id);
   const auto copied = CopyMappings(record, TitleMappings(record), paths->title_staging, paths->title,
                                   "title", kTitleOwner);
   if (copied.state != PackageActionState::kComplete) return copied;

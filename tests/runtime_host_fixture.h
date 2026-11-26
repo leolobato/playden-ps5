@@ -47,7 +47,8 @@ inline std::string Read(const std::filesystem::path& path) {
 }
 struct Fixture {
   std::filesystem::path root;
-  unsigned database_reads = 0, registry_mutations = 0;
+  std::atomic<unsigned> registry_queries{0};
+  unsigned database_reads = 0, registry_mutations = 0, overlay_requests = 0;
   bool registered = false;
   // ShadowMountPlus postpones scans while a title runs: with registers false a
   // submission is accepted and listed, but not installed until registered is set.
@@ -73,7 +74,10 @@ struct Fixture {
     config.native.activity = [activity = activity](const std::string&) { return static_cast<NativeActivity>(activity->load()); };
     // ShadowMount loopback API: registration makes the title appear installed.
     config.registry_transport = [this](const std::string& route, const std::string&) -> std::optional<std::string> {
+      // ShadowMountPlus refuses games/fakelib for a title it doesn't list as a PS5 game, changing nothing.
+      if (route == "/api/v1/games/fakelib") { ++overlay_requests; return R"({"status":22,"error":"fakelib settings are only available for PS5 games"})"; }
       if (route != "/api/v1/games") { ++registry_mutations; submitted = true; registered = registers; return R"({"status":0})"; }
+      ++registry_queries;
       if (!registered && submitted)
         return R"({"status":0,"games":[{"title_id":"FAKE78001","installed":false,"managed":true,)"
                R"("source_available":true,"source_type":"folder","path":"/data/homebrew/FAKE78001"}]})";

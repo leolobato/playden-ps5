@@ -279,6 +279,7 @@ void RegisterTitleAgainFreesTheDownloadArea() {
         InstalledTitleIdentity{title, "UP9000-FAKE78001_00-PROSPEROWIN00001", "/user/app/FAKE78001/sce_sys"}};
   };
   config.registry_transport = [&](const std::string& route, const std::string&) -> std::optional<std::string> {
+    if (route == "/api/v1/games/fakelib") return R"({"status":22,"error":"fakelib settings are only available for PS5 games"})";
     if (route != "/api/v1/games") {
       ++mutations;
       if (scans_run) console = Console::kRegistered;
@@ -327,7 +328,7 @@ void RegisterTitleAgainFreesTheDownloadArea() {
   result = maintain();
   if (!result.maintenance.at(220).ok) std::fprintf(stderr, "register again: %s\n", result.maintenance.at(220).message.c_str());
   CHECK(result.maintenance.at(220).ok && removals == 2);
-  CHECK(result.maintenance.at(220).message.find("once you close Playden") != std::string::npos);
+  CHECK(result.maintenance.at(220).message.find("once you quit Playden") != std::string::npos);
   CHECK(result.installs[0].awaiting_registration && result.installs[0].state == PreparationState::kRegistering);
   CHECK(Read(param).find("downloadDataSize") == std::string::npos);
   CHECK(Read(param).find("\"titleName\": \"Half-Life 2\"") != std::string::npos);
@@ -827,6 +828,69 @@ void PublicStateRootIsUnavailable() {
 // included): preparation ends as soon as the registration is submitted, with the
 // game waiting for the console and no refusal. A later check only asks the console:
 // once the title is registered it becomes Ready, never submitted again.
+// A newer ShadowMountPlus (1.7beta6 and later) registers a title while Playden runs: the worker keeps asking the mounter
+// about a game waiting for the PS5, names it once it is registered, never submits it again, and stops asking when no
+// game waits. The overlay request (games/fakelib) gets ShadowMountPlus's refusal and changes nothing.
+void WaitingRegistrationIsPolled() {
+  Fixture fixture;
+  fixture.registers = false;
+  auto config = fixture.Config();
+  config.registration_poll_interval = std::chrono::milliseconds(20);
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  Write(fixture.root / "data/homebrew/FAKE77031/games/220/hl2.exe", "existing-game", 0644);
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(Hl2());
+  const auto waiting = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && (s.refusals.count(220) || s.installs[0].awaiting_registration);
+  }, 60);
+  if (waiting.refusals.count(220)) std::fprintf(stderr, "Prepare refused: %s\n", waiting.refusals.at(220).c_str());
+  CHECK(!waiting.refusals.count(220) && waiting.installs[0].awaiting_registration);
+  CHECK(fixture.overlay_requests == 1);
+  const auto submissions = fixture.registry_mutations;
+  // Still waiting: asked again and again, nothing named.
+  const auto asked = fixture.registry_queries.load();
+  WaitFor(host, [&](const RuntimeSnapshot&) { return fixture.registry_queries.load() >= asked + 3; });
+  CHECK(host.Snapshot().registered_waiting.empty() && host.Snapshot().registered_serial == 0);
+
+  // The mounter registered it with Playden open: named once, for the UI's check.
+  fixture.registered = true;
+  const auto named = WaitFor(host, [](const RuntimeSnapshot& s) { return s.registered_serial > 0; });
+  CHECK(named.registered_waiting == std::set<std::uint32_t>{220} && named.registered_serial == 1);
+  CHECK(named.installs[0].awaiting_registration);  // the check itself is the UI's, through Prepare
+  CHECK(fixture.registry_mutations == submissions);
+
+  // The UI's check finds it Ready; nothing waits, so the mounter is not asked any more.
+  host.Prepare(Hl2());
+  const auto ready = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && s.installs[0].state == PreparationState::kReady;
+  }, 30);
+  CHECK(!ready.installs[0].awaiting_registration && ready.registered_serial == 1);
+  CHECK(fixture.registry_mutations == submissions && fixture.overlay_requests == 1);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const auto settled = fixture.registry_queries.load();
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  CHECK(fixture.registry_queries.load() == settled);
+  CHECK(host.Snapshot().registered_waiting.empty());
+  host.Shutdown();
+}
+
 void PreparationEndsAwaitingRegistration() {
   Fixture fixture;
   fixture.registers = false;
@@ -7980,6 +8044,7 @@ void DriveUpdateSkipsABusyGame() {
         InstalledTitleIdentity{title, "UP9000-" + title + "_00-PROSPEROWIN00001", "/user/app/" + title + "/sce_sys"}};
   };
   config.registry_transport = [registered](const std::string& route, const std::string& body) -> std::optional<std::string> {
+    if (route == "/api/v1/games/fakelib") return R"({"status":22,"error":"fakelib settings are only available for PS5 games"})";
     if (route != "/api/v1/games") {
       const auto at = body.find("FAKE78");
       if (at != std::string::npos) registered->insert(body.substr(at, 9));
@@ -9525,6 +9590,7 @@ RuntimeHostConfig LeftoverConfig(Fixture& fixture) {
   config.removal_poll_interval = std::chrono::milliseconds(1);
   // Removing a manual source does not itself register the title.
   config.registry_transport = [&fixture](const std::string& route, const std::string&) -> std::optional<std::string> {
+    if (route == "/api/v1/games/fakelib") return R"({"status":22,"error":"fakelib settings are only available for PS5 games"})";
     if (route != "/api/v1/games") { ++fixture.registry_mutations; return R"({"status":0})"; }
     if (!fixture.registered) return R"({"status":0,"games":[]})";
     return R"({"status":0,"games":[{"title_id":"FAKE78001","installed":true,"managed":true,)"
@@ -13168,6 +13234,7 @@ int main(int argc, char** argv) {
   GameTitleAsksForNoDownloadData();
   RegisterTitleAgainFreesTheDownloadArea();
   PreparationEndsAwaitingRegistration();
+  WaitingRegistrationIsPolled();
   FinishSetupHandsOverForHome();
   PreparesGameWithoutShippedRecipe();
   for (int scenario = 0; scenario <= 3; ++scenario) OlderEngineDefaultsArePublishedOnPlay(scenario);

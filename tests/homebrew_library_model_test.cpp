@@ -3048,7 +3048,7 @@ void live_ready_to_play_quits_to_home() {
     model.UpdateInstalls({}, {{SteamId(42), 600'000'000}, {SteamId(43), 100}});
     LiveRuntimeGame waiting; waiting.game_id = SteamId(42); waiting.status = "Waiting for the PS5"; waiting.awaiting_registration = true;
     waiting.can_prepare = true; waiting.has_title = true;
-    waiting.detail = "Waiting for the PS5, which adds the game to Home when Playden quits";
+    waiting.detail = "On Home soon, or once you quit Playden";
     model.UpdateRuntime(RuntimeState::Ready, {waiting});
 
     // Details: Finish setup quits to Home without asking; SETUP explains the pending registration.
@@ -3343,7 +3343,7 @@ void live_play_does_the_next_useful_thing() {
         {"Runtime kit update available", "Play", "Updates runtime kit first", "", "Runtime kit update available", "busy", "runtime-play"},
         {"Needs repair", "Play", "Repairs first", "Some of Synthetic's setup files changed.", "Needs repair", "attention", "runtime-play"},
         {"Needs recovery", "Finish setup", "", "Setup stopped early.", "Interrupted", "attention", "runtime-prepare"},
-        {"Waiting for the PS5", "Finish setup", "Quits to Home", "Quit Playden and Synthetic appears on the PS5 Home screen.", "Waiting for the PS5", "busy", "quit-to-home"},
+        {"Waiting for the PS5", "Finish setup", "Quits to Home", "Synthetic is on Home soon, or once you quit Playden.", "Waiting for the PS5", "busy", "quit-to-home"},
         {"Failed", "Finish setup", "", "Setup failed.", "Failed", "problem", "runtime-prepare"},
         {"Registration pending", "Check again", "", "The PS5 hasn't confirmed Synthetic yet.", "Not confirmed", "attention", "runtime-prepare"},
         {"Removal incomplete", "Finish removing", "", "Removing Synthetic from the PS5 Home screen stopped partway.", "Removing", "attention", "runtime-remove-retry"},

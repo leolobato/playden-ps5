@@ -1465,8 +1465,17 @@ void Controller::TickRuntime() {
     // check only asks the console.
     if (usable && !startup_awaiting_known_) {
       startup_awaiting_known_ = true;
+      registered_serial_seen_ = prepared.registered_serial;
       for (const auto& view : prepared.installs)
         if (view.awaiting_registration) startup_awaiting_.insert(view.game);
+    }
+    // While Playden runs, the runtime asks the mounter about titles waiting for the PS5 (a newer ShadowMountPlus
+    // registers them with Playden open): one it finds registered is checked the same way.
+    if (usable && prepared.registered_serial != registered_serial_seen_) {
+      registered_serial_seen_ = prepared.registered_serial;
+      for (const auto& view : prepared.installs)
+        if (view.awaiting_registration && prepared.registered_waiting.count(view.runtime_number))
+          startup_awaiting_.insert(view.game);
     }
     for (auto it = startup_awaiting_.begin(); it != startup_awaiting_.end();) {
       if (prepared.preparing_app) break;
@@ -1535,7 +1544,7 @@ void Controller::TickRuntime() {
       if (!pending.seen_preparing && !unseen_too_long) { ++it; continue; }
       const auto* record = record_of(id);
       if (record && (ready(record) || record->awaiting_registration))
-        finish(true, record->awaiting_registration ? "Bottle recreated. The PS5 adds the game to Home when Playden quits."
+        finish(true, record->awaiting_registration ? "Bottle recreated. On Home soon, or once you quit Playden."
                                                    : "Bottle recreated with the saves and settings brought back.");
       else
         finish(false, refusal_of(id).empty() ? "The game could not be prepared again; press Prepare on the game page."
@@ -1814,7 +1823,7 @@ void Controller::TickRuntime() {
       // Staged and submitted: ShadowMountPlus registers it as soon as Playden quits,
       // so the game is ready to play from Home. Checking only asks the console.
       game.status = "Waiting for the PS5"; game.awaiting_registration = true;
-      game.detail = "Waiting for the PS5, which adds the game to Home when Playden quits";
+      game.detail = "On Home soon, or once you quit Playden";
       game.can_prepare = usable;
     } else if (record && record->recovery_pending &&
                (record->step == "register" || record->step == "await-native" || record->step == "query-native")) {

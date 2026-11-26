@@ -18,7 +18,8 @@ class TitleRegistry {
   using Transport = std::function<std::optional<std::string>(const std::string&, const std::string&)>;
   explicit TitleRegistry(Transport transport) : transport_(std::move(transport)) {}
   TitleRegistration Query(const std::string& title_id);
-  // For logs: "shadowmount=<version> api=<n>", or why ShadowMountPlus did not answer.
+  // For logs: "shadowmount=<version> api=<n>" ("kraken_mount=<version> api=<n>" when Kraken Mount answers), or why
+  // nothing did.
   std::string DescribeVersion();
   // Caller must independently check native install/source paths and establish
   // ownership before registration. ShadowMount inventory alone cannot reserve IDs.
@@ -27,6 +28,11 @@ class TitleRegistry {
   // source folder before Unregister to prevent the scanner registering it again.
   TitleResult RemoveManualSource(const std::string& title_id);
   TitleResult Unregister(const std::string& title_id);
+  // Kraken Mount, which answers this API on the same port, lays its own libraries (fakelib, ampr-emu-ng) over each
+  // title it lists; a Playden title runs Wine and must start without them. Asked before the title's folder appears,
+  // as the setting holds for a title not listed yet. ShadowMountPlus refuses it for a title it doesn't list as a PS5
+  // game (1.7beta12; older ones don't know the route): the caller never acts on the result, which is for logs.
+  TitleResult TurnOverlayOff(const std::string& title_id);
  private:
   TitleResult Post(const std::string& route, const std::string& body);
   Transport transport_;

@@ -171,8 +171,8 @@ bool CommunityRecipeNamesGame(const rt::RuntimeInstall& record) {
 std::string GeneratedRecipeFile(const std::string& recipe_id) { return "recipe-" + recipe_id + ".json"; }
 std::string RecipeRegistryFile(const std::string& install_id) { return "recipe-registry-" + install_id + ".json"; }
 
-// Staged, its registration submitted, and only waiting for ShadowMountPlus, which
-// registers titles once no title runs: the game is ready to play from Home. A
+// Staged, its registration submitted, and only waiting for the mounter's next scan (with Playden open on
+// ShadowMountPlus 1.7beta6 and later, once Playden quits on older ones): the game is ready to play from Home. A
 // registration the console refused (a stale hook, a failed submission) is not.
 bool AwaitingRegistration(const rt::RuntimeInstall& record) {
   return record.journal && (record.journal->step == "register" || record.journal->step == "await-native") &&
@@ -6003,11 +6003,10 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
         " to=" + (after_step && after_step->journal ? after_step->journal->step : std::string{}) +
         " code=" + (after_step && after_step->last_failure ? after_step->last_failure->code : std::string("-")) +
         " message=" + step.message);
-    // A submitted registration is not polled: ShadowMountPlus registers titles only
-    // while no title runs, Playden included. The console is asked once more right
-    // away (a title may already be registered); otherwise preparation ends here and
-    // the game is ready to play once the player leaves Playden. Later checks only
-    // query the console and never resubmit an armed registration.
+    // Preparation doesn't wait for a submitted registration: an older ShadowMountPlus registers titles only
+    // while no title runs, Playden included. The console is asked once more right away (a title may already be
+    // registered); otherwise preparation ends here, and the worker keeps asking the mounter while Playden runs
+    // (CheckWaitingRegistrations). Later checks only query the console and never resubmit an armed registration.
     const bool pending = !step.ok() && step.error() == rt::InstallServiceError::kRegistrationPending;
     if (!step.ok() && !pending) return step.message;
     const auto after = c.records.Find(install_id);
@@ -6327,7 +6326,7 @@ std::string RuntimeHost::RegisterTitleAgain(Composition& c, const rt::RuntimeIns
   Log("register again app=" + app + " title=" + record.title_id + " unregister");
   const auto unregistered = UnregisterTitle(c, record.title_id, *nonce);
   // Registration takes over from query-native: a title still registered is Ready again at once, one gone is
-  // submitted, and ShadowMountPlus registers it at its next scan, once no title runs (Playden included).
+  // submitted, and the mounter registers it at its next scan (on an older ShadowMountPlus, once Playden quits).
   rt::InstallServiceResult step = rt::InstallServiceResult::Success();
   for (int round = 0; round < 4 && !Stopping(); ++round) {
     step = c.service->Step(record.install_id);
@@ -6344,7 +6343,70 @@ std::string RuntimeHost::RegisterTitleAgain(Composition& c, const rt::RuntimeIns
   if (!step.ok() && !pending) return step.message;
   *ok = true;
   if (after && after->state == rt::PreparationState::kReady) return "The PS5 title is registered again.";
-  return "The PS5 title is registered again once you close Playden. Its play time on the PS5 starts from zero.";
+  return "Back on Home soon, or once you quit Playden. Its play time on the PS5 starts from zero.";
+}
+
+// ShadowMountPlus 1.7beta6 and later scan while a homebrew title runs, Playden included: a game waiting for the PS5
+// may be registered while Playden is open. An older ShadowMountPlus registers it only once Playden quits, and the
+// check finds nothing until then.
+void RuntimeHost::CheckWaitingRegistrations(Composition& c) {
+  std::set<std::uint32_t> busy;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    busy.insert(snapshot_.queued_prepares.begin(), snapshot_.queued_prepares.end());
+    if (snapshot_.preparing_app) busy.insert(*snapshot_.preparing_app);
+  }
+  std::set<std::string> waiting;
+  std::set<std::uint32_t> named;
+  bool found = false;
+  for (const auto& record : c.repository.Snapshot()) {
+    if (!AwaitingRegistration(record)) continue;
+    waiting.insert(record.install_id);
+    if (registered_named_.count(record.install_id)) {
+      named.insert(record.runtime_number);
+      continue;
+    }
+    // A game queued or being prepared is checked by that preparation.
+    if (busy.count(record.runtime_number)) continue;
+    if (c.registry.Query(record.title_id).state != ps5::RegistrationState::kReady) continue;
+    Log("registration check app=" + std::to_string(record.runtime_number) + " title=" + record.title_id + " registered");
+    registered_named_.insert(record.install_id);
+    named.insert(record.runtime_number);
+    found = true;
+  }
+  std::erase_if(registered_named_, [&waiting](const std::string& id) { return !waiting.count(id); });
+  // Published only when it changes: the check runs every few seconds.
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!found && snapshot_.registered_waiting == named) return;
+  }
+  Publish([&](RuntimeSnapshot& s) {
+    s.registered_waiting = std::move(named);
+    if (found) ++s.registered_serial;
+  });
+}
+
+void RuntimeHost::ScheduleRegistrationCheck(Composition* c) {
+  bool waiting = false;
+  if (c && c->repository.Loaded())
+    for (const auto& record : c->repository.Snapshot())
+      if (AwaitingRegistration(record)) { waiting = true; break; }
+  bool cleared = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!waiting) {
+      registration_check_at_.reset();
+      registered_named_.clear();
+      if (!snapshot_.registered_waiting.empty()) {
+        snapshot_.registered_waiting.clear();
+        ++snapshot_.revision;
+        cleared = true;
+      }
+    } else if (!registration_check_at_) {
+      registration_check_at_ = std::chrono::steady_clock::now() + config_.registration_poll_interval;
+    }
+  }
+  if (cleared) published_.notify_all();
 }
 
 std::filesystem::path RuntimeHost::SaveBackupRoot(const std::string& install_id) const {
@@ -8290,6 +8352,11 @@ bool RuntimeHost::RunServices() {
       operations.canceled = [this] { return Stopping(); };
       operations.progress = [this](std::uint64_t done, std::uint64_t total) { ReportWork(done, total); };
       operations.log = [this](const std::string& line) { Log(line); };
+      // Kraken Mount (on ShadowMountPlus's port) gets no overlay for the game's title, from its first launch on.
+      operations.before_title_published = [this, &c](const std::string& title) {
+        const auto off = c.registry.TurnOverlayOff(title);
+        Log("overlay off title=" + title + " ok=" + std::to_string(off.ok) + " code=" + std::to_string(off.code));
+      };
       auto installer = std::make_unique<rt::FilesystemPackageInstaller>(c.kit->view, config_.package_paths, operations);
       // Records prepared with a recipe Playden ships resolve whatever recipe the kit carries,
       // as long as the kit's template provides what the recipe requires.
@@ -8597,6 +8664,7 @@ bool RuntimeHost::RunServices() {
           std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count()));
   }
   bool reload = false;
+  ScheduleRegistrationCheck(composition.get());
   for (;;) {
     std::vector<PlayRequest> plays;
     std::vector<RemovalRequest> removals;
@@ -8619,6 +8687,7 @@ bool RuntimeHost::RunServices() {
     std::vector<std::shared_ptr<PendingRelocation>> relocations;
     std::vector<std::uint32_t> home_handoffs;
     bool renew_check = false;
+    bool registration_check = false;
     {
       std::unique_lock<std::mutex> lock(mutex_);
       // Preparation changes install records that Handoff reads on the
@@ -8644,16 +8713,20 @@ bool RuntimeHost::RunServices() {
                (drive_updates_pending_ && !snapshot_.handoff_ready && !launch_poll_ && !PreparesHeldLocked() &&
                 std::chrono::steady_clock::now() >= drive_update_not_before_) ||
                (config_.publisher_refresh && !snapshot_.handoff_ready && !launch_poll_ &&
-                std::chrono::steady_clock::now() >= renew_check_at_);
+                std::chrono::steady_clock::now() >= renew_check_at_) ||
+               RegistrationCheckDueLocked();
       };
-      // The next sign-in renewal check wakes the worker too (no check while a launch is handed off or followed).
+      // The next sign-in renewal check and the next registration check wake the worker too (neither while a launch
+      // is handed off or followed).
       const auto deadline = [&](std::chrono::steady_clock::time_point other) {
-        return config_.publisher_refresh ? std::min(other, renew_check_at_) : other;
+        const auto at = config_.publisher_refresh ? std::min(other, renew_check_at_) : other;
+        return registration_check_at_ ? std::min(at, *registration_check_at_) : at;
       };
       // A held or paused queue holds the drive update too: its deadline wakes nothing until the hold ends.
       if (launch_poll_) wake_.wait_for(lock, kLaunchPollInterval, ready);
       else if (drive_updates_pending_ && !PreparesHeldLocked()) wake_.wait_until(lock, deadline(drive_update_not_before_), [&] { return ready() || launch_poll_; });
-      else if (config_.publisher_refresh) wake_.wait_until(lock, renew_check_at_, [&] { return ready() || launch_poll_; });
+      else if (config_.publisher_refresh) wake_.wait_until(lock, deadline(renew_check_at_), [&] { return ready() || launch_poll_; });
+      else if (registration_check_at_) wake_.wait_until(lock, *registration_check_at_, [&] { return ready() || launch_poll_; });
       else wake_.wait(lock, [&] { return ready() || launch_poll_; });
       if (stopping_) {
         // A sign-out not acted on yet still takes the kept sessions with it.
@@ -8715,6 +8788,10 @@ bool RuntimeHost::RunServices() {
           std::chrono::steady_clock::now() >= renew_check_at_) {
         renew_check = true;
         renew_check_at_ = std::chrono::steady_clock::now() + config_.publisher_renew_interval;
+      }
+      if (RegistrationCheckDueLocked()) {
+        registration_check = true;
+        registration_check_at_.reset();
       }
     }
     // Work that may hand a game the Steam session (OnlineSessionStep) reads it now, before the hold: the session
@@ -8966,6 +9043,7 @@ bool RuntimeHost::RunServices() {
       // Without the services (no state root, records unreadable) nothing waits: the flag goes all the same.
       if (catch_up && composition) CatchUpSteamworks(*composition);
     }
+    if (registration_check && composition) CheckWaitingRegistrations(*composition);
     // One preparation per pass, taken from the front of the queue only as it starts, so PrepareNext
     // reorders everything not started yet. A handoff that became ready during this pass reads install
     // records on the application thread, and a quit to Home holds the queue: the queue waits for both.
@@ -9043,6 +9121,7 @@ bool RuntimeHost::RunServices() {
         if (composition) s.prepared = std::move(prepared);
       });
     }
+    ScheduleRegistrationCheck(composition.get());
   }
   // Playden quits for a start from Home: what that start will lack is said before the app goes.
   if (const auto report_app = [this] {

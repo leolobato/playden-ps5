@@ -144,6 +144,9 @@ struct PackageInstallerOperations {
   // Optional: one line per package copy and title check with its file count and the
   // time spent in each part, for measuring preparation on the console.
   std::function<void(const std::string&)> log;
+  // Optional: told a new title's ID just before its folder is moved into place, where the mounter may list it from
+  // then on. Nothing it does changes the step.
+  std::function<void(const std::string& title_id)> before_title_published;
   // Validates immutable template provenance requirements that are semantic rather
   // than file-level (including the required core registry entries).
   std::function<bool(const std::filesystem::path&)> validate_bottle;

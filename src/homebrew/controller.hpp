@@ -474,6 +474,8 @@ class Controller {
   // Titles waiting for the PS5 when Playden started are checked once (query only).
   bool startup_awaiting_known_ = false;
   std::set<GameId> startup_awaiting_;
+  // The runtime's registered_serial this controller last acted on.
+  std::uint64_t registered_serial_seen_ = 0;
   // Uninstall order: Cloud saves, then the PS5 title, then the download.
   UninstallFlow uninstalls_;
   void BeginUninstall(GameId id, bool delete_saves);

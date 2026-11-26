@@ -181,6 +181,7 @@ struct Fixture {
   bool fail_publication = false;
   bool legacy_descriptor = false;
   std::function<void(const std::filesystem::path&, const std::filesystem::path&, std::error_code&)> rename_path;
+  std::function<void(const std::string&)> before_title_published;
   std::vector<std::string> logs;
   std::vector<std::filesystem::path> private_profile_paths;
 
@@ -255,6 +256,7 @@ struct Fixture {
     PackageInstallerOperations operations;
     operations.private_profile_paths = private_profile_paths;
     operations.rename_path = rename_path;
+    operations.before_title_published = before_title_published;
     operations.log = [&](const std::string& message) { logs.push_back(message); };
     operations.hash_file = TestHash;
     operations.hash_bytes = TestHashBytes;
@@ -376,6 +378,23 @@ void RenameRetryRespectsCancellationAndCollisions() {
     CHECK(attempts == 1);
     if (!cancel) CHECK(Read(fixture.host_data / "homebrew/FAKE78001/foreign") == "keep me");
   }
+}
+
+// The mounter is told about a new title before its folder appears in /data/homebrew (Kraken Mount turns its overlay off
+// then, before a scan can list the title); a title already in place is not asked about again.
+void NewTitleIsAnnouncedBeforeItsFolderAppears() {
+  Fixture fixture;
+  std::vector<std::string> told;
+  fixture.before_title_published = [&](const std::string& title) {
+    CHECK(!std::filesystem::exists(fixture.host_data / "homebrew" / title));
+    told.push_back(title);
+  };
+  auto installer = fixture.Installer();
+  CHECK(installer.StageTitle(Record()).state == PackageActionState::kComplete);
+  CHECK(told == std::vector<std::string>{"FAKE78001"});
+  CHECK(std::filesystem::is_directory(fixture.host_data / "homebrew/FAKE78001"));
+  CHECK(installer.StageTitle(Record()).state == PackageActionState::kComplete);
+  CHECK(told.size() == 1);
 }
 
 void LegacyDescriptorOnlyBindsHistoricalRoot() {
@@ -2167,6 +2186,7 @@ int main() {
   TransientRenameFailuresKeepTheStagedPackage();
   RenameFailuresReportTheActualCondition();
   RenameRetryRespectsCancellationAndCollisions();
+  NewTitleIsAnnouncedBeforeItsFolderAppears();
   LateSyncFailureIsReestablishedOnRetry();
   PrivateTitleFoldersAreRepublished();
   AnyTitleVariantServesEveryTitle();

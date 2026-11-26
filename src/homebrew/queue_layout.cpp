@@ -204,7 +204,7 @@ QueueSection preparations(const State& state) {
         item.tone = "attention";
         if (game.status == "Waiting for the PS5") {
             item.status = "Waiting for the PS5";
-            item.note = "Quit Playden and the PS5 adds it to Home";
+            item.note = "On Home soon, or once you quit Playden";
         } else if (game.status == "Registration pending") {
             item.status = "Registration pending";
         } else if (game.status == "Needs recovery") {

@@ -151,6 +151,26 @@ int main() {
   CHECK(versioned.DescribeVersion() == "shadowmount=bad-answer");
   response = "{\"status\":0,\"shadowmount_version\":\"" + std::string(100, 'v') + "\"}";
   CHECK(versioned.DescribeVersion() == "shadowmount=" + std::string(64, 'v') + " api=unknown");
+  // Kraken Mount on ShadowMountPlus's port names only its own version.
+  response = R"({"status":0,"api_version":1,"kraken_mount_version":"0.4.1","capabilities":["fakelib"]})";
+  CHECK(versioned.DescribeVersion() == "kraken_mount=0.4.1 api=1");
   CHECK(!offline.Register("FAKE78000").ok);
+
+  // Overlay off (Kraken Mount's games/fakelib): only for a game title of Playden's, and every answer is reported,
+  // never acted on: ShadowMountPlus's refusal (1.7beta12, a title it doesn't list as a PS5 game), an older
+  // ShadowMountPlus's unknown route, Kraken Mount's "not listed yet", no answer at all.
+  requests.clear();
+  mutation_response = R"({"status":0,"fakelib_mode":"disabled","saved":true})";
+  CHECK(registry.TurnOverlayOff("FAKE78000").ok);
+  CHECK(requests.size() == 1 && requests[0] == R"(/api/v1/games/fakelib {"title_id":"FAKE78000","mode":"disabled"})");
+  mutation_response = R"({"status":22,"error":"fakelib settings are only available for PS5 games"})";
+  const auto refused = registry.TurnOverlayOff("FAKE78000");
+  CHECK(!refused.ok && refused.code == 22);
+  mutation_response = R"({"status":2,"error":"unknown API route"})";
+  const auto unknown = registry.TurnOverlayOff("FAKE78000");
+  CHECK(!unknown.ok && unknown.code == 2);
+  CHECK(!offline.TurnOverlayOff("FAKE78000").ok);
+  requests.clear();
+  CHECK(!registry.TurnOverlayOff("FAKE77031").ok && !registry.TurnOverlayOff("CUSA00001").ok && requests.empty());
   std::puts("title registry tests passed");
 }
