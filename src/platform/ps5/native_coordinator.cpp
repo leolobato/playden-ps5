@@ -138,38 +138,64 @@ runtime::NativeStatus Ps5NativeCoordinator::QueryOwnership(const runtime::Runtim
   return QueryWith(record, false);
 }
 runtime::NativeStatus Ps5NativeCoordinator::QueryWith(const runtime::RuntimeInstall& record, bool full_package) {
+  // An unavailable status keeps every flag false; only its reason says which observation failed.
+  const auto unavailable = [](std::string reason) { runtime::NativeStatus s; s.reason = std::move(reason); return s; };
   auto owner = records_.Find(record.install_id);
-  if (!IsPlaydenGameTitle(record.title_id) || !owner || !runtime::SameRuntimeInstallIdentity(*owner, record)) return {};
+  if (!IsPlaydenGameTitle(record.title_id) || !owner || !runtime::SameRuntimeInstallIdentity(*owner, record))
+    return unavailable("record");
   const auto database = operations_.database(record.title_id);
   const auto source = ReadTitleSource(root_, record.title_id);
   const auto cache = registry_.Query(record.title_id);
-  if (database.inventory == TitleAvailability::kUnknown || source.availability == TitleAvailability::kUnknown ||
-      cache.state == RegistrationState::kUnavailable) return {};
+  if (database.inventory == TitleAvailability::kUnknown) return unavailable("app.db-unknown");
+  if (source.availability == TitleAvailability::kUnknown) return unavailable("folder-unknown");
+  if (cache.state == RegistrationState::kUnavailable) return unavailable("shadowmount-unavailable(" + cache.reason + ")");
   runtime::NativeStatus status; status.available = true;
   status.source_available = source.directory;
-  if (cache.state == RegistrationState::kCollision) { status.collision = true; return status; }
+  // Each refusal names its check in the logs (Play reports only "ownership is invalid").
+  // It quotes app.db and ShadowMount values: kept to one short log line.
+  const auto refuse = [&](std::string reason) {
+    if (reason.size() > 300) reason.resize(300);
+    for (auto& c : reason) if (c < 0x20 || c > 0x7e) c = '?';
+    status.collision = true; status.reason = std::move(reason); return status;
+  };
+  if (cache.state == RegistrationState::kCollision)
+    return refuse("shadowmount-" + (cache.reason.empty() ? std::string("collision") : cache.reason) + " path=" + cache.path);
   if (source.availability == TitleAvailability::kFree) {
-    status.collision = database.inventory == TitleAvailability::kOccupied || cache.state != RegistrationState::kAbsent;
+    if (database.inventory == TitleAvailability::kOccupied) return refuse("folder-missing app.db=occupied");
+    if (cache.state != RegistrationState::kAbsent) return refuse("folder-missing shadowmount-listed");
+    status.reason = "folder-missing";
     return status;
   }
   const auto package = full_package ? package_.Inspect(record) : package_.InspectOwnership(record);
-  if (!package.known) return {};
+  if (!package.known) return unavailable("package-unknown");
   const auto content = source.owned_directory ? ContentId(root_, record.title_id) : std::nullopt;
   // The ownership query asks whose title this is; kit artifacts matter only to the full one (launch, registration).
   status.owned_manifest_matches = source.owned_directory && package.title_staged && package.manifest_matches &&
       (!full_package || package.artifacts_valid) &&
       package.title_source_path == (root_ / record.title_id).string() && content.has_value();
-  if (!status.owned_manifest_matches) { status.collision = true; return status; }
+  if (!status.owned_manifest_matches) {
+    if (!source.owned_directory) return refuse("folder-not-owned");
+    if (!package.title_staged) return refuse("title-not-staged");
+    if (!package.manifest_matches) return refuse("title-manifest");
+    if (full_package && !package.artifacts_valid) return refuse("artifacts");
+    if (package.title_source_path != (root_ / record.title_id).string()) return refuse("title-path");
+    return refuse("param-json");
+  }
   if (database.inventory == TitleAvailability::kOccupied) {
-    if (!database.identity || database.identity->title_id != record.title_id || database.identity->content_id != *content ||
-        database.identity->metadata_path != "/user/app/" + record.title_id + "/sce_sys") {
-      status.collision = true; return status;
-    }
+    if (!database.identity) return refuse("app.db-identity " + (database.reason.empty() ? std::string("unread") : database.reason));
+    // The values app.db holds; a database rebuild (safe mode) puts them right.
+    if (database.identity->title_id != record.title_id) return refuse("app.db-title-id app.db=" + database.identity->title_id);
+    if (database.identity->content_id != *content)
+      return refuse("app.db-content-id app.db=" + database.identity->content_id + " param=" + *content);
+    if (database.identity->metadata_path != "/user/app/" + record.title_id + "/sce_sys")
+      return refuse("app.db-metadata-path app.db=" + database.identity->metadata_path);
     status.installed = cache.state == RegistrationState::kReady;
     status.scan_pending = !status.installed;
+    if (!status.installed) status.reason = cache.state == RegistrationState::kAbsent ? "shadowmount-absent" : "shadowmount-pending";
   } else {
-    if (cache.state == RegistrationState::kReady) return {}; // Cache cannot replace native inventory.
+    if (cache.state == RegistrationState::kReady) return unavailable("app.db-free shadowmount-ready"); // Cache cannot replace native inventory.
     status.scan_pending = cache.state == RegistrationState::kPending;
+    status.reason = cache.state == RegistrationState::kPending ? "app.db-free shadowmount-pending" : "app.db-free shadowmount-absent";
   }
   return status;
 }

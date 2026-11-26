@@ -52,8 +52,12 @@ TitleDatabaseObservation ReadTitleDatabase(const std::string& path, const std::s
       if (id && *id == title && content && metadata && std::filesystem::path(*metadata).is_absolute() &&
           std::filesystem::path(*metadata).lexically_normal().string() == *metadata)
         result.identity = InstalledTitleIdentity{*id, *content, *metadata};
+      else
+        result.reason = !id ? "title-id-unreadable" : *id != title ? "title-id-case" : !content ? "content-id-unreadable" :
+            !metadata ? "metadata-path-unreadable" : "metadata-path-not-normal";
       const auto next = sqlite3_step(statement);
-      if (next == SQLITE_ROW) result.identity.reset(); // Duplicate/case aliases remain occupied.
+      // Duplicate/case aliases remain occupied.
+      if (next == SQLITE_ROW) { result.identity.reset(); result.reason = "duplicate-rows"; }
       else if (next != SQLITE_DONE) result = {}; // An incomplete observation is unknown.
     }
   }

@@ -16,6 +16,9 @@ int main() {
   CHECK(registry.Query("FAKE78000").state == RegistrationState::kReady);
   response = R"({"status":0,"games":[{"title_id":"FAKE78000","installed":true,"managed":true,"source_available":true,"path":"/data/somebody-else"}]})";
   CHECK(registry.Query("FAKE78000").state == RegistrationState::kCollision);
+  // The reason quotes ShadowMount's source type on one short line.
+  response = R"({"status":0,"games":[{"title_id":"FAKE78000","installed":true,"managed":true,"source_available":true,"source_type":"image\nfake log line 0123456789abcdefghij","path":"/data/somebody-else"}]})";
+  CHECK(registry.Query("FAKE78000").reason == "path:image?fake?log?line?0123456789ab");
   auto collisions_before = requests.size();
   CHECK(!registry.Register("FAKE78000").ok);
   CHECK(requests.size() == collisions_before + 1);

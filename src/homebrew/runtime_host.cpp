@@ -4415,7 +4415,8 @@ rt::LaunchPreflight RuntimeHost::Preflight(Composition& c, const rt::RuntimeInst
         " admission=" + admission + " runtime=" + std::to_string(p.runtime_present) +
         " helper=" + std::to_string(p.helper_valid) + " profile=" + std::to_string(p.profile_present) +
         " title=" + std::to_string(p.title_owned) + " inventory=" + std::to_string(p.inventory_confirmed) +
-        " activity=" + std::to_string(static_cast<int>(p.activity)) + " revision=" + std::to_string(p.settings_revision));
+        " activity=" + std::to_string(static_cast<int>(p.activity)) + " revision=" + std::to_string(p.settings_revision) +
+        (p.title_owned || native.reason.empty() ? std::string() : " title_reason=" + native.reason));
     return p;
   }
   const auto cached = c.preflights.find(record.install_id);

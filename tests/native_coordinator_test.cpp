@@ -82,7 +82,7 @@ int main() {
   status = native.Query(record); CHECK(status.owned_manifest_matches && !status.collision);
   CHECK(chmod(source.c_str(), 0777) == 0); CHECK(chmod((source / "sce_sys").c_str(), 0777) == 0);
   status = native.Query(record); CHECK(status.owned_manifest_matches && !status.collision);
-  CHECK(chmod(source.c_str(), 0775) == 0); CHECK(native.Query(record).collision);
+  CHECK(chmod(source.c_str(), 0775) == 0); CHECK(native.Query(record).collision && native.Query(record).reason == "folder-not-owned");
   CHECK(chmod(source.c_str(), 0755) == 0); CHECK(chmod((source / "sce_sys").c_str(), 0775) == 0);
   CHECK(native.Query(record).collision);
   CHECK(chmod(source.c_str(), 0700) == 0); CHECK(chmod((source / "sce_sys").c_str(), 0700) == 0);
@@ -105,18 +105,22 @@ int main() {
   const auto stale_arm = record;
   record.journal->operation_id = "11111111-2222-3333-4444-666666666666";
   CHECK(native.Register(stale_arm).state == RegistrationResultState::kFailed && mutations == 2);
-  database.identity->content_id = "foreign"; CHECK(native.Query(record).collision); CHECK(native.Register(record).state == RegistrationResultState::kFailed && mutations == 2);
+  database.identity->content_id = "foreign"; CHECK(native.Query(record).collision && native.Query(record).reason == "app.db-content-id app.db=foreign param=UP9000-FAKE78001_00-PROSPEROWIN00001"); CHECK(native.Register(record).state == RegistrationResultState::kFailed && mutations == 2);
   database.identity->content_id = "UP9000-FAKE78001_00-PROSPEROWIN00001";
-  database.inventory = TitleAvailability::kFree; CHECK(!native.Query(record).available); database.inventory = TitleAvailability::kOccupied;
+  database.inventory = TitleAvailability::kFree; CHECK(!native.Query(record).available && native.Query(record).reason == "app.db-free shadowmount-ready"); database.inventory = TitleAvailability::kOccupied;
   const auto ready_response = response;
   response = R"({"status":0,"games":[{"title_id":"FAKE78001","installed":true,"managed":true,"source_available":true,"source_type":"folder","path":"/data/homebrew/FAKE78001"},{"title_id":"FAKE78001","installed":true,"managed":true,"source_available":true,"source_type":"folder","path":"/data/foreign"}]})";
-  CHECK(native.Query(record).collision);
+  CHECK(native.Query(record).collision && native.Query(record).reason == "shadowmount-duplicate path=/data/foreign");
   CHECK(native.Register(record).state == RegistrationResultState::kFailed && mutations == 2);
+  response = R"({"status":0,"games":[{"title_id":"FAKE78001","installed":true,"managed":false,"mounted":true,"source_available":true,"source_type":"folder","runtime_path":"/data/homebrew/FAKE78001","path":"/data/homebrew/FAKE78001"}]})";
+  CHECK(native.Query(record).reason == "shadowmount-unmanaged path=/data/homebrew/FAKE78001");
+  response = R"({"status":0,"games":[{"title_id":"FAKE78001","installed":true,"managed":true,"source_available":true,"source_type":"image","path":"/data/images/FAKE78001.exfat"}]})";
+  CHECK(native.Query(record).reason == "shadowmount-path:image path=/data/images/FAKE78001.exfat");
   response = ready_response;
   record.journal->step = "await-native";
   CHECK(native.Register(record).state == RegistrationResultState::kFailed && mutations == 2);
   record.journal->step = "register";
-  package.value.manifest_matches = false; CHECK(native.Query(record).collision); package.value.manifest_matches = true;
+  package.value.manifest_matches = false; CHECK(native.Query(record).collision && native.Query(record).reason == "title-manifest"); package.value.manifest_matches = true;
   // A package inspected in another mapped namespace cannot authorize this source.
   package.value.title_source_path = (temporary / "elsewhere/data/homebrew/FAKE78001").string();
   CHECK(native.Query(record).collision);

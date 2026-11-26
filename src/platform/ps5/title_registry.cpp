@@ -14,6 +14,12 @@ std::string Text(const json::Value& v, const char* key) {
   const auto* value = v.Find(key);
   return value && value->is_string() ? value->text() : std::string();
 }
+// A ShadowMount value quoted in a log reason: short and on one line.
+std::string LogValue(std::string text) {
+  if (text.size() > 32) text.resize(32);
+  for (auto& c : text) if (c < 0x21 || c > 0x7e) c = '?';
+  return text;
+}
 bool Success(const json::Value& v) {
   const auto* status = v.Find("status");
   return status && status->AsUint64() == 0;
@@ -50,7 +56,7 @@ TitleRegistration TitleRegistry::Query(const std::string& title) {
       continue;
     }
     if (id != title) continue;
-    if (++matches > 1) return {RegistrationState::kCollision, path, {}};
+    if (++matches > 1) return {RegistrationState::kCollision, path, "duplicate"};
     if (path.empty()) return unavailable("no-path");
     const auto managed = Flag(game, "managed");
     if (!managed) return unavailable("no-managed");
@@ -71,7 +77,7 @@ TitleRegistration TitleRegistry::Query(const std::string& title) {
       continue;
     }
     if (path != source || !*managed)
-      result = {RegistrationState::kCollision, path, {}};
+      result = {RegistrationState::kCollision, path, path != source ? "path:" + LogValue(Text(game, "source_type")) : "unmanaged"};
     else {
       const auto installed = Flag(game, "installed"), available = Flag(game, "source_available");
       const auto type = Text(game, "source_type");

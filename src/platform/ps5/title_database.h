@@ -12,6 +12,8 @@ struct InstalledTitleIdentity {
 struct TitleDatabaseObservation {
   runtime::TitleAvailability inventory = runtime::TitleAvailability::kUnknown;
   std::optional<InstalledTitleIdentity> identity;
+  // Why an occupied row gave no identity, for logs.
+  std::string reason;
 };
 // Worker-only read-only observation. A failed/open-incomplete query never means
 // a free title. Any matching row occupies an ID, even if its metadata is invalid.

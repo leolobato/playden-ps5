@@ -169,6 +169,8 @@ struct NativeStatus {
   bool owned_manifest_matches = false;
   bool collision = false;
   bool scan_pending = false;
+  // Which check decided a status that is not installed, for logs ("" when installed or unknown).
+  std::string reason;
 };
 enum class RegistrationResultState {
   kAccepted,

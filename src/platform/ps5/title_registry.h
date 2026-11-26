@@ -9,7 +9,7 @@ enum class RegistrationState { kUnavailable, kAbsent, kPending, kReady, kCollisi
 struct TitleRegistration {
   RegistrationState state = RegistrationState::kUnavailable;
   std::string path;
-  // Why the state is kUnavailable, for logs.
+  // Why the state is kUnavailable or kCollision, for logs.
   std::string reason;
 };
 // Synchronous worker-only boundary to the existing ShadowMountPlus local API.

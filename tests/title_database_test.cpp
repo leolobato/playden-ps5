@@ -24,8 +24,12 @@ int main() {
   CHECK(ReadTitleDatabase(path, "FAKE78002").inventory == TitleAvailability::kFree);
   sql("INSERT INTO tbl_contentinfo VALUES('fake78001','foreign','foreign')");
   present = ReadTitleDatabase(path, "FAKE78001"); CHECK(present.inventory == TitleAvailability::kOccupied && !present.identity);
+  CHECK(present.reason == "duplicate-rows");
+  sql("DELETE FROM tbl_contentinfo; INSERT INTO tbl_contentinfo VALUES('fake78001','UP9000-FAKE78001_00-PROSPEROWIN00001','/user/app/FAKE78001/sce_sys')");
+  CHECK(ReadTitleDatabase(path, "FAKE78001").reason == "title-id-case");
   sql("DELETE FROM tbl_contentinfo; INSERT INTO tbl_contentinfo VALUES('FAKE78001',NULL,NULL)");
   present = ReadTitleDatabase(path, "FAKE78001"); CHECK(present.inventory == TitleAvailability::kOccupied && !present.identity);
+  CHECK(present.reason == "content-id-unreadable");
   sql("BEGIN EXCLUSIVE"); CHECK(ReadTitleDatabase(path, "FAKE78002").inventory == TitleAvailability::kUnknown); sql("ROLLBACK");
   CHECK(ReadTitleDatabase(path, "unsafe' OR 1=1").inventory == TitleAvailability::kUnknown);
   CHECK(ReadNativeTitleDatabase("FAKE78002").inventory == TitleAvailability::kUnknown);
