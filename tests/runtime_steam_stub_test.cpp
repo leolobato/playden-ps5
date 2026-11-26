@@ -202,6 +202,15 @@ int main() {
     CHECK(UnpackSteamStub(&bytes, &why));
     CHECK(bytes.substr(fx::kCodeRaw, fx::kCodeSize) == fx::PlainCode());
     CHECK(fx::Get32(bytes, fx::kOptional + 16) == fx::kOriginalEntry && Sections(bytes) == 2);
+    // A header of a known size whose stub field doesn't name the entry point (laid out another way) is refused,
+    // and the program is left as it was.
+    auto other = fx::BuildOld(true, 0, 0, size);
+    other[fx::kBindRaw + (size == 0x6A * 4 ? 8 : 12)] ^= 0x04;
+    const auto before = other;
+    Write(root / "Other.exe", other);
+    const auto refused = InspectSteamStub((root / "Other.exe").string());
+    CHECK(refused.kind == SteamStubKind::kUnsupported && refused.detail == "1.0 x86 with an entry point it doesn't describe");
+    CHECK(!UnpackSteamStub(&other, &why) && other == before);
   }
   for (const bool d0 : {false, true}) {  // Variant 2.1: code decrypted through the SteamDRMP.dll chain, .bind dropped.
     fx::Spec21 spec;
