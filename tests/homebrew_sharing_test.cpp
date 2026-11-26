@@ -580,9 +580,12 @@ void share_and_vote(const std::filesystem::path& base) {
           "ten minutes ask how it ran, and say the answer rates the recipe");
     check(!model.state().library.ratings.contains(kGame), "Darkwood starts out Untested");
     activate(model, "feedback-good");
-    check(find_row(model, "feedback-send") && find_row(model, "feedback-logs") && !find_row(model, "feedback-logs")->selected &&
-              !find_row(model, "feedback-recipe"),
-          "it ran well: a report without logs, and no recipe to share for unchanged settings");
+    check(find_row(model, "feedback-send") && find_row(model, "feedback-logs") && find_row(model, "feedback-logs")->selected &&
+              find_row(model, "feedback-logs")->value == "On" && !find_row(model, "feedback-recipe"),
+          "it ran well: a report with logs by default, and no recipe to share for unchanged settings");
+    activate(model, "feedback-logs");
+    check(!find_row(model, "feedback-logs")->selected && find_row(model, "feedback-logs")->value == "Off",
+          "the player can leave the logs out");
     activate(model, "feedback-details");
     model.SubmitEditorText("Played the first day, no problems.");
     activate(model, "feedback-send");
@@ -682,6 +685,7 @@ void share_and_vote(const std::filesystem::path& base) {
         activate(model, "details-more");
         activate(model, "share-feedback");
         activate(model, "feedback-good");
+        activate(model, "feedback-logs");  // no logs: this API answers the report only
         activate(model, "feedback-send");
         check(model.state().library.ratings.at(kGame) == Compatibility::Works, "Untested set by hand also becomes Works");
         api.answer_with({answer(204, ""), answer(201, R"({"id":"r-3","state":"counted","issue_url":null,"updated":false})")});

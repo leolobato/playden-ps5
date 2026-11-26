@@ -4129,11 +4129,26 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
           "Change settings opens the settings list over Game settings");
     // It ran well with the player's own changes: a report, and the offer to share them as a recipe.
     check(simulation.scenario("feedback-good"), "feedback-good scenario loads");
-    check(has_row(simulation, "feedback-recipe") && !find_row(simulation, "feedback-logs")->selected,
-          "changes beyond display settings offer a recipe; logs are optional");
+    check(has_row(simulation, "feedback-recipe") && find_row(simulation, "feedback-logs")->selected &&
+              find_row(simulation, "feedback-logs")->value == "On" &&
+              find_row(simulation, "feedback-logs")->subtitle.find("without account names") != std::string::npos,
+          "changes beyond display settings offer a recipe; logs are on by default and optional");
     activate(simulation, "feedback-recipe");
     activate(simulation, "feedback-send");
     check(top().id == "share-recipe", "the Share sheet follows the report");
+    // "Yes, it started" attaches logs by default too; the player can turn them off.
+    check(simulation.scenario("feedback-start"), "feedback-start scenario loads for Yes, it started");
+    activate(simulation, "feedback-started");
+    check(find_row(simulation, "feedback-logs") && find_row(simulation, "feedback-logs")->selected &&
+              find_row(simulation, "feedback-logs")->value == "On",
+          "a Started report includes the logs by default");
+    activate(simulation, "feedback-logs");
+    check(!find_row(simulation, "feedback-logs")->selected && find_row(simulation, "feedback-logs")->value == "Off",
+          "and the player can leave them out");
+    simulation.action("circle");
+    activate(simulation, "feedback-started");
+    check(find_row(simulation, "feedback-logs")->value == "Off", "going back to the question keeps the logs left out");
+
     check(simulation.scenario("feedback-problems"), "feedback-problems scenario loads");
     {
         // Result first, as two ticked choices, then what went wrong, then the report.

@@ -2127,7 +2127,8 @@ private:
         std::string reason;          // a problem's reason (the vote reasons)
         std::string reason_text;     // what "Other" was, typed by the player (optional; sent with Other only)
         std::string details;         // What happened, optional
-        bool attach_logs = false;
+        // The logs go with every report unless the player leaves them out of one that works (a problem always has them).
+        bool attach_logs = true;
         bool recipe_offer = false;   // the settings count as a recipe (program, arguments, controls...)
         bool share_recipe = false;   // and the player wants them shared after the report
         std::optional<playden::community::RecipeRef> recipe;  // the community recipe in use: the answer votes for it

@@ -15290,7 +15290,8 @@ void Simulation::activate() {
         feedback_->step = "good";
         feedback_->result = "works";
         feedback_->reason.clear();
-        feedback_->attach_logs = false;
+        // The logs stay as the draft has them: on (FeedbackDraft), so a later problem report can be compared with a run
+        // that worked, unless the player turned them off and came back.
         feedback_->error.clear();
         refresh_share_sheet();
     }
@@ -15299,7 +15300,6 @@ void Simulation::activate() {
         const bool no_start = action_name == "feedback-no-start";
         feedback_->result = no_start ? "no-start" : "partial";
         feedback_->reason = no_start ? "no-start" : "";
-        feedback_->attach_logs = true;
         feedback_->share_recipe = false;
         feedback_->error.clear();
         refresh_share_sheet();
