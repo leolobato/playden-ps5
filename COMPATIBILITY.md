@@ -1263,13 +1263,13 @@ To see which kit your console has, look at Settings › System › About, or the
 - **Direct3D 12 games** need a kit with vkd3d-proton (0.11 or later). Playden turns it on for games that use
   Direct3D 12 and for Unreal Engine 5 games (from 0.9.0), except Unity and Unreal 4 games: for those, set Game settings
   › Direct3D 12 = vkd3d-proton. Games set up before 0.9.0 keep their setting until Maintenance › Recreate bottle. A game
-  that says Direct3D 12 or feature level 12_0 is not supported gets feature level 12_0 from 0.9.0. From 0.13.0, Game
+  that says Direct3D 12 or feature level 12_0 is not supported gets feature level 12_0 from 0.9.0. From 0.12.0, Game
   settings › Reported feature level picks 11_1, 12_0, 12_1 or 12_2; on earlier versions, set Environment variables
   `VKD3D_FEATURE_LEVEL=` to the level. Above 11_1 the level is faked, and a game that needs the missing features can
   still fail. vkd3d-proton's other variables (`VKD3D_DEBUG`, `VKD3D_CONFIG`, …) go in
   Environment variables too.
 - **A game that freezes while its sound keeps playing**, often on a loading screen, may be stuck on a memory fault the
-  runtime kit retries forever. From 0.13.0, try Game settings › Memory fault fixes = On (runtime kit 0.33 or later); on
+  runtime kit retries forever. From 0.12.0, try Game settings › Memory fault fixes = On (runtime kit 0.33 or later); on
   earlier versions, set Environment variables `PW_SUBPAGE_FIXES=1`. Red Dead Redemption 2's recipe turns it on.
 - **Denuvo Anti-Tamper** games (for example Hi-Fi RUSH) cannot run, and support is not planned.
 - **Kernel anti-cheat** games (for example Easy Anti-Cheat or BattlEye in kernel mode) cannot run, and support is not planned.

@@ -193,7 +193,7 @@ std::vector<SettingDefinition> BuildCatalogue() {
   {
     auto layout = Text("controller_layout", "Controller layout", "What each button and stick sends to the game.", "",
                        G::kControls);
-    layout.since = "0.13.0";
+    layout.since = "0.12.0";
     list.push_back(std::move(layout));
   }
   list.push_back(Choice("controller_preset", "Controller preset", "Ready-made button layout for this kind of game.",
@@ -217,14 +217,14 @@ std::vector<SettingDefinition> BuildCatalogue() {
   {
     auto held = Text("touchpad_hold_layout", "Touchpad hold layout", "What the controls swap to while the touchpad is held.",
                      "", G::kControls);
-    held.since = "0.13.0";
+    held.since = "0.12.0";
     list.push_back(std::move(held));
     auto held_mode = Choice("touchpad_hold_controller", "Touchpad hold controller",
                             "How the game sees your DualSense while the touchpad is held.", "", G::kControls,
                             {{"xinput", "Xbox controller", ""}, {"playstation", "PlayStation controller", ""},
                              {"keyboard", "Keyboard and mouse mapping", ""}},
                             "keyboard");
-    held_mode.since = "0.13.0";
+    held_mode.since = "0.12.0";
     list.push_back(std::move(held_mode));
   }
   // Controls › Button mapping.
@@ -298,7 +298,7 @@ std::vector<SettingDefinition> BuildCatalogue() {
                           "Also fakes variable-rate shading, mesh shaders and sampler feedback. A game can start, then "
                           "crash later."}},
                         "12_0");
-    level.since = "0.13.0";
+    level.since = "0.12.0";
     list.push_back(std::move(level));
   }
   // RADV runs pixel shaders in wave64 on the PS5's GPU by default; some never finish there and the console freezes
@@ -333,7 +333,7 @@ std::vector<SettingDefinition> BuildCatalogue() {
                       "Answers as a recent AMD driver would. Try it if a game says your AMD GPU or driver isn't "
                       "supported."}},
                     "game", 2);
-  ags.since = "0.13.0";
+  ags.since = "0.12.0";
   list.push_back(std::move(ags));
   list.push_back(Choice("reported_vram", "Reported video memory", "How much VRAM the game is told it has. Does not add memory.",
                         "dxgi.maxDeviceMemory · d3d9.maxAvailableMemory", G::kGraphics,
@@ -439,7 +439,7 @@ std::vector<SettingDefinition> BuildCatalogue() {
                          {"on", "On",
                           "For games that freeze, often on a loading screen, while their sound keeps playing."}},
                         "off", 3, ApplyMode::kGameClosed);
-    fixes.since = "0.13.0";
+    fixes.since = "0.12.0";
     list.push_back(std::move(fixes));
   }
   // Advanced.

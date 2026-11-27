@@ -4794,9 +4794,9 @@ int main(int argc, char** argv) {
   // The controller layout (controller_layout): one text row the runtime kit's input-map reads.
   {
     const auto* row = FindSetting("controller_layout");
-    CHECK(row && row->kind == SettingKind::kText && row->group == SettingGroup::kControls && row->since == "0.13.0" &&
+    CHECK(row && row->kind == SettingKind::kText && row->group == SettingGroup::kControls && row->since == "0.12.0" &&
           row->playden_default.empty() && SettingShown(*row, KitCapabilities{}));
-    CHECK(SettingsSinceJson().find("\"controller_layout\": \"0.13.0\"") != std::string::npos);
+    CHECK(SettingsSinceJson().find("\"controller_layout\": \"0.12.0\"") != std::string::npos);
     const std::string wasd = FindControllerLayoutTemplate("wasd-mouse")->text;
     const std::string gamepad = FindControllerLayoutTemplate("gamepad")->text;
     // One parser checks it everywhere.
