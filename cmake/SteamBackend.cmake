@@ -304,6 +304,15 @@ function(playden_register_steam_backend_tests)
                 "$<TARGET_FILE:http_client_test>" "${CMAKE_SOURCE_DIR}/tests/fixtures/http")
         set_tests_properties(http_client PROPERTIES TIMEOUT 15)
 
+        # #809: a client made while the native network check fails checks again on its next request.
+        add_executable(http_client_network_retry_test "${CMAKE_SOURCE_DIR}/tests/http_client_network_retry_test.cpp"
+            "${CMAKE_SOURCE_DIR}/src/steam/backend/http_client.cpp")
+        target_include_directories(http_client_network_retry_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
+        target_compile_features(http_client_network_retry_test PRIVATE cxx_std_17)
+        target_link_libraries(http_client_network_retry_test PRIVATE playden_curl_8_22 Threads::Threads)
+        add_test(NAME http_client_network_retry COMMAND http_client_network_retry_test)
+        set_tests_properties(http_client_network_retry PROPERTIES TIMEOUT 15)
+
         # #50: an upload must reach the server once when a TLS 1.3 ticket arrives while its write is blocked.
         add_executable(http_upload_ticket_test "${CMAKE_SOURCE_DIR}/tests/http_upload_ticket_test.cpp")
         target_link_libraries(http_upload_ticket_test PRIVATE playden_steam_http)

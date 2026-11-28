@@ -284,11 +284,7 @@ std::string HttpFailureName(const HttpResponse& response) {
 
 class HttpClient::Impl {
  public:
-  explicit Impl(std::string ca_bundle) : ca_bundle_(std::move(ca_bundle)) {
-    native_ready_ = internal::InitializeNativeNetwork();
-    curl_ready_ = native_ready_ && GlobalCurl().ready;
-    if (curl_ready_) multi_ = internal::NativeResolutionCache::CreateTransport();
-  }
+  explicit Impl(std::string ca_bundle) : ca_bundle_(std::move(ca_bundle)) { Ready(); }
 
   ~Impl() {
     if (multi_) curl_multi_cleanup(multi_);
@@ -296,10 +292,10 @@ class HttpClient::Impl {
   }
 
   HttpResponse Perform(const HttpRequest& request, const std::atomic<bool>& cancel) {
-    if (!curl_ready_ || !multi_ || ca_bundle_.empty())
-      return {HttpError::kInitializationFailed, 0, {}, {}};
-    if (!ValidRequest(request)) return {HttpError::kInvalidRequest, 0, {}, {}};
+    // A canceled request doesn't wait for a network check on a client that isn't ready.
     if (cancel.load(std::memory_order_acquire)) return {HttpError::kCanceled, 0, {}, {}};
+    if (!Ready() || ca_bundle_.empty()) return {HttpError::kInitializationFailed, 0, {}, {}};
+    if (!ValidRequest(request)) return {HttpError::kInvalidRequest, 0, {}, {}};
     const auto request_start = Clock::now();
     // A streamed request may have no total deadline (timeout_ms 0); a stall limit bounds it instead.
     const bool streaming = static_cast<bool>(request.body_sink);
@@ -501,12 +497,19 @@ class HttpClient::Impl {
   }
 
  private:
+  // A client that wasn't ready (the native network check failed, for example while the console's network was still
+  // coming up) checks again on its next request, so a long-lived client recovers without a restart.
+  bool Ready() {
+    if (multi_) return true;
+    if (!internal::InitializeNativeNetwork() || !GlobalCurl().ready) return false;
+    multi_ = internal::NativeResolutionCache::CreateTransport();
+    return multi_ != nullptr;
+  }
+
   std::string ca_bundle_;
   CURLM* multi_ = nullptr;
   curl_slist* resolve_entries_ = nullptr;
   internal::NativeResolutionCache resolution_cache_;
-  bool native_ready_ = false;
-  bool curl_ready_ = false;
 };
 
 HttpClient::HttpClient(std::string ca_bundle)
