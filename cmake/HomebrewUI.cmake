@@ -372,7 +372,7 @@ if(PLAYDEN_PLATFORM_PS5)
     return()
 endif()
 
-if(NOT APPLE)
+if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "The direct ps5-homebrew-ui host currently supports macOS only")
 endif()
 
@@ -381,7 +381,12 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET "sdl2>=2.0")
 target_sources(playden_hui PRIVATE
     "${PLAYDEN_HUI_SOURCE_DIR}/host/platform_host.cpp")
-target_compile_definitions(playden_hui PUBLIC GL_SILENCE_DEPRECATION=1)
+if(APPLE)
+    target_compile_definitions(playden_hui PUBLIC GL_SILENCE_DEPRECATION=1)
+else()
+    # <GL/glcorearb.h> declares the entry points only when GL_GLEXT_PROTOTYPES is set.
+    target_compile_definitions(playden_hui PUBLIC GL_GLEXT_PROTOTYPES=1)
+endif()
 target_link_libraries(playden_hui PUBLIC OpenGL::GL)
 target_compile_options(playden_homebrew_ui PRIVATE -Wno-deprecated-declarations)
 

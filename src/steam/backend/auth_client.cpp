@@ -38,7 +38,8 @@ AuthClientHooks DefaultHooks() {
       const auto remaining = until - std::chrono::steady_clock::now();
       if (remaining <= decltype(remaining)::zero()) return true;
       std::this_thread::sleep_for(std::min(remaining,
-          std::chrono::duration_cast<decltype(remaining)>(std::chrono::milliseconds(25))));
+          std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+              std::chrono::milliseconds(25))));
     }
     return false;
   };
