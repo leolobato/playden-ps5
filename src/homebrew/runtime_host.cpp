@@ -1930,8 +1930,14 @@ std::string RuntimeHost::InstallScriptsStep(Composition& c, const GameFiles& fil
   // The game's language comes from its download; a game with no facts (imported) gets the English values.
   rt::SteamworksIdentity identity;
   rt::ReadSteamworksFacts(files.root.string(), &identity);
+  // A game sold with a CD key: the account's key its download asked Steam for, which the scripts hand the game.
+  const auto legacy_key = rt::ReadLegacyKey(files.root.string());
   const auto script = rt::ApplyInstallScripts(files.root.string(), *install_dir, identity.language, files.prefix,
-                                              config_.unix_time());
+                                              config_.unix_time(), legacy_key ? &*legacy_key : nullptr);
+  if (legacy_key || !script.templates.empty())
+    Log("install script app=" + std::to_string(record.runtime_number) + " cd_key=" +
+        (script.legacy_key ? "registry" : legacy_key ? "unused" : "none") +
+        " templates=" + std::to_string(script.templates.size()));
   if (!script.found.empty()) {
     std::string names;
     for (const auto& name : script.found) names += (names.empty() ? "" : ",") + name;

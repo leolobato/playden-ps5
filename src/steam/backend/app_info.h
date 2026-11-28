@@ -120,6 +120,11 @@ struct AppInfo {
   // extended/installscript: the Windows install script the app names, a path in its install folder (any slashes, as
   // written). Older apps name their script only here; newer ones flag it in their depot manifest instead.
   std::string install_script;
+  // extended/legacykeyregistrationmethod and legacykeyregistrylocation: an app Steam sells with a CD key, and where
+  // Steam's client puts the account's key before the install script runs ("registry" and a registry value's path,
+  // HKEY_CURRENT_USER\Software\Valve\TestApp9050\SteamKey for DOOM 3). Empty for every other app.
+  std::string legacy_key_method;
+  std::string legacy_key_location;
 };
 
 // Parses a PICS app buffer (text VDF with optional trailing NULs) whose root is "appinfo".

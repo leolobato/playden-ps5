@@ -125,6 +125,14 @@ struct FreeLicenseResult {
   bool ok() const { return error == CmError::kNone; }
 };
 
+// The account's CD key for an app Steam sells with one (appinfo extended/legacykeyregistrationmethod). Never logged.
+struct LegacyGameKeyResult {
+  CmError error = CmError::kProtocol;
+  std::int32_t eresult = cm::kEResultFail;  // Steam's answer, when it answered
+  std::string key;                          // set when eresult is OK and Steam sent a key
+  bool ok() const { return error == CmError::kNone; }
+};
+
 struct TokenRenewal {
   CmError error = CmError::kProtocol;
   std::string access_token;
@@ -301,6 +309,12 @@ class CmClient final : public AcquisitionSource {
   // out is not an error. Steam answering with an EResult other than OK is kRejected.
   FreeLicenseResult RequestFreeLicenses(const StoredSession& session, const std::vector<std::uint32_t>& app_ids,
                                         std::uint32_t license_wait_ms, const std::atomic<bool>& cancel);
+
+  // Asks Steam for the account's CD key for app_id (ClientGetLegacyGameKey, an old-style message), as Steam's client
+  // does before it runs an install script that writes the key for the game. Steam answering with an EResult other than
+  // OK, or OK without a key, is kRejected. The key is never logged.
+  LegacyGameKeyResult FetchLegacyGameKey(const StoredSession& session, std::uint32_t app_id,
+                                         const std::atomic<bool>& cancel);
 
   // A unified service call on an open session. When Steam refuses it, the result is kRejected and
   // `eresult` (optional) holds Steam's EResult.

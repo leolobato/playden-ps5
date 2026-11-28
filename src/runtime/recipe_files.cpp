@@ -2,6 +2,7 @@
 #include "runtime/recipe_files.h"
 
 #include "runtime/artifact_hash.h"
+#include "runtime/steamworks.h"
 
 #include <cerrno>
 #include <fcntl.h>
@@ -58,28 +59,6 @@ Folders MakeFoldersTo(const fs::path& root, const std::string& relative) {
   }
   return Folders::kReady;
 }
-
-bool WriteAtomic(const fs::path& path, std::string_view bytes) {
-  const auto temporary = path.parent_path() / (".playden-" + path.filename().string() + ".tmp");
-  ::unlink(temporary.c_str());
-  const int file = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, kFileMode);
-  if (file < 0) return false;
-  std::size_t done = 0;
-  bool ok = true;
-  while (ok && done < bytes.size()) {
-    const auto count = ::write(file, bytes.data() + done, bytes.size() - done);
-    if (count < 0 && errno == EINTR) continue;
-    if (count <= 0) ok = false;
-    else done += static_cast<std::size_t>(count);
-  }
-  ok = ok && ::fchmod(file, kFileMode) == 0 && ::fsync(file) == 0;
-  ok = ::close(file) == 0 && ok;
-  if (!ok || ::rename(temporary.c_str(), path.c_str()) != 0) {
-    ::unlink(temporary.c_str());
-    return false;
-  }
-  return true;
-}
 }  // namespace
 
 RecipeFilesResult ApplyRecipeFiles(const std::string& game_root, const std::string& source_dir,
@@ -106,7 +85,7 @@ RecipeFilesResult ApplyRecipeFiles(const std::string& game_root, const std::stri
       result.skipped.push_back(relative + ": something else is in the way of its folder");
       continue;
     }
-    if (folders == Folders::kFailed || !WriteAtomic(path, *source)) {
+    if (folders == Folders::kFailed || !WriteFileAtomically(path, *source, kFileMode)) {
       result.ok = false;
       result.message = "Playden could not put a file this game needs at " + relative + ".";
       return result;

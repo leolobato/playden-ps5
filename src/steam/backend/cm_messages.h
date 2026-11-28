@@ -20,11 +20,13 @@ enum EMsg : std::uint32_t {
   kEMsgClientHeartBeat = 703,
   kEMsgClientLogOff = 706,
   kEMsgClientChangeStatus = 716,
+  kEMsgClientGetLegacyGameKey = 730,
   kEMsgClientLogOnResponse = 751,
   kEMsgClientLoggedOff = 757,
   kEMsgClientPersonaState = 766,
   kEMsgClientFriendsList = 767,
   kEMsgClientLicenseList = 780,
+  kEMsgClientGetLegacyGameKeyResponse = 785,
   kEMsgClientRequestFriendData = 815,
   kEMsgClientGetDepotDecryptionKey = 5438,
   kEMsgClientGetDepotDecryptionKeyResponse = 5439,
@@ -78,12 +80,23 @@ struct Frame {
   std::uint32_t emsg = 0;
   Header header;
   std::vector<std::uint8_t> body;
+  bool extended = false;  // an old-style frame (DecodeExtendedFrame); its header has no job name or EResult
 };
 
 std::vector<std::uint8_t> EncodeFrame(std::uint32_t emsg, const Header& header,
                                       const std::vector<std::uint8_t>& body);
 // Accepts only protobuf frames (mask bit set) within kMaxFrameBytes.
 bool DecodeFrame(const std::uint8_t* data, std::size_t size, Frame* frame);
+
+// Old-style frames, for the few messages Steam never moved to protobuf (the legacy CD key): the EMsg without the mask
+// bit, then the rest of the extended client header (header size 36, which counts the EMsg; header version 2; target
+// job; source job; canary 239; SteamID; session ID; little-endian), then the body. A job ID that is absent goes out as all ones;
+// on decoding, all ones means absent. Only the header's steam_id, session_id and job IDs are used.
+inline constexpr std::size_t kExtendedHeaderBytes = 36;
+std::vector<std::uint8_t> EncodeExtendedFrame(std::uint32_t emsg, const Header& header,
+                                              const std::vector<std::uint8_t>& body);
+// Accepts only a frame without the mask bit whose header has that size, version and canary, within kMaxFrameBytes.
+bool DecodeExtendedFrame(const std::uint8_t* data, std::size_t size, Frame* frame);
 
 struct DeviceIdentity {
   std::uint32_t login_id = 0;  // sent as obfuscated_private_ip; logons sharing it replace each other
@@ -184,6 +197,20 @@ bool DecodeDepotKeyResponse(const std::vector<std::uint8_t>& body, DepotKeyRespo
 std::vector<std::uint8_t> EncodeManifestRequestCodeRequest(std::uint32_t app_id, std::uint32_t depot_id,
                                                            std::uint64_t manifest_id, std::string_view branch = "public");
 bool DecodeManifestRequestCodeResponse(const std::vector<std::uint8_t>& body, std::uint64_t* code);
+
+// The account's CD key for an app sold with one (MsgClientGetLegacyGameKey, an old-style message): the app ID as a
+// little-endian u32.
+std::vector<std::uint8_t> EncodeLegacyGameKeyRequest(std::uint32_t app_id);
+// MsgClientGetLegacyGameKeyResponse: app ID (u32), EResult (i32), length (u32), then `length` bytes of key that end
+// in a NUL. The key is printable ASCII of at most kMaxLegacyGameKeyBytes; anything else fails to decode. A response
+// that isn't OK may carry no key.
+inline constexpr std::size_t kMaxLegacyGameKeyBytes = 256;
+struct LegacyGameKeyResponse {
+  std::uint32_t app_id = 0;
+  std::int32_t eresult = kEResultFail;
+  std::string key;
+};
+bool DecodeLegacyGameKeyResponse(const std::vector<std::uint8_t>& body, LegacyGameKeyResponse* response);
 
 // CMsgClientRequestFreeLicense: asks Steam to add free apps (free DLC) to the account.
 std::vector<std::uint8_t> EncodeFreeLicenseRequest(const std::vector<std::uint32_t>& app_ids);

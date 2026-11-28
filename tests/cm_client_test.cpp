@@ -92,7 +92,8 @@ class FakeTransport final : public MessageTransport {
                  const std::atomic<bool>&) override {
     std::lock_guard<std::mutex> lock(script_->mutex);
     cm::Frame frame;
-    assert(cm::DecodeFrame(message.data(), message.size(), &frame));
+    assert(cm::DecodeFrame(message.data(), message.size(), &frame) ||
+           cm::DecodeExtendedFrame(message.data(), message.size(), &frame));
     if (frame.emsg == cm::kEMsgClientLogon)
       for (const auto& reply : script_->on_logon) script_->Queue(reply);
     if (frame.emsg == cm::kEMsgClientPICSProductInfoRequest && script_->pics_reply)
@@ -1641,6 +1642,70 @@ void FreeLicenseGrantWaitsForTheNewLicenseList() {
   assert(client.RequestFreeLicenses(Session(), {}, 5000, cancel).error == CmError::kProtocol);
 }
 
+std::vector<std::uint8_t> LegacyKeyReply(std::uint32_t app_id, std::int32_t eresult, const std::string& key,
+                                         std::uint64_t job) {
+  std::vector<std::uint8_t> body;
+  const auto le32 = [&body](std::uint32_t value) {
+    for (int shift = 0; shift < 32; shift += 8) body.push_back(static_cast<std::uint8_t>(value >> shift));
+  };
+  le32(app_id);
+  le32(static_cast<std::uint32_t>(eresult));
+  le32(key.empty() ? 0u : static_cast<std::uint32_t>(key.size() + 1));
+  body.insert(body.end(), key.begin(), key.end());
+  if (!key.empty()) body.push_back(0);
+  cm::Header header;
+  header.steam_id = kAccountSteamId;
+  header.session_id = 77;
+  header.jobid_target = job;
+  return cm::EncodeExtendedFrame(cm::kEMsgClientGetLegacyGameKeyResponse, header, body);
+}
+
+// The legacy CD key: an old-style request on the logged-on session, answered by an old-style frame. The key comes back
+// to the caller and never reaches the log.
+void LegacyGameKeyIsAskedWithAnOldStyleMessage() {
+  LogCapture log;
+  auto script = std::make_shared<Script>();
+  script->on_logon = {ServerFrame(cm::kEMsgClientLogOnResponse, LogonResponseBody(1, 9)), LicenseListFrame({100})};
+  script->on_emsg[cm::kEMsgClientGetLegacyGameKey] = {LegacyKeyReply(9050, cm::kEResultOk, "SYNTHETICKEY0001", 1)};
+  auto shared = MakeCmSharedSession();
+  auto client = MakeClient(script);
+  client.SetSharedSession(shared);
+  std::atomic<bool> cancel{false};
+  const auto found = client.FetchLegacyGameKey(Session(), 9050, cancel);
+  assert(found.ok() && found.eresult == cm::kEResultOk && found.key == "SYNTHETICKEY0001");
+  {
+    std::lock_guard<std::mutex> lock(script->mutex);
+    const auto request = std::find_if(script->sent.begin(), script->sent.end(), [](const cm::Frame& frame) {
+      return frame.emsg == cm::kEMsgClientGetLegacyGameKey;
+    });
+    assert(request != script->sent.end() && request->extended && request->body == cm::EncodeLegacyGameKeyRequest(9050));
+    assert(request->header.jobid_source == 1u && request->header.steam_id == kAccountSteamId &&
+           request->header.session_id == 77);
+    const auto raw = std::find_if(script->raw_sent.begin(), script->raw_sent.end(), [](const auto& bytes) {
+      return bytes.size() >= 4 && bytes[0] == 0xda && bytes[1] == 0x02 && bytes[2] == 0 && bytes[3] == 0;
+    });
+    assert(raw != script->raw_sent.end() && raw->size() == cm::kExtendedHeaderBytes + 4);
+  }
+
+  // Steam refusing (no key for this account), or answering for another app, is no key.
+  {
+    std::lock_guard<std::mutex> lock(script->mutex);
+    script->on_emsg[cm::kEMsgClientGetLegacyGameKey] = {LegacyKeyReply(9050, cm::kEResultAccessDenied, "", 2)};
+  }
+  const auto refused = client.FetchLegacyGameKey(Session(), 9050, cancel);
+  assert(refused.error == CmError::kRejected && refused.eresult == cm::kEResultAccessDenied && refused.key.empty());
+  {
+    std::lock_guard<std::mutex> lock(script->mutex);
+    script->on_emsg[cm::kEMsgClientGetLegacyGameKey] = {LegacyKeyReply(9070, cm::kEResultOk, "SYNTHETICKEY0002", 3)};
+  }
+  const auto other = client.FetchLegacyGameKey(Session(), 9050, cancel);
+  assert(other.error == CmError::kProtocol && other.key.empty());
+  assert(client.FetchLegacyGameKey(Session(), 0, cancel).error == CmError::kProtocol);
+  const auto lines = log.Take();
+  for (const auto& line : lines) assert(line.find("SYNTHETICKEY") == std::string::npos);
+  assert(std::find(lines.begin(), lines.end(), "owner=cm step=legacy_key app=9050 eresult=1 found=1") != lines.end());
+}
+
 // The wait after a grant ends at once when the install is canceled.
 void FreeLicenseWaitIsCancelable() {
   auto script = std::make_shared<Script>();
@@ -1846,6 +1911,8 @@ int main(int argc, char** argv) {
   FreeLicenseGrantWaitsForTheNewLicenseList();
   ResetCmBackoff();
   FreeLicenseWaitIsCancelable();
+  ResetCmBackoff();
+  LegacyGameKeyIsAskedWithAnOldStyleMessage();
   ResetCmBackoff();
   DeviceSeedPersistsPerInstall();
   ResetCmBackoff();

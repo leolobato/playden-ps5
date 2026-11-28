@@ -4,11 +4,14 @@
 #include "runtime/profile_save_folder.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include <sys/types.h>
 
 namespace playden::runtime {
 
@@ -189,5 +192,31 @@ bool WriteSteamworksFacts(const std::string& install_root, const std::vector<std
                           std::uint64_t owned_apps_account = 0,
                           const std::vector<std::string>& save_folders = {});
 bool ReadSteamworksFacts(const std::string& install_root, SteamworksIdentity* identity);
+
+// The account's CD key for a game Steam sells with one (appinfo legacykeyregistrationmethod and
+// legacykeyregistrylocation), which the download asked Steam for: Steam's client hands it to the game's install script,
+// which writes it where the game reads it (DOOM 3's base\doomkey). Kept beside the game, owner-only (0600), and never
+// logged. "v1", then method=, location= and key= lines; each value is printable ASCII.
+inline constexpr const char* kLegacyKeyFile = ".playden-legacy-key";
+inline constexpr std::size_t kMaxLegacyKeyField = 512;
+struct LegacyKey {
+  std::string method;    // "registry" (or Steam's "disk")
+  std::string location;  // registry: the value's path, HKEY_CURRENT_USER\...\SteamKey
+  std::string key;
+};
+bool WriteLegacyKey(const std::string& install_root, const LegacyKey& key);
+// None when the file is missing, unreadable or not this format, or a field is empty.
+std::optional<LegacyKey> ReadLegacyKey(const std::string& install_root);
+
+// The files a finished install's depots hold (steam/backend/depot_installer.h DepotInstaller::kFileTree): "v1", then
+// "<sha1 hex>\t<size>\t<path>" a line each, path as installed.
+inline constexpr const char* kDepotFileTree = ".playden-tree";
+// Whether relative ('/' separators) under install_root is a regular file with the size and SHA-1 the install's file
+// tree lists for it, as a download or an update leaves it. False without a tree, or when the tree doesn't list it.
+bool SameAsDepotFile(const std::string& install_root, const std::string& relative);
+
+// Writes bytes to path in place of what is there, through a temporary file in the same folder (".playden-<name>.tmp"),
+// synced, given mode and then renamed; never through a link. The folder must exist.
+bool WriteFileAtomically(const std::filesystem::path& path, std::string_view bytes, mode_t mode);
 
 }  // namespace playden::runtime

@@ -5,7 +5,9 @@
 #include "steam/backend/content_language.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -14,6 +16,7 @@
 #include <set>
 
 #include <fcntl.h>
+#include <mbedtls/sha1.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -64,32 +67,8 @@ bool IsRegular(const fs::path& path) {
   return ::lstat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode);
 }
 
-// Writes bytes to path through a temporary file in the same folder, synced, then renamed.
 bool WriteAtomic(const fs::path& path, std::string_view bytes, mode_t mode = 0644) {
-  const auto temporary = path.parent_path() / (".playden-" + path.filename().string() + ".tmp");
-  ::unlink(temporary.c_str());
-  const int file = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode);
-  if (file < 0) return false;
-  std::size_t done = 0;
-  bool ok = true;
-  while (ok && done < bytes.size()) {
-    const auto count = ::write(file, bytes.data() + done, bytes.size() - done);
-    if (count < 0 && errno == EINTR) continue;
-    if (count <= 0) ok = false;
-    else done += static_cast<std::size_t>(count);
-  }
-  ok = ok && ::fchmod(file, mode) == 0 && ::fsync(file) == 0;
-  ok = ::close(file) == 0 && ok;
-  if (!ok || ::rename(temporary.c_str(), path.c_str()) != 0) {
-    ::unlink(temporary.c_str());
-    return false;
-  }
-  const int folder = ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (folder >= 0) {
-    ::fsync(folder);
-    ::close(folder);
-  }
-  return true;
+  return WriteFileAtomically(path, bytes, mode);
 }
 
 // In the game's folder: open (0777) whatever the umask, so FTP can delete it (#868).
@@ -776,6 +755,128 @@ bool WriteSteamworksFacts(const std::string& install_root, const std::vector<std
   return WriteAtomic(fs::path(install_root) / kSteamworksFactsFile,
                      SerializeSteamworksFacts(depots, owned_dlc, language, excluded_dlc, owned_apps, owned_apps_account,
                                               save_folders));
+}
+
+namespace {
+
+bool LegacyKeyField(std::string_view text) {
+  return !text.empty() && text.size() <= kMaxLegacyKeyField &&
+         std::all_of(text.begin(), text.end(), [](unsigned char value) { return value >= 0x20 && value < 0x7f; });
+}
+
+}  // namespace
+
+bool WriteLegacyKey(const std::string& install_root, const LegacyKey& key) {
+  if (!LegacyKeyField(key.method) || !LegacyKeyField(key.location) || !LegacyKeyField(key.key)) return false;
+  return WriteAtomic(fs::path(install_root) / kLegacyKeyFile,
+                     "v1\nmethod=" + key.method + "\nlocation=" + key.location + "\nkey=" + key.key + "\n", 0600);
+}
+
+std::optional<LegacyKey> ReadLegacyKey(const std::string& install_root) {
+  const auto text = ReadFile(fs::path(install_root) / kLegacyKeyFile, 4 * 1024);
+  if (!text || text->rfind("v1\n", 0) != 0) return std::nullopt;
+  LegacyKey key;
+  std::size_t start = 3;
+  while (start < text->size()) {
+    auto end = text->find('\n', start);
+    if (end == std::string::npos) end = text->size();
+    const auto line = std::string_view(*text).substr(start, end - start);
+    start = end + 1;
+    const auto equals = line.find('=');
+    if (equals == std::string_view::npos) continue;
+    const auto name = line.substr(0, equals);
+    const auto value = std::string(line.substr(equals + 1));
+    if (name == "method") key.method = value;
+    else if (name == "location") key.location = value;
+    else if (name == "key") key.key = value;
+  }
+  if (!LegacyKeyField(key.method) || !LegacyKeyField(key.location) || !LegacyKeyField(key.key)) return std::nullopt;
+  return key;
+}
+
+bool WriteFileAtomically(const fs::path& path, std::string_view bytes, mode_t mode) {
+  const auto temporary = path.parent_path() / (".playden-" + path.filename().string() + ".tmp");
+  ::unlink(temporary.c_str());
+  const int file = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode);
+  if (file < 0) return false;
+  std::size_t done = 0;
+  bool ok = true;
+  while (ok && done < bytes.size()) {
+    const auto count = ::write(file, bytes.data() + done, bytes.size() - done);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) ok = false;
+    else done += static_cast<std::size_t>(count);
+  }
+  ok = ok && ::fchmod(file, mode) == 0 && ::fsync(file) == 0;
+  ok = ::close(file) == 0 && ok;
+  if (!ok || ::rename(temporary.c_str(), path.c_str()) != 0) {
+    ::unlink(temporary.c_str());
+    return false;
+  }
+  const int folder = ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (folder >= 0) {
+    ::fsync(folder);
+    ::close(folder);
+  }
+  return true;
+}
+
+bool SameAsDepotFile(const std::string& install_root, const std::string& relative) {
+  struct stat info {};
+  const auto path = fs::path(install_root) / relative;
+  if (::lstat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) return false;
+  const auto tree = ReadFile(fs::path(install_root) / kDepotFileTree, 64u * 1024 * 1024);
+  if (!tree || tree->rfind("v1\n", 0) != 0) return false;
+  const auto lower = [](std::string_view text) {
+    std::string out(text);
+    for (auto& value : out) value = static_cast<char>(std::tolower(static_cast<unsigned char>(value)));
+    return out;
+  };
+  const auto wanted = lower(relative);
+  std::size_t start = 3;
+  while (start < tree->size()) {
+    auto end = tree->find('\n', start);
+    if (end == std::string::npos) end = tree->size();
+    const auto line = std::string_view(*tree).substr(start, end - start);
+    start = end + 1;
+    const auto first = line.find('\t');
+    const auto second = first == std::string_view::npos ? first : line.find('\t', first + 1);
+    if (second == std::string_view::npos || lower(line.substr(second + 1)) != wanted) continue;
+    std::uint64_t size = 0;
+    const auto parsed = std::from_chars(line.data() + first + 1, line.data() + second, size);
+    if (parsed.ec != std::errc{} || parsed.ptr != line.data() + second ||
+        size != static_cast<std::uint64_t>(info.st_size))
+      return false;
+    const auto sha = line.substr(0, first);
+    if (size == 0) return true;
+    // The file's SHA-1, read in pieces through a heap buffer (worker stacks are small).
+    const int file = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (file < 0) return false;
+    std::vector<unsigned char> buffer(1024 * 1024);
+    mbedtls_sha1_context context;
+    mbedtls_sha1_init(&context);
+    bool ok = mbedtls_sha1_starts(&context) == 0;
+    std::uint64_t total = 0;
+    while (ok) {
+      const auto count = ::read(file, buffer.data(), buffer.size());
+      if (count < 0 && errno == EINTR) continue;
+      if (count <= 0) {
+        ok = count == 0;
+        break;
+      }
+      ok = mbedtls_sha1_update(&context, buffer.data(), static_cast<std::size_t>(count)) == 0;
+      total += static_cast<std::uint64_t>(count);
+    }
+    ::close(file);
+    unsigned char digest[20] = {};
+    ok = ok && total == size && mbedtls_sha1_finish(&context, digest) == 0;
+    mbedtls_sha1_free(&context);
+    if (!ok) return false;
+    char hex[41] = {};
+    for (int index = 0; index < 20; ++index) std::snprintf(hex + index * 2, 3, "%02x", digest[index]);
+    return lower(sha) == hex;
+  }
+  return false;
 }
 
 bool ReadSteamworksFacts(const std::string& install_root, SteamworksIdentity* identity) {

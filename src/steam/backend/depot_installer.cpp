@@ -244,6 +244,7 @@ constexpr const char* kUpdateScripts = "scripts";
 constexpr const char* kUpdateRecord = "record";
 constexpr const char* kUpdatePaths = "paths";
 constexpr const char* kSteamFacts = ".playden-steam";  // runtime/steamworks.h kSteamworksFactsFile
+constexpr const char* kLegacyKey = ".playden-legacy-key";  // runtime/steamworks.h kLegacyKeyFile
 
 std::string UpdateDir(const std::string& root) { return root + "/" + DepotInstaller::kUpdateDir; }
 
@@ -2026,7 +2027,7 @@ InstallOutcome DepotInstaller::FinishUpdate(const std::string& install_root, con
   // The new version's tree, file list and Steamworks facts, then its record, then the work folder.
   const std::pair<const char*, std::string> moves[] = {
       {kUpdateTree, kFileTree}, {kUpdateScripts, kInstallScripts}, {kUpdateFiles, kFileList}, {kSteamFacts, kSteamFacts},
-      {kUpdateRecord, kInstallRecord}};
+      {kLegacyKey, kLegacyKey}, {kUpdateRecord, kInstallRecord}};
   // An update planned before the script list was kept has a tree and no list: the old version's list would name the
   // wrong scripts. (Once the tree has moved, the list moved after it or the plan had none and this ran already.)
   if (!Present(work + "/" + kUpdateScripts) && Present(work + "/" + kUpdateTree) &&

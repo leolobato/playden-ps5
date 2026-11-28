@@ -34,6 +34,59 @@ void RequestsMatchProtocBytes() {
   assert(cm::EncodeHeartBeat().empty());
 }
 
+// Old-style frames (the legacy CD key): SteamKit's ExtendedClientMsgHdr byte for byte, and the key message.
+void ExtendedFramesAndLegacyGameKey() {
+  cm::Header header;
+  header.steam_id = 0x0110000100001092ull;
+  header.session_id = -5;
+  header.jobid_source = 7;
+  const std::vector<std::uint8_t> body = cm::EncodeLegacyGameKeyRequest(9050);
+  assert(body == (std::vector<std::uint8_t>{0x5a, 0x23, 0, 0}));
+  const auto frame = cm::EncodeExtendedFrame(cm::kEMsgClientGetLegacyGameKey, header, body);
+  const std::vector<std::uint8_t> expected = {
+      0xda, 0x02, 0, 0,                                // EMsg 730, no protobuf bit
+      36, 2, 0,                                        // header size, header version
+      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // target job: none
+      7, 0, 0, 0, 0, 0, 0, 0,                          // source job
+      239,                                             // canary
+      0x92, 0x10, 0, 0, 1, 0, 0x10, 0x01,              // SteamID
+      0xfb, 0xff, 0xff, 0xff,                          // session ID
+      0x5a, 0x23, 0, 0};
+  assert(frame == expected);
+  cm::Frame decoded;
+  assert(cm::DecodeExtendedFrame(frame.data(), frame.size(), &decoded));
+  assert(decoded.extended && decoded.emsg == cm::kEMsgClientGetLegacyGameKey && decoded.body == body);
+  assert(decoded.header.jobid_source == 7u && !decoded.header.jobid_target && decoded.header.steam_id == header.steam_id &&
+         decoded.header.session_id == -5);
+  // Each kind refuses the other, and a broken header.
+  assert(!cm::DecodeFrame(frame.data(), frame.size(), &decoded));
+  const auto proto = cm::EncodeFrame(cm::kEMsgClientHeartBeat, header, {});
+  assert(!cm::DecodeExtendedFrame(proto.data(), proto.size(), &decoded));
+  for (const std::size_t at : {4u, 5u, 23u}) {
+    auto broken = frame;
+    broken[at] ^= 1;
+    assert(!cm::DecodeExtendedFrame(broken.data(), broken.size(), &decoded));
+  }
+  assert(!cm::DecodeExtendedFrame(frame.data(), cm::kExtendedHeaderBytes - 1, &decoded));
+  assert(cm::EncodeExtendedFrame(cm::kEMsgClientGetLegacyGameKey | cm::kProtoMask, header, body).empty());
+
+  const auto response = [](std::uint32_t app, std::int32_t eresult, std::uint32_t length, const std::string& key) {
+    std::vector<std::uint8_t> out;
+    for (const auto value : {app, static_cast<std::uint32_t>(eresult), length})
+      for (int shift = 0; shift < 32; shift += 8) out.push_back(static_cast<std::uint8_t>(value >> shift));
+    out.insert(out.end(), key.begin(), key.end());
+    return out;
+  };
+  cm::LegacyGameKeyResponse key;
+  assert(cm::DecodeLegacyGameKeyResponse(response(9050, 1, 17, std::string("ABCD-EFGH-1234-5", 16) + '\0'), &key));
+  assert(key.app_id == 9050 && key.eresult == 1 && key.key == "ABCD-EFGH-1234-5");
+  assert(cm::DecodeLegacyGameKeyResponse(response(9050, 15, 0, ""), &key) && key.eresult == 15 && key.key.empty());
+  assert(!cm::DecodeLegacyGameKeyResponse(response(9050, 1, 18, std::string("ABCD", 4) + '\0'), &key));  // short
+  assert(!cm::DecodeLegacyGameKeyResponse(response(9050, 1, 3, std::string("A\nB", 3)), &key));         // not text
+  assert(!cm::DecodeLegacyGameKeyResponse(response(9050, 1, 300, std::string(300, 'A')), &key));        // too long
+  assert(!cm::DecodeLegacyGameKeyResponse(std::vector<std::uint8_t>(11, 0), &key));
+}
+
 void ResponsesDecode() {
   cm::LogonResponse logon;
   assert(cm::DecodeLogonResponse(Fixture("logon_response.pb"), &logon));
@@ -277,6 +330,7 @@ int main(int argc, char** argv) {
   g_root = argv[1];
   RequestsMatchProtocBytes();
   ResponsesDecode();
+  ExtendedFramesAndLegacyGameKey();
   LogonResponseFallsBackToLegacyAndDefaultHeartbeat();
   FramesRoundTripAndRejectMalformedInput();
   LicenseOwnerFlagsAndTypeDecode();

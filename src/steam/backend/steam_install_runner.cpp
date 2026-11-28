@@ -623,6 +623,16 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
     }
     for (const auto& line : FamilyLines("depots=", grants)) log("family", "depots", line.c_str());
   }
+  // A game sold with a CD key: the account's key, which Steam's client hands to the game's install script on its first
+  // start (DOOM 3's base\doomkey). Asked for while the session is at hand; a game Steam has no key for still installs,
+  // and the key itself is never logged.
+  std::optional<runtime::LegacyKey> legacy_key;
+  if (!app->legacy_key_method.empty() && !app->legacy_key_location.empty()) {
+    const auto fetched = cm_.FetchLegacyGameKey(session, id, cancel);
+    if (fetched.ok()) legacy_key = runtime::LegacyKey{app->legacy_key_method, app->legacy_key_location, fetched.key};
+    log("legacy_key", fetched.ok() ? "found" : "missing",
+        (std::string("error=") + CmErrorName(fetched.error) + " eresult=" + std::to_string(fetched.eresult)).c_str());
+  }
   // What the Steamworks emulator needs later, while the licenses are at hand: installed depots and owned DLC.
   const auto write_facts = [&](const std::string& folder, const std::vector<std::uint32_t>& skipped) {
     std::vector<std::uint32_t> depots, dlc;
@@ -646,6 +656,8 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
     const auto saves = cloud::ProfileSaveFolders(app->cloud, id);
     const bool written = runtime::WriteSteamworksFacts(folder, depots, dlc, effective_language, target.excluded_dlc,
                                                        sdk_apps, sdk_apps.empty() ? 0 : account, saves);
+    // The key goes in with the facts. One that can't be written leaves the game as it would be without a key.
+    if (legacy_key && !runtime::WriteLegacyKey(folder, *legacy_key)) log("legacy_key", "write-failed", "");
     if (!written) log("steamworks_facts", "write-failed", folder.c_str());
     else
       log("steamworks_facts", "written",

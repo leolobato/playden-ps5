@@ -375,6 +375,11 @@ std::optional<AppInfo> ParseAppInfo(std::uint32_t app_id, std::string_view buffe
   if (const VdfNode* extended = root->Find("extended")) app.install_script = ChildString(extended, "installscript");
   if (app.install_script.empty() && common != nullptr)
     if (const VdfNode* extended = common->Find("extended")) app.install_script = ChildString(extended, "installscript");
+  for (const VdfNode* extended : {root->Find("extended"), common != nullptr ? common->Find("extended") : nullptr}) {
+    if (extended == nullptr || !app.legacy_key_method.empty()) continue;
+    app.legacy_key_method = ChildString(extended, "legacykeyregistrationmethod");
+    app.legacy_key_location = ChildString(extended, "legacykeyregistrylocation");
+  }
   if (const VdfNode* extended = root->Find("extended")) app.free_app = ChildU32(extended, "isfreeapp").value_or(0) != 0;
   if (!app.free_app && common != nullptr)
     if (const VdfNode* extended = common->Find("extended")) app.free_app = ChildU32(extended, "isfreeapp").value_or(0) != 0;
